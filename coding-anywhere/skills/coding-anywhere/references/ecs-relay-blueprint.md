@@ -97,7 +97,7 @@ import sys
 IDENTITY_FILE = os.environ.get("CA_IDENTITY_FILE", "/home/example/.ssh/mac-relay")
 KNOWN_HOSTS_FILE = os.environ.get("CA_KNOWN_HOSTS_FILE", "/home/example/.ssh/known_hosts.macrelay")
 BACKEND_PORT = os.environ.get("CA_BACKEND_PORT", "10023")
-BACKEND_USER = os.environ.get("CA_BACKEND_USER", os.environ.get("USER", "jliu"))
+BACKEND_USER = os.environ.get("CA_BACKEND_USER", os.environ.get("USER", "appuser"))
 LOG_FILE = os.environ.get("CA_LOG_FILE", "/tmp/coding-anywhere-forwarder.log")
 
 original = os.environ.get("SSH_ORIGINAL_COMMAND", "").strip()

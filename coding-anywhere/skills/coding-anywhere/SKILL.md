@@ -95,7 +95,7 @@ Home Mac
 
 - ECS 公网 IP
 - ECS 系统（CentOS / Ubuntu / Debian）
-- ECS 上为本机分配的用户名（如 `jliu` / `jliu-mini`）
+- ECS 上为本机分配的用户名（如 `yourname` / `yourname-mini`）
 - 反向隧道本地端口（默认 `10023` / `10024`，多机分配）
 
 ### DDNS 直连方案额外参数

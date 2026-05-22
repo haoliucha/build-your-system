@@ -1,7 +1,7 @@
 # tmux 感知的通知跳转 — 设计文档
 
 - **状态**: Draft，待用户 review
-- **作者**: jliu（与 AI 协作）
+- **作者**: haoliucha（与 AI 协作）
 - **日期**: 2026-05-12
 - **影响范围**: `claude-notify` 插件（`notify-smart.sh` + `jump-to-claude.sh`）
 - **关联 issue**: 用户报告"点击通知后显示『跳转失败，未知的终端类型: unknown』"——根因是 tmux 默认剥离 `ITERM_SESSION_ID`，导致检测落入 `unknown` 分支。
