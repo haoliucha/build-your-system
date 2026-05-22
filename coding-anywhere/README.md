@@ -29,7 +29,7 @@
 ### 方式 2：手动安装
 
 ```bash
-git clone https://github.com/jisumanbu/build-your-system.git ~/.claude/plugins/marketplaces/build-your-system
+git clone https://github.com/haoliucha/build-your-system.git ~/.claude/plugins/marketplaces/build-your-system
 # Claude Code 启动时会自动加载
 ```
 

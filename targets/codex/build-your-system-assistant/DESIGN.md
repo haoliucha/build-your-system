@@ -196,7 +196,7 @@ fi
    # 创建插件目录（如果不存在）
    mkdir -p ~/.claude/plugins
    cd ~/.claude/plugins
-   git clone https://github.com/jisumanbu/build-your-system.git
+   git clone https://github.com/haoliucha/build-your-system.git
    ```
 
 2. **初始化 Vault**

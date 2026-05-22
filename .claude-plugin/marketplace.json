@@ -3,7 +3,7 @@
   "description": "Personal productivity system based on Obsidian Vault - task management, knowledge management, and media content creation",
   "owner": {
     "name": "jliu",
-    "url": "https://github.com/jisumanbu"
+    "url": "https://github.com/haoliucha"
   },
   "plugins": [
     {
@@ -12,7 +12,7 @@
       "description": "个人 AI 助手 - 任务捕获、每日回顾、知识分发。10 个命令 + 2 个 skills + SessionStart 自动加载上下文。",
       "version": "1.0.0",
       "category": "productivity",
-      "homepage": "https://github.com/jisumanbu/build-your-system"
+      "homepage": "https://github.com/haoliucha/build-your-system"
     },
     {
       "name": "media",
@@ -20,7 +20,7 @@
       "description": "短视频创作助手 - 选题评估、Hook 设计、逐字稿生成。基于 Jenny Hoyos 方法论，10 个命令 + 3 个 skills。",
       "version": "1.0.0",
       "category": "productivity",
-      "homepage": "https://github.com/jisumanbu/build-your-system"
+      "homepage": "https://github.com/haoliucha/build-your-system"
     },
     {
       "name": "claude-notify",
@@ -28,7 +28,7 @@
       "description": "智能通知插件 - Claude Code 完成任务或需要权限时发送 macOS 通知，支持点击跳转（iTerm2 和 Cursor）。",
       "version": "1.0.0",
       "category": "utilities",
-      "homepage": "https://github.com/jisumanbu/build-your-system"
+      "homepage": "https://github.com/haoliucha/build-your-system"
     },
     {
       "name": "coding-anywhere",
@@ -36,7 +36,7 @@
       "description": "随时随地远程开发栈 - mosh + tmux + SSH 中继一键搭建，iPhone/iPad/任意客户端稳定连回家中 Mac。1 个 skill + 5 个配置模板，覆盖 ECS Relay 和 DDNS 直连。",
       "version": "1.0.0",
       "category": "productivity",
-      "homepage": "https://github.com/jisumanbu/build-your-system"
+      "homepage": "https://github.com/haoliucha/build-your-system"
     }
   ]
 }

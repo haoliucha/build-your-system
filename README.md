@@ -29,7 +29,7 @@ Claude 目标仍然按原来的 marketplace 结构工作。
 /plugin
 
 # Add Marketplace:
-jisumanbu/build-your-system
+haoliucha/build-your-system
 ```
 
 可安装目标：

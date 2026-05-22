@@ -14,7 +14,7 @@
 
 1. Clone 仓库
    ```bash
-   git clone https://github.com/jisumanbu/build-your-system.git
+   git clone https://github.com/haoliucha/build-your-system.git
    cd build-your-system
    ```
 
