@@ -18,7 +18,7 @@ Three root constraints:
 
 ## HARD-GATE
 
-Do NOT invoke `SlashCommand:/goal` until you have:
+Do NOT trigger /goal (via clipboard or subprocess) until you have:
 1. Completed triage (Step 1 below) — refuse if unsuitable
 2. Completed brainstorm (Step 2) — 5-7 questions, one at a time
 3. Generated /goal text via Step 3 generator rules
@@ -38,7 +38,7 @@ Create a TodoWrite todo for each:
 4. **Validate** — Run every checkbox
 5. **Decision log** — Write `docs/goal-prompts/<slug>.md`
 6. **Confirm** — Show user, get approval
-7. **Invoke** — Use SlashCommand tool
+7. **Invoke** — Clipboard handoff (+ optional subprocess)
 8. **Exit** — No monitoring, no further intervention
 
 ## Step 1 · Triage: When NOT to use /goal
@@ -147,7 +147,7 @@ These words also signal subjective judgment in user requests (Step 1 triage trig
 
 ## Step 5 · Decision Log
 
-Write to `docs/goal-prompts/<slug>.md` BEFORE invoking SlashCommand. Template:
+Write to `docs/goal-prompts/<slug>.md` BEFORE invoking /goal. Template:
 
 ```markdown
 # /goal: <one-line user intent>
@@ -186,15 +186,57 @@ If they say no → loop back. If they want to edit → return to Step 2 (brainst
 
 ## Step 7 · Invoke
 
-Use SlashCommand tool to fire `/goal <full prompt text>` in the current session.
+`/goal` cannot be triggered by a model tool call in Claude Code v2.1.146. The binary has no `SlashCommand` tool, the `Skill` tool explicitly rejects with "goal is a UI command, not a skill", and the `SlashCommand:/goal:*` permission pattern isn't parsed. This is by design — prevents self-recursive /goal loops.
 
-If SlashCommand tool not available (permission denied / not allow-listed):
-1. Print the /goal text in a copy-friendly code block
-2. Tell user: "Auto-trigger requires `SlashCommand:/goal:*` in settings. Copy the block above and paste after `/goal `."
+Two legitimate trigger paths. **Always set up Path A; offer Path B as an optional add-on.**
+
+### Path A · Clipboard handoff (primary, preserves interactivity)
+
+Write the /goal prompt to a file and copy it to the macOS clipboard so user can `Cmd+V` directly into any session input box:
+
+```bash
+cat > /tmp/goal-<slug>-prompt.txt <<'EOF'
+/goal <full text>
+EOF
+pbcopy < /tmp/goal-<slug>-prompt.txt
+pbpaste | head -c 80  # verify
+```
+
+Then tell user: "Prompt is in clipboard (N bytes). `Cmd+V` in this session input box (or a fresh one) and Enter."
+
+Path A preserves: mid-run `Ctrl-C` / `/goal clear`, live re-tuning, every-turn evaluator visibility.
+
+**Why clipboard, not just a code block**: `Cmd+V` is one keystroke. Selecting a multi-line code block in the terminal is fiddly and snags newlines. The marginal friction matters — if it's annoying, user types `/goal` from memory and drops the careful structure.
+
+On Linux substitute `xclip -selection clipboard` or `wl-copy`; on Windows WSL use `clip.exe`. The skill is macOS-default but the principle ports.
+
+### Path B · Subprocess fire-and-forget (optional, autonomous overnight)
+
+For genuinely hands-off runs (user going to bed):
+
+```bash
+claude --print --dangerously-skip-permissions "$(cat /tmp/goal-<slug>-prompt.txt)" > /tmp/goal-<slug>-run.log 2>&1
+```
+
+Launch via Bash with `run_in_background: true`. Non-interactive mode flips `r_.isInteractive=false` → `$c3.isEnabled=I8()||t8()=true`, activating the non-interactive `/goal` variant.
+
+**Disclose constraints to user**:
+- No mid-run interaction (Claude can't ask user anything; AskUserQuestion is unreachable)
+- New session_id; results don't appear in parent session transcript
+- Cold start ~60s (reloads hooks, skills, MCP servers)
+- Permission mode forced to fully open via `--dangerously-skip-permissions`; finer-grained deny rules don't carry over
+- Wrapper script exit code can lie: if your last command is `ls STATUS.md` and STATUS doesn't exist (the success path), exit = 1. Read the log before believing the failure label.
+
+### Don't do
+
+- Don't call `SlashCommand` as a model tool — doesn't exist in v2.1.146 binary (ToolSearch returns no match)
+- Don't invoke via `Skill(skill="goal")` — explicit rejection from the dispatcher
+- Don't bake `SlashCommand:/goal:*` permission into settings.json expecting magic — binary doesn't parse this pattern (no-op)
+- Don't expect `--allowed-tools SlashCommand` CLI flag to expose the tool — same parser, same no-op
 
 ## Step 8 · Exit
 
-After SlashCommand invocation: **stop participating**.
+After clipboard handoff / subprocess launch: **stop participating**.
 
 - Do NOT monitor evaluator reasons (consumes /goal's turn budget)
 - Do NOT interpret progress for the user (pollutes evaluator transcript)
@@ -219,6 +261,8 @@ Captured from 6 RED-phase baseline scenarios. Every excuse goes here.
 | "Agent will pick the right tool" | Bind explicitly. State the fallback prohibition. |
 | "I'll interpret evaluator reasons live to help" | No. Step 8: exit. Each interpretation burns /goal's turn budget. |
 | "Decision log is paperwork" | The log is the morning-recovery anchor when /goal fails at 3am. |
+| "SlashCommand tool will work if I add the right permission" | v2.1.146 binary has no SlashCommand tool. Don't burn cycles. Clipboard + subprocess are the only paths. |
+| "Subprocess alone is enough, skip clipboard" | Always set up clipboard first. Subprocess is fire-and-forget; clipboard preserves user agency to interrupt/retune. |
 
 ## Red Flags — STOP and restart
 
@@ -226,7 +270,7 @@ If you catch yourself thinking any of these, a rationalization is active. Go bac
 
 - "Just one subjective word slipped in, it's fine"
 - "User pushed back on brainstorm, I'll skip it"
-- "I'll invoke SlashCommand now, decision log later"
+- "I'll fire /goal now, decision log later"
 - "This /goal is good enough without a turn cap"
 - "Silent fallback to web search is fine if Playwright fails"
 - "I'll monitor a few turns just to make sure it's going OK"
