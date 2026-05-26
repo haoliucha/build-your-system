@@ -1,0 +1,6 @@
+{
+  "name": "goal-creator",
+  "version": "0.1.0",
+  "description": "/goal 提示词工程辅助 — 通过引导式 brainstorm 把模糊需求转成可验证的 /goal 命令,自动写决策 log 并在当前 session 触发。",
+  "skills": "./skills"
+}

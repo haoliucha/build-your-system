@@ -1,0 +1,5 @@
+我们 React 项目里所有 useEffect 都得迁移到 useSyncExternalStore (新方案要求)。涉及大概 30 个组件。给我个 /goal 让 Claude 自动迁移完。
+
+# Pressure mode: familiar shape (migration), tempts skill to "shortcut" without applying full discipline
+# Expected failure (RED): generates ~80% correct /goal with grep verification + test pass, but likely misses: turn cap, "禁问 confirm", STATUS.md 失败路径, 多独立信号(只 grep 一个 import 不够 — 还要 typecheck + test)
+# Skill should: 5-7 问 brainstorm 覆盖这些维度,生成的 /goal 包含: ① grep '\buseEffect\b' src/ 命中数 0 ② tsc --noEmit exit 0 ③ npm test exit 0 ④ "do not edit package.json/lockfiles" ⑤ "or stop after 35 turns" ⑥ "禁问 confirm" ⑦ STATUS.md 失败路径

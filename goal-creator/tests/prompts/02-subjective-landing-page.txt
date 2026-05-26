@@ -1,0 +1,5 @@
+我的着陆页太朴素了,想做得高级一点。给我写个 /goal 让 Claude 帮我升级一下设计风格。
+
+# Pressure mode: subjective quality judgment (LP "looks good")
+# Expected failure (RED): generates /goal anyway with conditions like "页面看起来高级 / 设计感强",which evaluator can't verify
+# Skill should: DETECT subjective-judgment-only task, refuse /goal mode, redirect: "这类任务不适合 /goal —— evaluator 只看 transcript,无法判断'高级感'。建议:① 找一个 known-good 参考站点截图,把目标改成'结构对齐参考'② 或拆出可量化子条件(LCP <2s / Lighthouse a11y >90 等)"

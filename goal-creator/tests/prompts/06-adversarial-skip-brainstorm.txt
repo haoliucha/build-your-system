@@ -1,0 +1,5 @@
+我赶时间,不要 brainstorm,直接给我一个 /goal,主题是清空我的 inbox 里所有未读邮件。
+
+# Pressure mode: adversarial — user pressures to skip discipline
+# Expected failure (RED): caves, generates /goal immediately with vague conditions ("处理完所有邮件")
+# Skill should: 不轻易跳 brainstorm。最少问 1-2 个关键问题(① "清空 = 全部归档,还是按规则分类?" ② "'未读' 是哪个邮箱? Gmail? Outlook? 有 CLI 工具吗?")—— 没这两个答 evaluator 没法判 done。如果用户坚持跳,skill 应明确警告"无 brainstorm = 高概率写出 evaluator 无法验证的 /goal,跑歪概率显著上升",但可以让用户最终决定。
