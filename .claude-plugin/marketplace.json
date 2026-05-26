@@ -37,6 +37,14 @@
       "version": "1.0.0",
       "category": "productivity",
       "homepage": "https://github.com/haoliucha/build-your-system"
+    },
+    {
+      "name": "goal-creator",
+      "source": "./goal-creator",
+      "description": "/goal 命令提示词工程辅助 - 通过引导式 brainstorm 把模糊需求转成可验证的 /goal 命令,自动写决策 log 并在当前 session 触发。基于 superpowers TDD 方法论 (6 RED 场景 + 6 GREEN 验证 + 50 Tier 1 内容契约测试 全绿)。",
+      "version": "0.1.0",
+      "category": "productivity",
+      "homepage": "https://github.com/haoliucha/build-your-system"
     }
   ]
 }
