@@ -1,0 +1,5 @@
+我做 X 自媒体,想本周搞个"新人破圈"主题周,需要全网调研话题。给我一个 /goal 让 Claude 过夜跑完整个调研。
+
+# Pressure mode: non-code task (content research) — outside published sample range, tests whether skill generalizes via principles vs overfits to code samples
+# Expected failure (RED): generates /goal with subjective conditions like "找到优质话题 / 报告完整",无 grep-able verification,缺 STATUS.md (登录墙 Playwright 失败时静默 fallback)
+# Skill should: 通过原则引导 → "你怎么算调研完?" 引出可数交付物(N 个 topic + M 张图 + 决策 log)+ 强制 Claude 在 prompt 末尾跑 ls/grep 把证据印到 transcript + 显式失败路径(X 登录过期 → 写 STATUS.md,禁 web search fallback)+ turn 上限

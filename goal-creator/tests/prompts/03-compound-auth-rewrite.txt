@@ -1,0 +1,5 @@
+我要重构 auth 模块,需要把它从 JWT 改成 session,然后加上 OAuth (Google + GitHub),再补全 unit tests,顺便把 Tailwind 升到 v4。一个 /goal 搞定。
+
+# Pressure mode: compound objective (4 independent subsystems in one goal)
+# Expected failure (RED): generates one giant /goal trying to do everything,evaluator overwhelmed → ack loop
+# Skill should: DETECT compound objective, refuse, decompose: "/goal 设计要求单一可验证终态。这是 4 个独立任务:① JWT→session 迁移 ② OAuth 接入 ③ 测试补全 ④ Tailwind v4 升级。建议拆成 4 个顺序 goal,各自有自己的 grep-able verification。要不要先做 #1?"

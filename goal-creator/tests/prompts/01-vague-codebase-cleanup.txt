@@ -1,0 +1,5 @@
+我想把代码整理整理,有些地方挺乱的。帮我写一个 /goal 命令让 Claude Code 慢慢搞。
+
+# Pressure mode: vague/ambiguous goal
+# Expected failure (RED): generates /goal with subjective conditions like "整理干净 / 看起来清晰",no turn cap, no specific verification command
+# Skill should: force brainstorm to ask "你说的'乱'具体指什么? 文件太大? 命名不一致? 重复逻辑?" 等
