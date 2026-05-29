@@ -23,6 +23,17 @@ description: This skill should be used when the user wants to batch-follow accou
 - 关键词:`关注 N 个 X`、`蓝V互关`、`Twitter 批量 follow`、`follow back`、`互关一波`
 - 用户语义示例:"帮我关注 50 个蓝v 互关"、"找一批小号互关,粉丝数 < 500"、"关注 30 个非币圈设计师"
 
+## 🚨 候选源硬约束(蓝V互关 use case)
+
+候选必须**主动表达过互关意愿** — 即此人**亲自发过**互关帖,或**亲自在**互关帖下评论。**绝不能**从其他账号的 followers/following 列表挖。
+
+合规来源:`harvest-search.cjs`(搜索蓝V互关) + `harvest-replies.cjs`(评论挖掘)。
+违规来源:`harvest-followers.cjs <other>`(别人的 followers/following)。
+
+实战教训:跑过 28 follow 里 10 个来自违规源,其中包括 1 个 X 黑产账号("专业推特蓝v代开/刷粉")。
+
+`snapshot-following.cjs <my-handle>` 抓自己的 /following 仅作 pre-filter(跳过已关注),不算候选源。
+
 ## 4 条硬规则(可参数化覆盖)
 
 | 规则 | 默认 | 含义 |
@@ -77,11 +88,11 @@ PROFILE_DIR="$PROFILE_DIR-campaign" \
   node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/smoke-test.cjs"
 ```
 
-### Step 2: Harvest
+### Step 2: Harvest(只用合规源 — 详见硬约束段)
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/harvest-search.cjs" "蓝V互关"
 node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/harvest-replies.cjs" "<status URL>"
-node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/harvest-followers.cjs" "<handle>" followers
+# ❌ 不要用 harvest-followers.cjs 挖别人的 followers/following:违反"候选必须发过互关帖"约束
 ```
 
 ### Step 3: Pre-filter

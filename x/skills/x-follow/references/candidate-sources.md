@@ -1,20 +1,38 @@
-# 候选挖掘的 9 种策略 + yield 估计
+# 候选挖掘策略 + yield 估计
 
 候选池的多样性直接决定 campaign 能否凑够 target。本次实战 yield 数据如下,可用作 capacity planning。
 
-## 策略对比表
+## 🚨 硬约束:候选必须**主动表达过互关意愿**
+
+蓝V互关 use case 下,候选**只能**来自 蓝V互关 搜索/评论 — 即此人**亲自发过**互关帖,或**亲自在**互关帖下评论。这是 spec 的硬约束,不可妥协。
+
+不要从其他账号的 followers/following 列表挖候选 — 那些人可能根本没参与过互关 culture。本次实战教训:28 个 follow 里 10 个来自非合规源,其中 1 个是 "**专业推特蓝V代开/刷粉**" 黑产账号(@braggartw1)。
+
+## 合规策略对比表(✅ 用这些)
 
 | # | 策略 | 命令 / URL | 单次 yield(原始 → 蓝V 非币圈 NEW) | 适用阶段 |
 |---|---|---|---|---|
 | 1 | 主搜索:`蓝V互关` latest | `harvest-search.cjs "蓝V互关"` | 100 → 65 → 50 | 启动期 |
 | 2 | 搜索变种:`蓝V互粉` | `harvest-search.cjs "蓝V互粉"` | 60 → 40 → 15 | 启动期补充 |
 | 3 | 搜索变种:`蓝V互fo` | `harvest-search.cjs "蓝V互fo"` | 50 → 30 → 10 | 启动期补充 |
-| 4 | 高级搜索 OR:`(蓝V互关 OR 蓝V互粉 OR 蓝V互fo) -filter:replies` | `harvest-search.cjs "..."` | 200 → 162 → 17 | 启动期 |
-| 5 | `蓝V filter:blue_verified` 全平台 | `harvest-search.cjs "..."` | 106 → 105 → 20 | 中期 |
-| 6 | 评论挖掘(top 帖,reply > 100) | `harvest-replies.cjs <status URL>` | 30-70 → 18-45 → 5-15 | 中期 |
-| 7 | 评论挖掘(中等帖,reply 20-50) | 同上 | 10-25 → 6-18 → 3-10 | 中后期 |
-| 8 | 小账号 followers 挖 | `harvest-followers.cjs <handle> followers` | 30-50 → 25-40 → 5-30 | 后期补给 |
-| 9 | 小账号 following 挖 | `harvest-followers.cjs <handle> following` | 50-200 → 40-150 → 10-50 | 后期补给 |
+| 4 | 高级搜索 OR | `harvest-search.cjs "(蓝V互关 OR 蓝V互粉 OR 蓝V互fo) -filter:replies since:YYYY-MM-DD"` | 200 → 162 → 17 | 启动期 |
+| 5 | 评论挖掘(top 帖) | `harvest-replies.cjs <status URL>` | 30-150 → 20-100 → 5-60 | 中期(主力) |
+| 6 | 评论挖掘(中等帖,reply 20-50) | 同上 | 10-25 → 6-18 → 3-10 | 中后期 |
+| 7 | 搜索 hot tab 找 top 帖 URL | `harvest-search.cjs "蓝V互关" --tab top` | (用于找 #5 的输入,不直接出候选) | 中期 |
+
+## ❌ 禁用策略(蓝V互关 use case 下绝不用)
+
+| 策略 | 工具 | 为什么不行 |
+|---|---|---|
+| 别人的 `/followers` 挖掘 | `harvest-followers.cjs <handle> followers` | followers 不一定参与过互关,违反 spec |
+| 别人的 `/following` 挖掘 | `harvest-followers.cjs <handle> following` | 同上,且可能挖到对方的 spam 关注 |
+| X 推荐侧栏 / "Who to follow" | 任何方式 | 推荐算法选的,与互关 culture 无关 |
+
+`harvest-followers.cjs` 工具本身仍保留 — 如果用户**明确**想做"关注某 KOL 的 followers"这种 use case(非 蓝V互关 preset),可用,但需明确告知用户"此候选不保证有互关意愿"。
+
+## 自己的 /following:用作 skip set 不是候选源
+
+`snapshot-following.cjs <my-handle>` 抓自己的 /following 列表,**仅用于预过滤**(把已关注的加入 skip set 避免重复访问),**不是**候选源。本次实战这一步省了 30% 时间。
 
 ## yield 折损规律
 
@@ -36,11 +54,16 @@
 4. harvest-search.cjs "蓝V互粉"           # 补 +15
 5. harvest-search.cjs "蓝V互fo"           # 补 +10
 6. harvest-search.cjs <OR query>          # 补 +17
-7. harvest-replies.cjs <top post 1>       # 补 +30
+7. harvest-replies.cjs <top post 1>       # 补 +30(主力补给)
 8. harvest-replies.cjs <top post 2>       # 补 +20
+9. harvest-replies.cjs <top post 3>       # 补 +15
 ... 期间不断挖,campaign 自动 reload queue.json
-9. harvest-followers.cjs <已 follow 小号> # 后期补给
 ```
+
+如果搜索 + 评论挖到深处仍不够,**不要** fallback 到 followers/following 列表。改用:
+- 换更多搜索变种(`蓝v` 大小写 / `互关必回` / `认证互关`)
+- `since:` 限近 24h(找最新发帖人,网络新血)
+- `蓝V filter:blue_verified` 全平台 + 时间窗(发现新晋蓝V)
 
 ## 高 yield post 识别
 
@@ -52,9 +75,11 @@
 
 最近 reply 高的 蓝V互关 帖子可通过 `harvest-search.cjs "蓝V互关" hot` 或在 search f=top 找。
 
-## "搜索 →  评论 → 网络"金字塔
+## "搜索 → 评论"双层结构
 
-数据上,**搜索是宽广基础**(占总候选 60%),**评论是质量补给**(30%),**网络是边际优化**(10%)。但小号网络挖往往出最纯净的非币圈候选,值得后期投入。
+数据上,**搜索是宽广基础**(占总候选 70%),**评论是质量补给**(30%)。这两层都满足"候选必须发过互关帖"的硬约束。**不要**追加"网络层"(followers/following 挖) — 这一层违反 spec。
+
+如果搜索 + 评论枯竭,改用更激进的搜索(如降低 followers_max 阈值放宽筛选,或换关键词如 `互关必回`),而不是降低候选源标准。
 
 ## 注意
 
