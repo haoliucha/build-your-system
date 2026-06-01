@@ -14,6 +14,21 @@ version: 1.0.0
 - 关键词:`关注 N 个 X`、`蓝V互关`、`Twitter 批量 follow`、`follow back`、`互关一波`
 - 用户语义示例:"帮我关注 50 个蓝v 互关"、"找一批小号互关,粉丝数 < 500"、"关注 30 个非币圈设计师"
 
+## 🚨 候选源硬约束(蓝V互关 use case)
+
+候选必须**主动表达过互关意愿** — 即其本人发过 蓝V互关 相关帖子,或在此类帖子下评论。**绝不能**从其他账号的 followers/following 列表挖,即使被挖账号是你已经关注的小号:
+
+| 候选源 | 是否合规 | 说明 |
+|---|---|---|
+| `harvest-search.cjs "蓝V互关"` 等搜索 | ✅ 合规 | 发帖人主动用了 蓝V互关 hashtag |
+| `harvest-replies.cjs <status URL>` | ✅ 合规 | 评论者主动在 蓝V互关 帖子下回复 |
+| `snapshot-following.cjs <my-handle>` | ✅ 合规(仅作 skip set) | 自己的 /following 列表,用来预过滤已关注的,**不是**候选源 |
+| `harvest-followers.cjs <other>` 别人的 /followers 或 /following | ❌ **不合规**(蓝V互关 场景) | 这些人**不一定**发过互关帖子,他们只是被某人关注/关注某人 |
+
+**违规后果**:跑过一次 100 follow / 3h 实战发现 28 个 follow 里 10 个来自非合规源 — 其中包括 1 个 X 黑产账号("专业推特蓝v代开/刷粉")。
+
+例外:如果是**其他 use case**(如关注某 KOL 的 followers),`harvest-followers.cjs` 可用,但必须明确告知用户"此候选不保证有互关意愿"。
+
 ## 4 条硬规则(可参数化覆盖)
 
 | 规则 | 默认 | 含义 |
@@ -85,17 +100,16 @@ PROFILE_DIR="$PROFILE_DIR-campaign" \
 
 ### Step 2: Harvest 候选池(多源)
 
-详见 `references/candidate-sources.md`(9 种策略 + yield 估计)。
+详见 `references/candidate-sources.md`。
 
-主要策略:
+合规策略(只用这些):
 - **搜索变种**:`蓝V互关` / `蓝V互粉` / `蓝V互fo` / `蓝V filter:blue_verified`
 - **评论挖**:挑 top-engagement 帖子(reply > 50)滚动评论
-- **网络挖**:已 follow 小账号的 followers/following
+- ❌ **不要**用 `harvest-followers.cjs` 挖别人的 followers/following — 违反"候选必须发过互关帖"约束
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/harvest-search.cjs" "蓝V互关" > /tmp/cand-1.json
 node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/harvest-replies.cjs" "https://x.com/SomeUser/status/123" > /tmp/cand-2.json
-node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/harvest-followers.cjs" "lanchen4588" followers > /tmp/cand-3.json
 ```
 
 ### Step 3: Pre-filter(已关注 + crypto 启发式)

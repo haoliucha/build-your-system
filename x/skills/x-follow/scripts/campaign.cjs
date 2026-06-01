@@ -123,11 +123,13 @@ function buildVerifyJs(cfg) {
     });
     const pc = (v) => {
       if (!v) return -1;
-      const m = v.match(/([\\d,.]+)([万千KMB]?)/);
+      // 单位:亿(1e8),万(1e4),千/K(1e3),M(1e6),B(1e9)
+      const m = v.match(/([\\d,.]+)\\s*([万千亿KMB])?/);
       if (!m) return -1;
       let n = parseFloat(m[1].replace(/,/g, ''));
       const u = m[2];
-      if (u === '万') n *= 10000;
+      if (u === '亿') n *= 1e8;
+      else if (u === '万') n *= 10000;
       else if (u === 'K' || u === '千') n *= 1000;
       else if (u === 'M') n *= 1e6;
       else if (u === 'B') n *= 1e9;

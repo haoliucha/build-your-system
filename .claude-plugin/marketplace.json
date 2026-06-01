@@ -50,7 +50,7 @@
       "name": "x",
       "source": "./x",
       "description": "X (Twitter) 增长工具集 - 精准批量关注、互关 campaign。参数化筛选(蓝V/粉丝数/bio 关键词) + 4 层 anti-风控(浏览器指纹/行为节奏/异常感知/不可逆操作保护)。基于一次真实 100/100 follow campaign 实战提炼。",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "category": "productivity",
       "homepage": "https://github.com/haoliucha/build-your-system/tree/main/x"
     }
