@@ -92,7 +92,7 @@ quiet_hours: [2, 7]          # 凌晨 2-7 点暂停,默认空
 
 ## 第 3 层:异常感知(主动检测+短路退出)
 
-详见 `scripts/detect-anomaly.cjs`。每个 follow **后**都跑一次。
+详见 `scripts/lib/anomaly.cjs`。每个 follow **后**都跑一次。
 
 ### 检测信号
 

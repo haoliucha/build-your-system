@@ -174,7 +174,7 @@ LocalStorage 跨页面持久化(同 origin),所以 X 内部导航都能复用。
 **原因**:harvest 不够。
 
 **修复**:
-1. 临时:挖更多 source(`harvest-replies.cjs` 多挖几个 top post)
+1. 临时:挖更多 source(`harvest.cjs replies` 多挖几个 top post)
 2. 长期:在 `presets.md` 调整 search_queries / followers_max 放宽筛选
 
 ---
