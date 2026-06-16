@@ -12,23 +12,23 @@
 
 | # | 策略 | 命令 / URL | 单次 yield(原始 → 蓝V 非币圈 NEW) | 适用阶段 |
 |---|---|---|---|---|
-| 1 | 主搜索:`蓝V互关` latest | `harvest-search.cjs "蓝V互关"` | 100 → 65 → 50 | 启动期 |
-| 2 | 搜索变种:`蓝V互粉` | `harvest-search.cjs "蓝V互粉"` | 60 → 40 → 15 | 启动期补充 |
-| 3 | 搜索变种:`蓝V互fo` | `harvest-search.cjs "蓝V互fo"` | 50 → 30 → 10 | 启动期补充 |
-| 4 | 高级搜索 OR | `harvest-search.cjs "(蓝V互关 OR 蓝V互粉 OR 蓝V互fo) -filter:replies since:YYYY-MM-DD"` | 200 → 162 → 17 | 启动期 |
-| 5 | 评论挖掘(top 帖) | `harvest-replies.cjs <status URL>` | 30-150 → 20-100 → 5-60 | 中期(主力) |
+| 1 | 主搜索:`蓝V互关` latest | `harvest.cjs search "蓝V互关"` | 100 → 65 → 50 | 启动期 |
+| 2 | 搜索变种:`蓝V互粉` | `harvest.cjs search "蓝V互粉"` | 60 → 40 → 15 | 启动期补充 |
+| 3 | 搜索变种:`蓝V互fo` | `harvest.cjs search "蓝V互fo"` | 50 → 30 → 10 | 启动期补充 |
+| 4 | 高级搜索 OR | `harvest.cjs search "(蓝V互关 OR 蓝V互粉 OR 蓝V互fo) -filter:replies since:YYYY-MM-DD"` | 200 → 162 → 17 | 启动期 |
+| 5 | 评论挖掘(top 帖) | `harvest.cjs replies <status URL>` | 30-150 → 20-100 → 5-60 | 中期(主力) |
 | 6 | 评论挖掘(中等帖,reply 20-50) | 同上 | 10-25 → 6-18 → 3-10 | 中后期 |
-| 7 | 搜索 hot tab 找 top 帖 URL | `harvest-search.cjs "蓝V互关" --tab top` | (用于找 #5 的输入,不直接出候选) | 中期 |
+| 7 | 搜索 hot tab 找 top 帖 URL | `harvest.cjs search "蓝V互关" --tab top` | (用于找 #5 的输入,不直接出候选) | 中期 |
 
 ## ❌ 禁用策略(蓝V互关 use case 下绝不用)
 
 | 策略 | 工具 | 为什么不行 |
 |---|---|---|
-| 别人的 `/followers` 挖掘 | `harvest-followers.cjs <handle> followers` | followers 不一定参与过互关,违反 spec |
-| 别人的 `/following` 挖掘 | `harvest-followers.cjs <handle> following` | 同上,且可能挖到对方的 spam 关注 |
+| 别人的 `/followers` 挖掘 | `harvest.cjs followers <handle> followers` | followers 不一定参与过互关,违反 spec |
+| 别人的 `/following` 挖掘 | `harvest.cjs followers <handle> following` | 同上,且可能挖到对方的 spam 关注 |
 | X 推荐侧栏 / "Who to follow" | 任何方式 | 推荐算法选的,与互关 culture 无关 |
 
-`harvest-followers.cjs` 工具本身仍保留 — 如果用户**明确**想做"关注某 KOL 的 followers"这种 use case(非 蓝V互关 preset),可用,但需明确告知用户"此候选不保证有互关意愿"。
+`harvest.cjs followers` 工具本身仍保留 — 如果用户**明确**想做"关注某 KOL 的 followers"这种 use case(非 蓝V互关 preset),可用,但需明确告知用户"此候选不保证有互关意愿"。
 
 ## 自己的 /following:用作 skip set 不是候选源
 
@@ -48,15 +48,15 @@
 ## 推荐挖掘顺序(本次实战验证)
 
 ```
-1. harvest-search.cjs "蓝V互关"           # 100 候选
+1. harvest.cjs search "蓝V互关"           # 100 候选
 2. snapshot-following.cjs MY_HANDLE       # 抓 /following 进 skip
 3. ↓ campaign 开始跑,候选 ~50 个
-4. harvest-search.cjs "蓝V互粉"           # 补 +15
-5. harvest-search.cjs "蓝V互fo"           # 补 +10
-6. harvest-search.cjs <OR query>          # 补 +17
-7. harvest-replies.cjs <top post 1>       # 补 +30(主力补给)
-8. harvest-replies.cjs <top post 2>       # 补 +20
-9. harvest-replies.cjs <top post 3>       # 补 +15
+4. harvest.cjs search "蓝V互粉"           # 补 +15
+5. harvest.cjs search "蓝V互fo"           # 补 +10
+6. harvest.cjs search <OR query>          # 补 +17
+7. harvest.cjs replies <top post 1>       # 补 +30(主力补给)
+8. harvest.cjs replies <top post 2>       # 补 +20
+9. harvest.cjs replies <top post 3>       # 补 +15
 ... 期间不断挖,campaign 自动 reload queue.json
 ```
 
@@ -73,7 +73,7 @@
 - **发帖 < 24h**(commenters 还在线 = profile 数据准)
 - **OP follower < 5000**(避开大 KOL 的回粉 spam)
 
-最近 reply 高的 蓝V互关 帖子可通过 `harvest-search.cjs "蓝V互关" hot` 或在 search f=top 找。
+最近 reply 高的 蓝V互关 帖子可通过 `harvest.cjs search "蓝V互关" hot` 或在 search f=top 找。
 
 ## "搜索 → 评论"双层结构
 

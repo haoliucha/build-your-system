@@ -1,12 +1,21 @@
 ---
 name: x-follow
 description: This skill should be used when the user wants to batch-follow accounts on X (Twitter) matching precise criteria (verified status, follower count, following count, bio keywords). Default preset targets "蓝V互关" (blue-verified mutual follow culture). Triggers on phrases like "X 关注 N 个", "X 互关", "蓝V互关", "Twitter 批量 follow", "follow back campaign", "帮我关注 50 个蓝v".
-version: 1.0.0
+version: 1.1.0
 ---
 
 # x-follow:在 X 上精准批量关注
 
 把"蓝V互关 follow campaign"这件事做对、做稳。**3 小时 100 follow / 0 风控**的实战流程,参数化,可适配任何精准关注需求。
+
+> **架构与开发文档见 [`README.md`](./README.md)**(pipeline 图、模块依赖、异常状态机、测试)。
+> **推荐入口 = 一条龙 `run.sh`**:它把 smoke → harvest(凑够候选)→ build-queue → campaign(watchdog)→ verify+补关 → 报告 编排成「遇错自恢复」的流水线,真异常(验证码/限流/登录跳转/账号受限)**自动停并写 ALERT.txt**。手动分步(下方 5 步)用于调试或特殊场景。
+>
+> ```bash
+> NODE_PATH=~/.config/playwright-mcp-server/node_modules \
+>   TARGET=10 MY_HANDLE=<you> JOB_DIR=/tmp/xf-run bash run.sh
+> # 币圈/web3 默认已放开(FILTER_CRYPTO=0);要过滤掉币圈/web3 改 FILTER_CRYPTO=1
+> ```
 
 ## 何时触发
 
@@ -20,14 +29,14 @@ version: 1.0.0
 
 | 候选源 | 是否合规 | 说明 |
 |---|---|---|
-| `harvest-search.cjs "蓝V互关"` 等搜索 | ✅ 合规 | 发帖人主动用了 蓝V互关 hashtag |
-| `harvest-replies.cjs <status URL>` | ✅ 合规 | 评论者主动在 蓝V互关 帖子下回复 |
+| `harvest.cjs search "蓝V互关"` 等搜索 | ✅ 合规 | 发帖人主动用了 蓝V互关 hashtag |
+| `harvest.cjs replies <status URL>` | ✅ 合规 | 评论者主动在 蓝V互关 帖子下回复 |
 | `snapshot-following.cjs <my-handle>` | ✅ 合规(仅作 skip set) | 自己的 /following 列表,用来预过滤已关注的,**不是**候选源 |
-| `harvest-followers.cjs <other>` 别人的 /followers 或 /following | ❌ **不合规**(蓝V互关 场景) | 这些人**不一定**发过互关帖子,他们只是被某人关注/关注某人 |
+| `harvest.cjs followers <other>` 别人的 /followers 或 /following | ❌ **不合规**(蓝V互关 场景) | 这些人**不一定**发过互关帖子,他们只是被某人关注/关注某人 |
 
 **违规后果**:跑过一次 100 follow / 3h 实战发现 28 个 follow 里 10 个来自非合规源 — 其中包括 1 个 X 黑产账号("专业推特蓝v代开/刷粉")。
 
-例外:如果是**其他 use case**(如关注某 KOL 的 followers),`harvest-followers.cjs` 可用,但必须明确告知用户"此候选不保证有互关意愿"。
+例外:如果是**其他 use case**(如关注某 KOL 的 followers),`harvest.cjs followers` 可用,但必须明确告知用户"此候选不保证有互关意愿"。
 
 ## 4 条硬规则(可参数化覆盖)
 
@@ -36,7 +45,7 @@ version: 1.0.0
 | `verified_required` | `true` | 必须是蓝V (X premium 认证账号) |
 | `following_gt_followers` | `true` | following 数 > followers 数(互关意向高) |
 | `followers_max` | `1100` | 粉丝数上限(留 ~10% 容差,严格用户可调至 1000) |
-| `bio_blacklist` | crypto/web3/币圈/合约/空投/... | bio 含任一关键词则拒(默认 ~60 词) |
+| `bio_blacklist` | crypto/web3/币圈/合约/空投/... | bio 含任一关键词则拒(~60 词)。**经 `run.sh` 跑时默认关闭**(`FILTER_CRYPTO=0`,放开币圈/web3);`FILTER_CRYPTO=1` 开启 |
 
 可选附加:`bio_whitelist`(必须含某词)、`my_handle`(预过滤已关注)。
 
@@ -73,7 +82,7 @@ long_break_every: 12
 long_break_ms: 180000
 click_pre_delay_min_ms: 300
 click_pre_delay_max_ms: 700
-post_click_settle_ms: 2500
+post_click_settle_ms: 6000          # 6s(原 2500):高延迟下让按钮可靠翻成「正在关注」,减少 followed_assumed 虚报
 
 # ULTRA-SAFE 选项(默认关)
 max_follows_per_hour: 0           # 0=不限,30 是安全值
@@ -105,11 +114,13 @@ PROFILE_DIR="$PROFILE_DIR-campaign" \
 合规策略(只用这些):
 - **搜索变种**:`蓝V互关` / `蓝V互粉` / `蓝V互fo` / `蓝V filter:blue_verified`
 - **评论挖**:挑 top-engagement 帖子(reply > 50)滚动评论
-- ❌ **不要**用 `harvest-followers.cjs` 挖别人的 followers/following — 违反"候选必须发过互关帖"约束
+- ❌ **不要**用 `harvest.cjs followers` 挖别人的 followers/following — 违反"候选必须发过互关帖"约束
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/harvest-search.cjs" "蓝V互关" > /tmp/cand-1.json
-node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/harvest-replies.cjs" "https://x.com/SomeUser/status/123" > /tmp/cand-2.json
+node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/harvest.cjs" search "蓝V互关" > /tmp/cand-1.json
+node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/harvest.cjs" replies "https://x.com/SomeUser/status/123" > /tmp/cand-2.json
+# 合并/去重/去 skip(followed∪rejected)/币圈开关 → queue.json:
+JOB_DIR=/tmp NOCRYPTO=1 node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/build-queue.cjs"
 ```
 
 ### Step 3: Pre-filter(已关注 + crypto 启发式)
@@ -136,11 +147,21 @@ node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/campaign.cjs"
 
 主脚本内部:
 - 加载 `queue.json` + `tracker.json`(支持热加 queue.json,每 N follow 后 reload)
-- 对每个候选:goto profile → 等齐 UserName + button → 4 条规则验证 → click follow → 3-retry verify → 写盘
+- 对每个候选:`gotoRobust` profile(429/延迟容错)→ 等齐 UserName + button → 4 条规则验证 → click follow → verify → 写盘
 - 节奏:每 follow 后 25-55s 随机;每 12 follow 后 long break 3 min
-- 异常感知(`detect-anomaly.cjs`):CAPTCHA / RATE_LIMIT / LOGIN_REDIRECT / ACCOUNT_RESTRICTED → exit + ALERT.txt
+- 异常感知(`lib/anomaly.cjs`,匹配只在页面 chrome、排除推文正文):CAPTCHA / RATE_LIMIT / LOGIN_REDIRECT / ACCOUNT_RESTRICTED → exit + ALERT.txt
 
 详见 `references/verify-logic.md` 和 `references/pacing-anti-detection.md`。
+
+### Step 4.5: Verify(复核 followed_assumed,必做)
+
+`followed_assumed`(点了但 DOM 没及时翻成「正在关注」)会**虚报**。跑完复核,把没成的踢回 queue 重关,直到「确认数 == target」:
+
+```bash
+FIX_TRACKER=1 PROFILE_DIR="$PROFILE_DIR-campaign" \
+  node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/verify-follows.cjs" --assumed
+# 若 failed>0 且 followed<target,再跑一次 campaign.cjs 补关(run.sh 自动做这一步)
+```
 
 ### Step 5: Cleanup
 
@@ -204,12 +225,14 @@ mv tracker.json campaign.log "$CAMPAIGN_ARCHIVE/"
 - `references/presets.md` — 默认 preset + 自定义 preset 示例
 - `references/troubleshooting.md` — 12 个常见错误 + 修复
 
-## 脚本
+## 脚本(架构详见 `README.md`)
 
-- `scripts/campaign.cjs` — 主关注 loop(verify + follow + pacing + resume)
+- `run.sh` — **一条龙编排入口**(smoke→harvest→build→campaign→verify→报告,遇错自恢复)
+- `scripts/campaign.cjs` — 主关注 loop(gotoRobust + verify + follow + pacing + 异常自停 + resume)
+- `scripts/harvest.cjs` — 候选抓取,`search|replies|followers` 三模式(gotoRobust)
+- `scripts/build-queue.cjs` — 候选 → 去重/去 skip(followed∪rejected)/币圈开关 → queue.json
+- `scripts/verify-follows.cjs` — 复核 followed_assumed 是否真「正在关注」,可踢回重关
+- `scripts/snapshot-following.cjs` — 抓自己 /following 进 skip set(UserCell 等待 + avatar 提取)
 - `scripts/smoke-test.cjs` — 启动前 6 项体检
-- `scripts/detect-anomaly.cjs` — 异常感知(被 campaign 复用)
-- `scripts/harvest-search.cjs` — X 搜索页提取候选
-- `scripts/harvest-replies.cjs` — 帖子评论区提取
-- `scripts/harvest-followers.cjs` — /followers 或 /following 提取
-- `scripts/snapshot-following.cjs` — 抓自己 /following 进 skip set
+- `scripts/lib/` — 共享纯逻辑:`nav-helper`(gotoRobust)/`anomaly`/`filters`/`skipset`
+- `tests/run-tests.cjs` — 零依赖单测/集成测试(`node tests/run-tests.cjs`)
