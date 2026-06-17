@@ -52,6 +52,19 @@ HARVEST_SCROLLS="${HARVEST_SCROLLS:-18}"
 MAX_CAMPAIGN_ATTEMPTS="${MAX_CAMPAIGN_ATTEMPTS:-12}"
 NEED=$(( TARGET * CAND_MULT ))
 
+# REEVAL_REASONS: reject reasons from PRIOR runs that this run's (more permissive) config makes
+# eligible again, so the reason-aware skip-set lets them back into the pool instead of burning
+# them forever. Transient errors (eval_error) are always retried by skipset.cjs regardless.
+#   - crypto allowed (FILTER_CRYPTO=0) -> re-evaluate prior reject:blacklist(crypto) handles
+#   - follower cap raised above 1100   -> re-evaluate prior reject:fers>… handles
+if [ -z "${REEVAL_REASONS+x}" ]; then
+  _reeval=""
+  [ "$FILTER_CRYPTO" = "0" ] && _reeval="${_reeval}reject:blacklist,"
+  if [ "$FERS_MAX" -gt 1100 ] 2>/dev/null; then _reeval="${_reeval}reject:fers>,"; fi
+  REEVAL_REASONS="${_reeval%,}"
+fi
+export REEVAL_REASONS
+
 mkdir -p "$JOB_DIR"
 TRACKER="$JOB_DIR/tracker.json"
 QUEUE="$JOB_DIR/queue.json"
@@ -86,13 +99,18 @@ cleanup_locks
 if [ ! -f "$TRACKER" ]; then
   say "building skip-set from prior trackers ($SKIP_GLOB)..."
   node -e "
-    const {buildSkipSetFromPaths}=require('$SCRIPTS/lib/skipset.cjs');
+    const {resolveRejections}=require('$SCRIPTS/lib/skipset.cjs');
     const fs=require('fs');
     const glob=require('child_process').execSync('ls $SKIP_GLOB 2>/dev/null || true').toString().trim().split('\n').filter(Boolean);
-    const skip=buildSkipSetFromPaths(glob);
-    const t={followed:[],rejected:skip.map(h=>({h,r:'pre_existing'})),stats:{profiles_checked:0,follow_success:0}};
+    const trackers=glob.map(p=>{try{return JSON.parse(fs.readFileSync(p,'utf8'))}catch{return null}}).filter(Boolean);
+    // Preserve the ORIGINAL reject reason per handle (not flattened to 'pre_existing') so the
+    // reason-aware skip can recover config-bound/transient handles when the rules change.
+    // seed:1 marks a pre-existing (carried-over) record so the final summary can tell it apart
+    // from rejects this run actually produces. skipset/build-queue/campaign ignore the field.
+    const rej=resolveRejections(trackers).map(r=>({h:r.h,r:r.r,seed:1}));
+    const t={followed:[],rejected:rej,stats:{profiles_checked:0,follow_success:0}};
     fs.writeFileSync('$TRACKER',JSON.stringify(t));
-    process.stderr.write('[skipset] prior trackers='+glob.length+' skip='+skip.length+'\n');
+    process.stderr.write('[skipset] prior trackers='+trackers.length+' skip='+rej.length+' reeval=['+(process.env.REEVAL_REASONS||'')+']\n');
   "
 fi
 say "starting followed=$(followed)/$TARGET, skip-set=$(node -e "console.log((JSON.parse(require('fs').readFileSync('$TRACKER')).rejected||[]).length)")"
@@ -173,7 +191,8 @@ say "=== DONE === followed=$(followed)/$TARGET  (tracker: $TRACKER)"
 node -e "
   const t=JSON.parse(require('fs').readFileSync('$TRACKER'));
   const a={}; t.followed.forEach(x=>a[x.action]=(a[x.action]||0)+1);
-  const nr=(t.rejected||[]).filter(r=>r.r!=='pre_existing');
+  // count only rejects produced THIS run (seeded carry-over records are marked seed:1)
+  const nr=(t.rejected||[]).filter(r=>!r.seed && r.r!=='pre_existing');
   const rc={}; nr.forEach(r=>{const k=r.r.split('(')[0];rc[k]=(rc[k]||0)+1});
   console.log('  follows:', t.followed.length, 'actions:', JSON.stringify(a));
   console.log('  new rejects:', nr.length, JSON.stringify(rc));

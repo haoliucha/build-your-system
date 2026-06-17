@@ -14,7 +14,7 @@ const { execFileSync } = require('child_process');
 
 const SCRIPTS = path.join(__dirname, '..', 'scripts');
 const { parseCount, isCryptoHandle, backoffMs, decide, CRYPTO_TOKENS } = require(path.join(SCRIPTS, 'lib', 'filters.cjs'));
-const { buildSkipSet } = require(path.join(SCRIPTS, 'lib', 'skipset.cjs'));
+const { buildSkipSet, shouldSkipReason, resolveRejections } = require(path.join(SCRIPTS, 'lib', 'skipset.cjs'));
 const { classifyAnomaly } = require(path.join(SCRIPTS, 'lib', 'anomaly.cjs'));
 
 let pass = 0, fail = 0;
@@ -80,6 +80,63 @@ test('accepts handle or h on either side', () => {
   assert.deepStrictEqual(got, ['f1', 'r1']);
 });
 
+// ----------------------------------------------------- reason-aware skip (FIX)
+// The bug: skip-set unioned followed ∪ ALL rejected regardless of WHY rejected, so
+// config-dependent rejects (crypto/fers) and transient errors were burned forever.
+group('buildSkipSet (reason-aware — the depletion fix)');
+test('crypto reject re-eligible when reeval opens reject:blacklist', () =>
+  assert.deepStrictEqual(
+    buildSkipSet([{ rejected: [{ h: 'cryptodude', r: 'reject:blacklist(web3)' }] }], { reeval: ['reject:blacklist'] }),
+    []));
+test('crypto reject still skipped with no reeval', () =>
+  assert.deepStrictEqual(
+    buildSkipSet([{ rejected: [{ h: 'cryptodude', r: 'reject:blacklist(web3)' }] }]),
+    ['cryptodude']));
+test('eval_error always retried (transient) even without reeval', () =>
+  assert.deepStrictEqual(
+    buildSkipSet([{ rejected: [{ h: 'ghosted', r: 'eval_error:profile_unavailable' }] }]),
+    []));
+test('fers>1100 re-eligible when reeval opens reject:fers> prefix', () =>
+  assert.deepStrictEqual(
+    buildSkipSet([{ rejected: [{ h: 'whale', r: 'reject:fers>1100(9000)' }] }], { reeval: ['reject:fers>'] }),
+    []));
+test('not_blue still skipped when reeval only opens crypto', () =>
+  assert.deepStrictEqual(
+    buildSkipSet([{ rejected: [{ h: 'plebe', r: 'reject:not_blue' }] }], { reeval: ['reject:blacklist'] }),
+    ['plebe']));
+test('followed wins over a stale reject record', () =>
+  assert.deepStrictEqual(
+    buildSkipSet([{ followed: [{ handle: 'dup' }], rejected: [{ h: 'dup', r: 'reject:blacklist(web3)' }] }], { reeval: ['reject:blacklist'] }),
+    ['dup']));
+test('original reason survives pre_existing chaining across trackers', () =>
+  assert.deepStrictEqual(
+    buildSkipSet([
+      { rejected: [{ h: 'x', r: 'reject:blacklist(btc)' }] },
+      { rejected: [{ h: 'x', r: 'pre_existing' }] },
+    ], { reeval: ['reject:blacklist'] }),
+    []));
+test('seed-marked carry-over records are still classified by reason (seed ignored)', () =>
+  assert.deepStrictEqual(
+    buildSkipSet([{ rejected: [{ h: 'blueacct', r: 'reject:blacklist(web3)', seed: 1 }] }], { reeval: ['reject:blacklist'] }),
+    []));
+
+group('shouldSkipReason');
+test('transient -> false (retry)', () => assert.strictEqual(shouldSkipReason('eval_error:profile_unavailable'), false));
+test('stable -> true (skip)', () => assert.strictEqual(shouldSkipReason('reject:not_blue'), true));
+test('reeval match -> false (re-evaluate)', () => assert.strictEqual(shouldSkipReason('reject:blacklist(web3)', ['reject:blacklist']), false));
+test('unknown/empty reason -> true (conservative skip)', () => assert.strictEqual(shouldSkipReason(''), true));
+
+group('resolveRejections (reason-preserving seed)');
+test('prior-followed tagged pre_existing_follow', () =>
+  assert.deepStrictEqual(resolveRejections([{ followed: [{ handle: 'a' }], rejected: [] }]), [{ h: 'a', r: 'pre_existing_follow' }]));
+test('reject reason preserved (not flattened to pre_existing)', () =>
+  assert.deepStrictEqual(resolveRejections([{ rejected: [{ h: 'b', r: 'reject:blacklist(web3)' }] }]), [{ h: 'b', r: 'reject:blacklist' }]));
+test('best reason wins over pre_existing chaining', () =>
+  assert.deepStrictEqual(resolveRejections([
+    { rejected: [{ h: 'c', r: 'pre_existing' }] },
+    { rejected: [{ h: 'c', r: 'reject:fers>1100(5000)' }] },
+  ]), [{ h: 'c', r: 'reject:fers>1100' }]));
+
 // ------------------------------------------------------------------- anomaly
 group('classifyAnomaly (inChrome scoping — the false-positive fix)');
 const PAD = ' padding padding padding padding padding padding padding';
@@ -104,9 +161,9 @@ test('healthy page -> null', () =>
 
 // ------------------------------------------------------- build-queue (E2E-ish)
 group('build-queue.cjs integration (followed-skip + crypto toggle)');
-function runBuildQueue(dir, nocrypto) {
+function runBuildQueue(dir, nocrypto, reeval) {
   execFileSync('node', [path.join(SCRIPTS, 'build-queue.cjs')], {
-    env: { ...process.env, JOB_DIR: dir, NOCRYPTO: nocrypto }, stdio: 'ignore',
+    env: { ...process.env, JOB_DIR: dir, NOCRYPTO: nocrypto, REEVAL_REASONS: reeval || '' }, stdio: 'ignore',
   });
   return JSON.parse(fs.readFileSync(path.join(dir, 'queue.json'), 'utf8'));
 }
@@ -123,6 +180,13 @@ test('NOCRYPTO=1 skips followed+rejected, drops crypto, dedups', () => {
 test('NOCRYPTO=0 keeps crypto handle', () => {
   const d = fixtureDir();
   assert.deepStrictEqual(runBuildQueue(d, '0').sort(), ['BTCwhale', 'carol', 'dave']);
+});
+test('REEVAL_REASONS un-skips a config-bound (crypto) reject end-to-end', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-reeval-'));
+  fs.writeFileSync(path.join(d, 'tracker.json'), JSON.stringify({ followed: [], rejected: [{ h: 'blueacct', r: 'reject:blacklist(web3)' }] }));
+  fs.writeFileSync(path.join(d, 'cand-01.json'), JSON.stringify({ items: [{ handle: 'blueacct' }, { handle: 'carol' }] }));
+  assert.deepStrictEqual(runBuildQueue(d, '0').sort(), ['carol']);                       // no reeval -> still skipped
+  assert.deepStrictEqual(runBuildQueue(d, '0', 'reject:blacklist').sort(), ['blueacct', 'carol']); // reeval -> recovered
 });
 
 // ------------------------------------------------------------------- summary

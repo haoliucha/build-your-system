@@ -24,6 +24,7 @@ const { chromium } = require('playwright');
 const { EXIT_CODES, detectAnomaly, writeAlert } = require(path.join(__dirname, 'lib', 'anomaly.cjs'));
 const { gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
 const { CRYPTO_TOKENS } = require(path.join(__dirname, 'lib', 'filters.cjs'));
+const { shouldSkipReason } = require(path.join(__dirname, 'lib', 'skipset.cjs'));
 
 // ============ CONFIG ============
 const CFG = {
@@ -58,6 +59,9 @@ const CFG = {
 
   DRY_RUN: process.env.DRY_RUN === '1',
   RELOAD_QUEUE_EVERY: parseInt(process.env.RELOAD_QUEUE_EVERY || '20', 10),
+  // Reason-prefixes to RE-EVALUATE (un-skip) because the current config is more permissive
+  // than the run that produced the prior reject. Transient errors are always re-evaluated.
+  REEVAL_REASONS: (process.env.REEVAL_REASONS || '').split(',').map((s) => s.trim()).filter(Boolean),
 };
 
 if (!CFG.TARGET || CFG.TARGET < 1) {
@@ -209,8 +213,11 @@ async function main() {
   let tracker = loadJSON(CFG.TRACKER_PATH, { followed: [], rejected: [], stats: { profiles_checked: 0, follow_success: 0 } });
   let queue = loadJSON(CFG.QUEUE_PATH, []);
   const followedSet = new Set(tracker.followed.map(f => f.handle));
-  const rejectedSet = new Set((tracker.rejected || []).map(r => r.h));
-  log(`Followed: ${tracker.followed.length}/${CFG.TARGET}, Queue: ${queue.length}, FollowedSet: ${followedSet.size}, RejectedSet: ${rejectedSet.size}`);
+  // Reason-aware skip: only seed the in-memory reject skip with rejects that are STILL binding
+  // under this run's config. Config-bound rejects opened by REEVAL_REASONS (and transient
+  // errors) are intentionally left out so they get re-evaluated this run.
+  const rejectedSet = new Set((tracker.rejected || []).filter(r => shouldSkipReason(r.r || r.reason, CFG.REEVAL_REASONS)).map(r => r.h));
+  log(`Followed: ${tracker.followed.length}/${CFG.TARGET}, Queue: ${queue.length}, FollowedSet: ${followedSet.size}, RejectedSet: ${rejectedSet.size}, reeval=[${CFG.REEVAL_REASONS.join(',')}]`);
 
   const ctx = await chromium.launchPersistentContext(CFG.PROFILE_DIR, {
     channel: 'chrome', headless: false, viewport: { width: 1280, height: 820 },
