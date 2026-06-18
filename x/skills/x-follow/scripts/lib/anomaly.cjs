@@ -1,10 +1,15 @@
 // lib/anomaly.cjs — anomaly detection (CAPTCHA / RATE_LIMIT / LOGIN_REDIRECT /
 // ACCOUNT_RESTRICTED / WEBDRIVER_DETECTED / EMPTY_PAGE), reused by campaign / smoke-test.
 //
-// KEY FIX (was a job-local-only patch): rate-limit / restriction phrases are matched
-// ONLY against the page "chrome" (frames/banners), NOT tweet text. Otherwise viewing a
-// crypto account whose TWEETS mention "账户被限制 / rate limit" false-triggers
-// ACCOUNT_RESTRICTED/RATE_LIMIT. inChrome(p) = body.includes(p) && !tweetText.includes(p).
+// KEY FIX: rate-limit / restriction phrases are matched ONLY against the page "chrome"
+// (X's own banners/interstitials), NOT against ANY user-controlled text. User content
+// includes not just TWEETS but also the profile BIO (UserDescription), display name
+// (UserName), search/followers list rows (UserCell), and profile header fields
+// (location / website). Otherwise an account whose bio or tweets contain "请稍后再试 /
+// 账户被限制 / account suspended" false-triggers RATE_LIMIT/ACCOUNT_RESTRICTED — and a
+// malicious account could halt a campaign just by putting such a phrase in its bio.
+// inChrome(p) = body.includes(p) && !userText.includes(p), where userText is the union
+// of all user-controlled regions.
 //
 // The matching logic lives in the PURE classifyAnomaly() so it is unit-testable without
 // a browser; the browser-injected ANOMALY_DETECTOR_JS gathers the DOM facts and calls the
@@ -42,14 +47,16 @@ const EXIT_CODES = {
   EMPTY_PAGE: 16,
 };
 
-// PURE classifier. input: { bodyText, tweetText, path, webdriver, hasCaptcha }
-// Returns { type, text } or null. inChrome scopes phrase matching to non-tweet UI.
+// PURE classifier. input: { bodyText, userText, path, webdriver, hasCaptcha }
+// `userText` = union of all user-controlled regions (tweets + bio + name + usercells…).
+// `tweetText` is still accepted as a backward-compatible alias for `userText`.
+// Returns { type, text } or null. inChrome scopes phrase matching to non-user UI.
 function classifyAnomaly(input) {
   const bodyFull = (input.bodyText || '').toLowerCase();
-  const tweetTexts = (input.tweetText || '').toLowerCase();
+  const userText = (input.userText != null ? input.userText : (input.tweetText || '')).toLowerCase();
   const inChrome = (p) => {
     const lp = p.toLowerCase();
-    return bodyFull.includes(lp) && !tweetTexts.includes(lp);
+    return bodyFull.includes(lp) && !userText.includes(lp);
   };
 
   if (input.hasCaptcha) return { type: 'CAPTCHA', text: 'human verification or login challenge appeared' };
@@ -81,9 +88,9 @@ const ANOMALY_DETECTOR_JS = `(() => {
   if (captcha) return { type: 'CAPTCHA', text: 'human verification or login challenge appeared' };
 
   const bodyFull = ((document.body && document.body.innerText) || '').toLowerCase();
-  let tweetTexts = '';
-  try { tweetTexts = [...document.querySelectorAll('[data-testid="tweetText"], article[role="article"]')].map(e => (e.innerText || '')).join(' ').toLowerCase(); } catch (e) {}
-  const inChrome = (p) => { const lp = p.toLowerCase(); return bodyFull.includes(lp) && !tweetTexts.includes(lp); };
+  let userText = '';
+  try { userText = [...document.querySelectorAll('[data-testid="tweetText"], article[role="article"], [data-testid="UserDescription"], [data-testid="UserName"], [data-testid="UserCell"], [data-testid="UserProfileHeader_Items"]')].map(e => (e.innerText || '')).join(' ').toLowerCase(); } catch (e) {}
+  const inChrome = (p) => { const lp = p.toLowerCase(); return bodyFull.includes(lp) && !userText.includes(lp); };
 
   for (const p of RL) { if (inChrome(p)) return { type: 'RATE_LIMIT', text: p }; }
 

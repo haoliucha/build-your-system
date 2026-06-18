@@ -148,6 +148,14 @@ test('rate limit phrase only in tweet -> null', () =>
   assert.strictEqual(classifyAnomaly({ bodyText: 'feed rate limit talk' + PAD, tweetText: 'rate limit', path: '/u', webdriver: false }), null));
 test('real rate limit -> RATE_LIMIT', () =>
   assert.strictEqual(classifyAnomaly({ bodyText: '操作太频繁' + PAD, tweetText: '', path: '/home', webdriver: false }).type, 'RATE_LIMIT'));
+// regression: a rate-limit/restriction phrase living in a profile BIO (user-controlled,
+// passed via userText) must NOT trigger — this is the Baekjiajia_exo bio false-positive.
+test('rate limit phrase only in bio (userText) -> null', () =>
+  assert.strictEqual(classifyAnomaly({ bodyText: 'profile header 当前无法访问，请稍后再试一次 匿名箱' + PAD, userText: '当前无法访问，请稍后再试一次 匿名箱', path: '/someuser', webdriver: false }), null));
+test('restriction phrase only in bio (userText) -> null', () =>
+  assert.strictEqual(classifyAnomaly({ bodyText: 'bio says 账户被限制 here' + PAD, userText: '账户被限制', path: '/someuser', webdriver: false }), null));
+test('userText takes precedence over tweetText alias when both present', () =>
+  assert.strictEqual(classifyAnomaly({ bodyText: 'feed 请稍后再试 talk' + PAD, userText: '请稍后再试', tweetText: '', path: '/u', webdriver: false }), null));
 test('captcha -> CAPTCHA', () =>
   assert.strictEqual(classifyAnomaly({ bodyText: 'x' + PAD, hasCaptcha: true }).type, 'CAPTCHA'));
 test('login redirect -> LOGIN_REDIRECT', () =>
