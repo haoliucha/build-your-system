@@ -35,7 +35,11 @@ function decodeHtml(s) {
 
 function extractJsonLd(html) {
   const out = [];
-  const re = /<script type="application\/ld\+json">([\s\S]*?)<\/script>/g;
+  // Tolerate extra attributes on the tag. X serves the JSON-LD with a CSP nonce, e.g.
+  // <script type="application/ld+json" nonce="...">. A `">"`-only match silently breaks
+  // the day the site adds ANY attribute, yielding followers_count:null for every account
+  // (status:200, ok:false) — which then parks all rows in ELIGIBLE_FOR_FOLLOWER_REFRESH.
+  const re = /<script type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/g;
   let m;
   while ((m = re.exec(html))) { try { out.push(JSON.parse(decodeHtml(m[1]))); } catch {} }
   return out;
@@ -47,9 +51,17 @@ function stat(profile, name, action) {
   return typeof item?.userInteractionCount === 'number' ? item.userInteractionCount : null;
 }
 
-async function fetchProfile(handle) {
+// X's logged-out profile HTML is non-deterministic: the same URL sometimes returns the
+// data-rich SSR page (with the ProfilePage JSON-LD) and sometimes a thin shell, depending
+// on UA heuristics + rate-limit pressure. So: send a realistic full Chrome UA (matches the
+// rest of the skill's fingerprint — a bare 'Mozilla/5.0' yields the shell more often), and
+// treat "no ProfilePage extracted" as a SOFT failure worth one retry with a short backoff.
+const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36';
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function fetchProfileOnce(handle) {
   const url = `https://x.com/${handle}`;
-  const res = await fetch(url, { headers: { 'user-agent': 'Mozilla/5.0', accept: 'text/html,application/xhtml+xml' } });
+  const res = await fetch(url, { headers: { 'user-agent': UA, accept: 'text/html,application/xhtml+xml' } });
   const html = await res.text();
   const profile = extractJsonLd(html).find((o) => o && o['@type'] === 'ProfilePage');
   return {
@@ -60,6 +72,23 @@ async function fetchProfile(handle) {
     tweets_count: stat(profile, 'Tweets', 'WriteAction'),
     profile_url: url,
   };
+}
+
+async function fetchProfile(handle, retries = 2) {
+  let last;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    // Retry BOTH soft-failure classes: a thin-shell 200 (response, no ProfilePage) returns
+    // {ok:false}; a transport reset (X drops the TLS connection under rate pressure) throws
+    // ECONNRESET. Either way, back off and try again — don't record a transient as permanent.
+    try {
+      last = await fetchProfileOnce(handle);
+      if (last.ok) return last;
+    } catch (error) {
+      last = { handle, ok: false, error: String((error && error.message) || error), profile_url: `https://x.com/${handle}` };
+    }
+    if (attempt < retries) await sleep(2000 + attempt * 2000);
+  }
+  return last;
 }
 
 function handlesFromClassify(date) {
@@ -92,7 +121,7 @@ async function main() {
   for (const handle of handles) {
     try { results.push(await fetchProfile(handle)); }
     catch (error) { results.push({ handle, ok: false, error: String((error && error.message) || error) }); }
-    await new Promise((r) => setTimeout(r, 400));
+    await sleep(700);  // gentle pacing — X resets connections under tight sequential load
   }
 
   if (writeDate) {
@@ -104,4 +133,8 @@ async function main() {
   process.stdout.write(JSON.stringify(results, null, 2) + '\n');
 }
 
-main().catch((error) => { console.error(error); process.exit(1); });
+if (require.main === module) {
+  main().catch((error) => { console.error(error); process.exit(1); });
+}
+
+module.exports = { extractJsonLd, stat, normalizeHandle };
