@@ -51,14 +51,36 @@ FERS_MAX="${FERS_MAX:-1100}"
 HARVEST_SCROLLS="${HARVEST_SCROLLS:-18}"
 MAX_CAMPAIGN_ATTEMPTS="${MAX_CAMPAIGN_ATTEMPTS:-12}"
 NEED=$(( TARGET * CAND_MULT ))
+SOFT_TTL_DAYS="${SOFT_TTL_DAYS:-30}"
+# Verified-only preset (default). When on, drop harvested non-blue candidates at queue-build
+# time (DROP_NONBLUE) so they never cost a campaign profile visit just to be rejected.
+VERIFIED_REQUIRED="${VERIFIED_REQUIRED:-true}"
+if [ "$VERIFIED_REQUIRED" = "true" ]; then DROP_NONBLUE=1; else DROP_NONBLUE=0; fi
+# Pool-exhaustion guard: stop after this many consecutive harvest rounds that add fewer
+# than POOL_MIN_GAIN new candidates (the search pool has run dry — looping wastes 浏览器
+# 开关 + 限流配额, exactly the 1.5h空转 seen before).
+POOL_DRY_ROUNDS="${POOL_DRY_ROUNDS:-2}"
+POOL_MIN_GAIN="${POOL_MIN_GAIN:-5}"
+export SKIP_GLOB SOFT_TTL_DAYS DROP_NONBLUE VERIFIED_REQUIRED
 
 mkdir -p "$JOB_DIR"
 TRACKER="$JOB_DIR/tracker.json"
 QUEUE="$JOB_DIR/queue.json"
 LOG="$JOB_DIR/campaign.log"
 ALERT="$JOB_DIR/ALERT.txt"
-export PROFILE_DIR TRACKER_PATH="$TRACKER" QUEUE_PATH="$QUEUE" LOG_PATH="$LOG" ALERT_PATH="$ALERT" JOB_DIR
+PID_FILE="$JOB_DIR/run.pid"
+STATUS="$JOB_DIR/status.json"
+export PROFILE_DIR TRACKER_PATH="$TRACKER" QUEUE_PATH="$QUEUE" LOG_PATH="$LOG" ALERT_PATH="$ALERT" STATUS_PATH="$STATUS" JOB_DIR
 say() { echo "[run $(date +%H:%M:%S)] $*"; }
+# Single-line progress the human (and Claude) can read any time without tailing logs.
+# campaign.cjs writes the same file per-account; run.sh writes it at phase boundaries.
+status() {  # status <phase> <extra-msg>
+  node -e "require('fs').writeFileSync('$STATUS', JSON.stringify({phase:process.argv[1], msg:process.argv[2], followed:(()=>{try{return JSON.parse(require('fs').readFileSync('$TRACKER')).followed.length}catch(e){return 0}})(), target:$TARGET, ts:new Date().toISOString()},null,2))" "$1" "${2:-}" 2>/dev/null || true
+}
+
+# Write own PID so callers can stop the whole process tree reliably.
+echo $$ > "$PID_FILE"
+trap 'rm -f "$PID_FILE"' EXIT
 followed() { node -e "try{process.stdout.write(String(JSON.parse(require('fs').readFileSync('$TRACKER')).followed.length))}catch(e){process.stdout.write('0')}" 2>/dev/null || echo 0; }
 
 cleanup_locks() { pkill -9 -f "user-data-dir=$PROFILE_DIR" 2>/dev/null; rm -f "$PROFILE_DIR"/Singleton* 2>/dev/null; sleep 1; }
@@ -82,55 +104,79 @@ if [ "$SMOKE" -ne 0 ]; then
 fi
 cleanup_locks
 
-# ---- Phase 2: skip-set + tracker init --------------------------------------
+# ---- Phase 2: tracker init -------------------------------------------------
+# The new tracker holds ONLY this run's decisions. The historical skip-set is NO LONGER
+# frozen in here as `pre_existing` (which bloated trackers and erased the reason/timestamp
+# tiered-release needs). Instead build-queue derives the live, tiered skip-set from
+# SKIP_GLOB on every queue build, automatically reclaiming误杀的瞬时错误 + 过期阈值拒绝.
 if [ ! -f "$TRACKER" ]; then
-  say "building skip-set from prior trackers ($SKIP_GLOB)..."
-  node -e "
-    const {buildSkipSetFromPaths}=require('$SCRIPTS/lib/skipset.cjs');
-    const fs=require('fs');
-    const glob=require('child_process').execSync('ls $SKIP_GLOB 2>/dev/null || true').toString().trim().split('\n').filter(Boolean);
-    const skip=buildSkipSetFromPaths(glob);
-    const t={followed:[],rejected:skip.map(h=>({h,r:'pre_existing'})),stats:{profiles_checked:0,follow_success:0}};
-    fs.writeFileSync('$TRACKER',JSON.stringify(t));
-    process.stderr.write('[skipset] prior trackers='+glob.length+' skip='+skip.length+'\n');
-  "
+  node -e "require('fs').writeFileSync('$TRACKER',JSON.stringify({followed:[],rejected:[],stats:{profiles_checked:0,follow_success:0}}))"
 fi
-say "starting followed=$(followed)/$TARGET, skip-set=$(node -e "console.log((JSON.parse(require('fs').readFileSync('$TRACKER')).rejected||[]).length)")"
+SKIP_N=$(node -e "
+  const {buildSkipSetFromPaths}=require('$SCRIPTS/lib/skipset.cjs');
+  const fs=require('fs');
+  const paths=Array.from(fs.globSync('$SKIP_GLOB'));
+  const stats={};
+  const skip=buildSkipSetFromPaths(paths,{softTtlDays:$SOFT_TTL_DAYS,stats});
+  process.stderr.write('[skipset] trackers='+paths.length+' active-skip='+skip.length+' released='+JSON.stringify(stats)+'\n');
+  process.stdout.write(String(skip.length));
+" 2>>"$JOB_DIR/run.log")
+say "starting followed=$(followed)/$TARGET, active skip-set=$SKIP_N (tiered: transient+expired released)"
+status init "skip-set=$SKIP_N"
 
-# ---- harvest helper: run queries until queue >= NEED -----------------------
-IFS=',' read -ra QARR <<< "$QUERIES"
+# ---- harvest helper: ALL queries in ONE browser session, then rebuild queue ----
+# PERF/SAFETY: one launchPersistentContext for the whole query set (was: one per query =
+# ~6 cold Chrome starts + a 429 burst each round). Sets QSZ to the rebuilt queue size.
+queue_size() { node -e "try{process.stdout.write(String(require('$QUEUE').length))}catch(e){process.stdout.write('0')}"; }
+QSZ=0
 harvest_round() {
   local round="$1"
-  local qi=0
-  for q in "${QARR[@]}"; do
-    qi=$((qi+1))
-    local out="$JOB_DIR/cand-r${round}-${qi}.json"
-    [ -f "$out" ] && continue
+  local out="$JOB_DIR/cand-r${round}.json"
+  if [ ! -f "$out" ]; then
     cleanup_locks
-    say "harvest[$round.$qi]: $q"
-    PROFILE_DIR="$PROFILE_DIR" node "$SCRIPTS/harvest.cjs" search "$q" "$HARVEST_SCROLLS" > "$out" 2>"$JOB_DIR/harvest.err"
+    say "harvest[$round]: all queries in one browser ($QUERIES)"
+    status harvest "round $round"
+    PROFILE_DIR="$PROFILE_DIR" node "$SCRIPTS/harvest.cjs" search-multi "$QUERIES" "$HARVEST_SCROLLS" > "$out" 2>"$JOB_DIR/harvest.err"
     local c; c=$(node -e "try{console.log(require('$out').count||0)}catch(e){console.log(0)}")
-    say "  -> $c raw"
-    sleep 8
-    NOCRYPTO="$NOCRYPTO" JOB_DIR="$JOB_DIR" node "$SCRIPTS/build-queue.cjs" >/dev/null 2>&1
-    local qsz; qsz=$(node -e "try{process.stdout.write(String(require('$QUEUE').length))}catch(e){process.stdout.write('0')}")
-    say "  queue=$qsz / need $NEED"
-    [ "$qsz" -ge "$NEED" ] && break
-  done
+    say "  -> $c raw merged (deduped across queries)"
+  fi
+  NOCRYPTO="$NOCRYPTO" JOB_DIR="$JOB_DIR" node "$SCRIPTS/build-queue.cjs" >/dev/null 2>"$JOB_DIR/build-queue.err"
+  QSZ=$(queue_size)
+  say "  queue=$QSZ / need $NEED"
 }
 
 # ---- Phase 3+4+5: harvest -> campaign -> verify, looping until target -------
 attempt=0
+dry_rounds=0
 while [ "$(followed)" -lt "$TARGET" ]; do
   attempt=$((attempt+1))
   if [ "$attempt" -gt "$MAX_CAMPAIGN_ATTEMPTS" ]; then say "max attempts ($MAX_CAMPAIGN_ATTEMPTS) reached, stopping at $(followed)/$TARGET"; break; fi
 
   # ensure enough candidates
-  QSZ=$(node -e "try{process.stdout.write(String(require('$QUEUE').length))}catch(e){process.stdout.write('0')}")
-  if [ "${QSZ:-0}" -lt "$NEED" ]; then harvest_round "$attempt"; fi
+  QSZ=$(queue_size)
+  if [ "${QSZ:-0}" -lt "$NEED" ]; then
+    harvest_round "$attempt"
+    # Pool-exhaustion guard: if a fresh harvest+rebuild still yields almost nothing, the
+    # search pool is dry — count consecutive dry rounds and bail before空转 hours away.
+    if [ "${QSZ:-0}" -lt "$POOL_MIN_GAIN" ]; then
+      dry_rounds=$((dry_rounds+1))
+      say "  pool low ($QSZ<$POOL_MIN_GAIN) — dry round $dry_rounds/$POOL_DRY_ROUNDS"
+      if [ "$dry_rounds" -ge "$POOL_DRY_ROUNDS" ]; then
+        say "POOL EXHAUSTED: $POOL_DRY_ROUNDS consecutive dry harvests. Stopping at $(followed)/$TARGET."
+        say "  (try again later for fresh posts, or widen QUERIES / lower thresholds)"
+        status exhausted "pool dry at $(followed)/$TARGET"
+        break
+      fi
+      # nothing new to follow this round — skip the campaign launch, harvest again next loop
+      continue
+    else
+      dry_rounds=0
+    fi
+  fi
 
   cleanup_locks
   say "campaign attempt $attempt (followed=$(followed)/$TARGET)..."
+  status campaign "attempt $attempt"
   TARGET="$TARGET" MY_HANDLE="$MY_HANDLE" FERS_MAX="$FERS_MAX" \
     node "$SCRIPTS/campaign.cjs" >>"$JOB_DIR/campaign.stdout.log" 2>&1
   code=$?
@@ -149,13 +195,15 @@ done
 for vpass in 1 2 3; do
   cleanup_locks
   say "verify pass $vpass: checking followed_assumed..."
+  status verify "pass $vpass"
   FIX_TRACKER=1 PROFILE_DIR="$PROFILE_DIR" TRACKER_PATH="$TRACKER" \
     node "$SCRIPTS/verify-follows.cjs" --assumed >"$JOB_DIR/verify-$vpass.json" 2>>"$JOB_DIR/verify.err"
   FAILED=$(node -e "try{console.log((require('$JOB_DIR/verify-$vpass.json').failed||[]).length)}catch(e){console.log(0)}")
   say "  unconfirmed=$FAILED, followed now $(followed)/$TARGET"
   if [ "${FAILED:-0}" -eq 0 ] && [ "$(followed)" -ge "$TARGET" ]; then break; fi
-  # demoted failures dropped followed below target -> one more campaign top-up
-  if [ "$(followed)" -lt "$TARGET" ]; then
+  # demoted failures dropped followed below target -> one more campaign top-up,
+  # but ONLY if there are still un-processed candidates (else it's a pointless browser open).
+  if [ "$(followed)" -lt "$TARGET" ] && [ "$(queue_size)" -gt 0 ]; then
     cleanup_locks
     say "top-up campaign after verify (followed=$(followed)/$TARGET)..."
     POST_CLICK_SETTLE_MS="${POST_CLICK_SETTLE_MS:-6000}" TARGET="$TARGET" MY_HANDLE="$MY_HANDLE" FERS_MAX="$FERS_MAX" \
@@ -170,10 +218,11 @@ done
 
 cleanup_locks
 say "=== DONE === followed=$(followed)/$TARGET  (tracker: $TRACKER)"
+status done "followed=$(followed)/$TARGET"
 node -e "
   const t=JSON.parse(require('fs').readFileSync('$TRACKER'));
   const a={}; t.followed.forEach(x=>a[x.action]=(a[x.action]||0)+1);
-  const nr=(t.rejected||[]).filter(r=>r.r!=='pre_existing');
+  const nr=(t.rejected||[]);
   const rc={}; nr.forEach(r=>{const k=r.r.split('(')[0];rc[k]=(rc[k]||0)+1});
   console.log('  follows:', t.followed.length, 'actions:', JSON.stringify(a));
   console.log('  new rejects:', nr.length, JSON.stringify(rc));

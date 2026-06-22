@@ -14,7 +14,7 @@ const { execFileSync } = require('child_process');
 
 const SCRIPTS = path.join(__dirname, '..', 'scripts');
 const { parseCount, isCryptoHandle, backoffMs, decide, CRYPTO_TOKENS } = require(path.join(SCRIPTS, 'lib', 'filters.cjs'));
-const { buildSkipSet } = require(path.join(SCRIPTS, 'lib', 'skipset.cjs'));
+const { buildSkipSet, classifyReason } = require(path.join(SCRIPTS, 'lib', 'skipset.cjs'));
 const { classifyAnomaly } = require(path.join(SCRIPTS, 'lib', 'anomaly.cjs'));
 
 let pass = 0, fail = 0;
@@ -80,6 +80,57 @@ test('accepts handle or h on either side', () => {
   assert.deepStrictEqual(got, ['f1', 'r1']);
 });
 
+// --------------------------------------------------- skip-set TIERED RELEASE
+group('classifyReason (transient / soft / permanent tiers)');
+test('eval_error is transient', () => assert.strictEqual(classifyReason('eval_error:profile_unavailable'), 'transient'));
+test('no_follow_btn is transient', () => assert.strictEqual(classifyReason('reject:no_follow_btn'), 'transient'));
+test('cant_parse_stats is transient', () => assert.strictEqual(classifyReason('reject:cant_parse_stats'), 'transient'));
+test('fers>MAX is soft', () => assert.strictEqual(classifyReason('reject:fers>1100(17000)'), 'soft'));
+test('fing<=fers is soft', () => assert.strictEqual(classifyReason('reject:fing<=fers(1<=2)'), 'soft'));
+test('not_blue is permanent', () => assert.strictEqual(classifyReason('reject:not_blue'), 'permanent'));
+test('already_following is permanent', () => assert.strictEqual(classifyReason('reject:already_following'), 'permanent'));
+test('pre_existing (legacy) is permanent', () => assert.strictEqual(classifyReason('pre_existing'), 'permanent'));
+
+group('buildSkipSet tiered release (transient released, soft TTL)');
+const NOW = Date.parse('2026-06-22T00:00:00Z');
+const daysAgo = (n) => new Date(NOW - n * 86400000).toISOString();
+test('transient errors are NOT skipped (误杀释放)', () => {
+  const got = buildSkipSet([{ rejected: [
+    { h: 'glitch', r: 'eval_error:profile_unavailable', at: daysAgo(1) },
+    { h: 'nobtn', r: 'reject:no_follow_btn', at: daysAgo(1) },
+  ] }], { now: NOW });
+  assert.deepStrictEqual(got, []);
+});
+test('fresh soft reject IS skipped', () => {
+  const got = buildSkipSet([{ rejected: [{ h: 'ratio', r: 'reject:fing<=fers(1<=2)', at: daysAgo(5) }] }], { now: NOW, softTtlDays: 30 });
+  assert.deepStrictEqual(got, ['ratio']);
+});
+test('expired soft reject is released', () => {
+  const got = buildSkipSet([{ rejected: [{ h: 'ratio', r: 'reject:fing<=fers(1<=2)', at: daysAgo(40) }] }], { now: NOW, softTtlDays: 30 });
+  assert.deepStrictEqual(got, []);
+});
+test('soft reject WITHOUT timestamp is kept (conservative)', () => {
+  const got = buildSkipSet([{ rejected: [{ h: 'ratio', r: 'reject:fers>1100(9000)' }] }], { now: NOW });
+  assert.deepStrictEqual(got, ['ratio']);
+});
+test('permanent reject is always skipped regardless of age', () => {
+  const got = buildSkipSet([{ rejected: [{ h: 'notblue', r: 'reject:not_blue', at: daysAgo(999) }] }], { now: NOW });
+  assert.deepStrictEqual(got, ['notblue']);
+});
+test('followed handles always permanent-skip', () => {
+  const got = buildSkipSet([{ followed: [{ handle: 'pal', at: daysAgo(999) }] }], { now: NOW });
+  assert.deepStrictEqual(got, ['pal']);
+});
+test('release stats are reported', () => {
+  const stats = {};
+  buildSkipSet([{ rejected: [
+    { h: 'a', r: 'eval_error:x', at: daysAgo(1) },
+    { h: 'b', r: 'reject:fers>1100(9000)', at: daysAgo(40) },
+  ] }], { now: NOW, softTtlDays: 30, stats });
+  assert.strictEqual(stats.released_transient, 1);
+  assert.strictEqual(stats.released_soft_expired, 1);
+});
+
 // ------------------------------------------------------------------- anomaly
 group('classifyAnomaly (inChrome scoping — the false-positive fix)');
 const PAD = ' padding padding padding padding padding padding padding';
@@ -131,6 +182,33 @@ test('NOCRYPTO=1 skips followed+rejected, drops crypto, dedups', () => {
 test('NOCRYPTO=0 keeps crypto handle', () => {
   const d = fixtureDir();
   assert.deepStrictEqual(runBuildQueue(d, '0').sort(), ['BTCwhale', 'carol', 'dave']);
+});
+
+group('build-queue.cjs DROP_NONBLUE (pre-filter non-verified before campaign)');
+function runBuildQueueEnv(dir, env) {
+  execFileSync('node', [path.join(SCRIPTS, 'build-queue.cjs')], { env: { ...process.env, JOB_DIR: dir, ...env }, stdio: 'ignore' });
+  return JSON.parse(fs.readFileSync(path.join(dir, 'queue.json'), 'utf8'));
+}
+function blueFixture() {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-blue-'));
+  fs.writeFileSync(path.join(d, 'tracker.json'), JSON.stringify({ followed: [], rejected: [] }));
+  fs.writeFileSync(path.join(d, 'cand-01.json'), JSON.stringify({ items: [
+    { handle: 'verified1', blue: true }, { handle: 'plain1', blue: false },
+    { handle: 'verified2', blue: true }, { handle: 'plain2', blue: false },
+  ] }));
+  return d;
+}
+test('DROP_NONBLUE=1 drops blue:false candidates', () => {
+  assert.deepStrictEqual(runBuildQueueEnv(blueFixture(), { NOCRYPTO: '0', DROP_NONBLUE: '1' }).sort(), ['verified1', 'verified2']);
+});
+test('DROP_NONBLUE unset keeps all', () => {
+  assert.deepStrictEqual(runBuildQueueEnv(blueFixture(), { NOCRYPTO: '0' }).sort(), ['plain1', 'plain2', 'verified1', 'verified2']);
+});
+test('priority.json handles bypass the blue filter', () => {
+  const d = blueFixture();
+  fs.writeFileSync(path.join(d, 'priority.json'), JSON.stringify(['vipNoBadge']));
+  const got = runBuildQueueEnv(d, { NOCRYPTO: '0', DROP_NONBLUE: '1' });
+  assert.ok(got.includes('vipNoBadge'), 'priority handle must survive DROP_NONBLUE');
 });
 
 // ------------------------------------------------------------------- summary

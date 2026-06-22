@@ -34,6 +34,7 @@ const CFG = {
   TRACKER_PATH: process.env.TRACKER_PATH || path.resolve('tracker.json'),
   LOG_PATH: process.env.LOG_PATH || path.resolve('campaign.log'),
   ALERT_PATH: process.env.ALERT_PATH || path.resolve('ALERT.txt'),
+  STATUS_PATH: process.env.STATUS_PATH || (process.env.JOB_DIR ? path.join(process.env.JOB_DIR, 'status.json') : path.resolve('status.json')),
 
   VERIFIED_REQUIRED: process.env.VERIFIED_REQUIRED !== 'false',
   FOLLOWING_GT_FOLLOWERS: process.env.FOLLOWING_GT_FOLLOWERS !== 'false',
@@ -75,6 +76,12 @@ function loadJSON(p, fallback) {
   try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return fallback; }
 }
 function saveJSON(p, obj) { fs.writeFileSync(p, JSON.stringify(obj, null, 2)); }
+// Heartbeat/progress file — a single small JSON the orchestrator (and the human) can read
+// at any time to see live progress without tailing logs. Written on every iteration so a
+// stale `ts` also signals a hung run. Best-effort: failures here never break the campaign.
+function writeStatus(obj) {
+  try { fs.writeFileSync(CFG.STATUS_PATH, JSON.stringify({ ...obj, ts: new Date().toISOString() }, null, 2)); } catch {}
+}
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const rand = (min, max) => min + Math.floor(Math.random() * (max - min));
 
@@ -300,7 +307,9 @@ async function main() {
     if (result.error) {
       log(`${handle} -> ERROR ${result.error}`);
       tracker.rejected = tracker.rejected || [];
-      tracker.rejected.push({ h: handle, r: 'eval_error:' + result.error });
+      // `at` lets lib/skipset apply TTL/transient release later. eval_error is a transient
+      // tier (released next run), so this account gets re-evaluated rather than blacklisted.
+      tracker.rejected.push({ h: handle, r: 'eval_error:' + result.error, at: new Date().toISOString() });
       rejectedSet.add(handle); saveJSON(CFG.TRACKER_PATH, tracker);
       await sleep(rand(CFG.REJECT_WAIT_MIN_MS, CFG.REJECT_WAIT_MAX_MS)); continue;
     }
@@ -316,10 +325,12 @@ async function main() {
       consecutiveRateLimits = 0;
     } else if (result.decision && result.decision.startsWith('reject')) {
       tracker.rejected = tracker.rejected || [];
-      tracker.rejected.push({ h: handle, r: result.decision });
+      tracker.rejected.push({ h: handle, r: result.decision, at: new Date().toISOString() });
       rejectedSet.add(handle);
     }
     saveJSON(CFG.TRACKER_PATH, tracker);
+    writeStatus({ phase: 'campaign', followed: tracker.followed.length, target: CFG.TARGET,
+      queue_total: queue.length, processed: i + 1, last: { handle, decision: result.decision || result.action } });
 
     // Anomaly check AFTER action (esp. after a follow). EMPTY_PAGE excluded (latency artifact).
     const anomaly = await detectAnomaly(page);
