@@ -14,7 +14,7 @@ const { execFileSync } = require('child_process');
 
 const SCRIPTS = path.join(__dirname, '..', 'scripts');
 const { parseCount, isCryptoHandle, backoffMs, decide, CRYPTO_TOKENS } = require(path.join(SCRIPTS, 'lib', 'filters.cjs'));
-const { buildSkipSet, shouldSkipReason, resolveRejections } = require(path.join(SCRIPTS, 'lib', 'skipset.cjs'));
+const { buildSkipSet, classifyReason, softRejectNowPasses } = require(path.join(SCRIPTS, 'lib', 'skipset.cjs'));
 const { classifyAnomaly } = require(path.join(SCRIPTS, 'lib', 'anomaly.cjs'));
 
 let pass = 0, fail = 0;
@@ -52,18 +52,24 @@ test('attempt<1 clamps to 1', () => assert.strictEqual(backoffMs(0, 20000, 30000
 
 // --------------------------------------------------------------------- decide
 group('decide (campaign criteria — order matters)');
-const CFG = { VERIFIED_REQUIRED: true, FOLLOWING_GT_FOLLOWERS: true, FERS_MAX: 1100 };
+const CFG = { VERIFIED_REQUIRED: true, FOLLOWING_GT_FOLLOWERS: true, FERS_MAX: 3000, FOLLOW_RATIO_MIN: 0.5 };
 test('good account passes', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 300, fing: 600 }, CFG), 'pass'));
 test('not blue rejected', () => assert.strictEqual(decide({ blue: false, hasFollowBtn: true, fers: 300, fing: 600 }, CFG), 'reject:not_blue'));
 test('gold org rejected', () => assert.strictEqual(decide({ blue: true, gold: true, hasFollowBtn: true, fers: 300, fing: 600 }, CFG), 'reject:gold_org'));
 test('already following never clicked', () => assert.strictEqual(decide({ blue: true, hasUnfollowBtn: true, hasFollowBtn: true, fers: 300, fing: 600 }, CFG), 'reject:already_following'));
 test('no follow button', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: false, fers: 300, fing: 600 }, CFG), 'reject:no_follow_btn'));
-test('whale over FERS_MAX', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 15000, fing: 20000 }, CFG), 'reject:fers>1100(15000)'));
-test('inverted ratio', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 400, fing: 300 }, CFG), 'reject:fing<=fers(300<=400)'));
+test('whale over FERS_MAX', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 15000, fing: 20000 }, CFG), 'reject:fers>3000(15000)'));
+// FERS_MAX 3000: a mid-size blue-V (2362 followers) that 1100 would have rejected now passes.
+test('mid-size account within raised FERS_MAX passes', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 2362, fing: 2000 }, CFG), 'pass'));
+// FOLLOW_RATIO_MIN 0.5: followers may edge out following (NOT a one-way broadcaster) -> pass.
+test('near-parity ratio passes (was over-rejected)', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 400, fing: 300 }, CFG), 'pass'));
+test('borderline ratio passes (fing == fers*0.5)', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 322, fing: 161 }, CFG), 'pass'));
+// only a CLEAR broadcaster (fing < fers*0.5) is still rejected
+test('one-way broadcaster rejected', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 900, fing: 300 }, CFG), 'reject:fing<fers*0.5(300<900)'));
 test('crypto bio (when filter on)', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 300, fing: 600, cryptoMatch: 'web3' }, CFG), 'reject:blacklist(web3)'));
 test('crypto allowed when no match passed', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 300, fing: 600, cryptoMatch: null }, CFG), 'pass'));
 test('whitelist miss', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 300, fing: 600, whitelistFail: true }, CFG), 'reject:not_in_whitelist'));
-test('size beats crypto in order', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 9000, fing: 9999, cryptoMatch: 'btc' }, CFG), 'reject:fers>1100(9000)'));
+test('size beats crypto in order', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 9000, fing: 9999, cryptoMatch: 'btc' }, CFG), 'reject:fers>3000(9000)'));
 
 // ------------------------------------------------------------------ skip-set
 group('buildSkipSet (tracker union)');
@@ -80,62 +86,94 @@ test('accepts handle or h on either side', () => {
   assert.deepStrictEqual(got, ['f1', 'r1']);
 });
 
-// ----------------------------------------------------- reason-aware skip (FIX)
-// The bug: skip-set unioned followed ∪ ALL rejected regardless of WHY rejected, so
-// config-dependent rejects (crypto/fers) and transient errors were burned forever.
-group('buildSkipSet (reason-aware — the depletion fix)');
-test('crypto reject re-eligible when reeval opens reject:blacklist', () =>
-  assert.deepStrictEqual(
-    buildSkipSet([{ rejected: [{ h: 'cryptodude', r: 'reject:blacklist(web3)' }] }], { reeval: ['reject:blacklist'] }),
-    []));
-test('crypto reject still skipped with no reeval', () =>
-  assert.deepStrictEqual(
-    buildSkipSet([{ rejected: [{ h: 'cryptodude', r: 'reject:blacklist(web3)' }] }]),
-    ['cryptodude']));
-test('eval_error always retried (transient) even without reeval', () =>
-  assert.deepStrictEqual(
-    buildSkipSet([{ rejected: [{ h: 'ghosted', r: 'eval_error:profile_unavailable' }] }]),
-    []));
-test('fers>1100 re-eligible when reeval opens reject:fers> prefix', () =>
-  assert.deepStrictEqual(
-    buildSkipSet([{ rejected: [{ h: 'whale', r: 'reject:fers>1100(9000)' }] }], { reeval: ['reject:fers>'] }),
-    []));
-test('not_blue still skipped when reeval only opens crypto', () =>
-  assert.deepStrictEqual(
-    buildSkipSet([{ rejected: [{ h: 'plebe', r: 'reject:not_blue' }] }], { reeval: ['reject:blacklist'] }),
-    ['plebe']));
-test('followed wins over a stale reject record', () =>
-  assert.deepStrictEqual(
-    buildSkipSet([{ followed: [{ handle: 'dup' }], rejected: [{ h: 'dup', r: 'reject:blacklist(web3)' }] }], { reeval: ['reject:blacklist'] }),
-    ['dup']));
-test('original reason survives pre_existing chaining across trackers', () =>
-  assert.deepStrictEqual(
-    buildSkipSet([
-      { rejected: [{ h: 'x', r: 'reject:blacklist(btc)' }] },
-      { rejected: [{ h: 'x', r: 'pre_existing' }] },
-    ], { reeval: ['reject:blacklist'] }),
-    []));
-test('seed-marked carry-over records are still classified by reason (seed ignored)', () =>
-  assert.deepStrictEqual(
-    buildSkipSet([{ rejected: [{ h: 'blueacct', r: 'reject:blacklist(web3)', seed: 1 }] }], { reeval: ['reject:blacklist'] }),
-    []));
+// --------------------------------------------------- skip-set TIERED RELEASE
+group('classifyReason (transient / soft / permanent tiers)');
+test('eval_error is transient', () => assert.strictEqual(classifyReason('eval_error:profile_unavailable'), 'transient'));
+test('no_follow_btn is transient', () => assert.strictEqual(classifyReason('reject:no_follow_btn'), 'transient'));
+test('cant_parse_stats is transient', () => assert.strictEqual(classifyReason('reject:cant_parse_stats'), 'transient'));
+test('fers>MAX is soft', () => assert.strictEqual(classifyReason('reject:fers>1100(17000)'), 'soft'));
+test('fing<=fers is soft', () => assert.strictEqual(classifyReason('reject:fing<=fers(1<=2)'), 'soft'));
+test('not_blue is permanent', () => assert.strictEqual(classifyReason('reject:not_blue'), 'permanent'));
+test('already_following is permanent', () => assert.strictEqual(classifyReason('reject:already_following'), 'permanent'));
+test('pre_existing (legacy) is permanent', () => assert.strictEqual(classifyReason('pre_existing'), 'permanent'));
 
-group('shouldSkipReason');
-test('transient -> false (retry)', () => assert.strictEqual(shouldSkipReason('eval_error:profile_unavailable'), false));
-test('stable -> true (skip)', () => assert.strictEqual(shouldSkipReason('reject:not_blue'), true));
-test('reeval match -> false (re-evaluate)', () => assert.strictEqual(shouldSkipReason('reject:blacklist(web3)', ['reject:blacklist']), false));
-test('unknown/empty reason -> true (conservative skip)', () => assert.strictEqual(shouldSkipReason(''), true));
+group('buildSkipSet tiered release (transient released, soft TTL)');
+const NOW = Date.parse('2026-06-22T00:00:00Z');
+const daysAgo = (n) => new Date(NOW - n * 86400000).toISOString();
+test('transient errors are NOT skipped (误杀释放)', () => {
+  const got = buildSkipSet([{ rejected: [
+    { h: 'glitch', r: 'eval_error:profile_unavailable', at: daysAgo(1) },
+    { h: 'nobtn', r: 'reject:no_follow_btn', at: daysAgo(1) },
+  ] }], { now: NOW });
+  assert.deepStrictEqual(got, []);
+});
+test('fresh soft reject IS skipped', () => {
+  const got = buildSkipSet([{ rejected: [{ h: 'ratio', r: 'reject:fing<=fers(1<=2)', at: daysAgo(5) }] }], { now: NOW, softTtlDays: 30 });
+  assert.deepStrictEqual(got, ['ratio']);
+});
+test('expired soft reject is released', () => {
+  const got = buildSkipSet([{ rejected: [{ h: 'ratio', r: 'reject:fing<=fers(1<=2)', at: daysAgo(40) }] }], { now: NOW, softTtlDays: 30 });
+  assert.deepStrictEqual(got, []);
+});
+test('soft reject WITHOUT timestamp is kept (conservative)', () => {
+  const got = buildSkipSet([{ rejected: [{ h: 'ratio', r: 'reject:fers>1100(9000)' }] }], { now: NOW });
+  assert.deepStrictEqual(got, ['ratio']);
+});
+test('permanent reject is always skipped regardless of age', () => {
+  const got = buildSkipSet([{ rejected: [{ h: 'notblue', r: 'reject:not_blue', at: daysAgo(999) }] }], { now: NOW });
+  assert.deepStrictEqual(got, ['notblue']);
+});
+test('followed handles always permanent-skip', () => {
+  const got = buildSkipSet([{ followed: [{ handle: 'pal', at: daysAgo(999) }] }], { now: NOW });
+  assert.deepStrictEqual(got, ['pal']);
+});
+test('release stats are reported', () => {
+  const stats = {};
+  buildSkipSet([{ rejected: [
+    { h: 'a', r: 'eval_error:x', at: daysAgo(1) },
+    { h: 'b', r: 'reject:fers>1100(9000)', at: daysAgo(40) },
+  ] }], { now: NOW, softTtlDays: 30, stats });
+  assert.strictEqual(stats.released_transient, 1);
+  assert.strictEqual(stats.released_soft_expired, 1);
+});
 
-group('resolveRejections (reason-preserving seed)');
-test('prior-followed tagged pre_existing_follow', () =>
-  assert.deepStrictEqual(resolveRejections([{ followed: [{ handle: 'a' }], rejected: [] }]), [{ h: 'a', r: 'pre_existing_follow' }]));
-test('reject reason preserved (not flattened to pre_existing)', () =>
-  assert.deepStrictEqual(resolveRejections([{ rejected: [{ h: 'b', r: 'reject:blacklist(web3)' }] }]), [{ h: 'b', r: 'reject:blacklist' }]));
-test('best reason wins over pre_existing chaining', () =>
-  assert.deepStrictEqual(resolveRejections([
-    { rejected: [{ h: 'c', r: 'pre_existing' }] },
-    { rejected: [{ h: 'c', r: 'reject:fers>1100(5000)' }] },
-  ]), [{ h: 'c', r: 'reject:fers>1100' }]));
+// ----------------------------------------- THRESHOLD-AWARE soft release (new)
+group('softRejectNowPasses (threshold-aware unlock)');
+const OPTS = { fersMax: 3000, followRatioMin: 0.5 };
+test('fers reject under raised cap releases', () => assert.strictEqual(softRejectNowPasses('reject:fers>1100(2362)', OPTS), true));
+test('fers reject still over cap stays', () => assert.strictEqual(softRejectNowPasses('reject:fers>1100(14000)', OPTS), false));
+test('fers reject exactly at cap releases', () => assert.strictEqual(softRejectNowPasses('reject:fers>1100(3000)', OPTS), true));
+test('old fing<=fers label re-evaluated by ratio (releases)', () => assert.strictEqual(softRejectNowPasses('reject:fing<=fers(165<=323)', OPTS), true));
+test('new fing<fers*r label re-evaluated (releases)', () => assert.strictEqual(softRejectNowPasses('reject:fing<fers*0.5(165<323)', OPTS), true));
+test('clear broadcaster stays (ratio fails)', () => assert.strictEqual(softRejectNowPasses('reject:fing<=fers(50<=900)', OPTS), false));
+test('fing reject over the cap stays even if ratio ok', () => assert.strictEqual(softRejectNowPasses('reject:fing<=fers(9000<=12000)', OPTS), false));
+test('without opts cannot prove pass -> false', () => assert.strictEqual(softRejectNowPasses('reject:fers>1100(100)', {}), false));
+test('permanent reason never auto-passes', () => assert.strictEqual(softRejectNowPasses('reject:not_blue', OPTS), false));
+
+group('buildSkipSet threshold-aware release (relaxed cap unlocks)');
+test('raising FERS_MAX releases now-eligible fers reject', () => {
+  const got = buildSkipSet([{ rejected: [
+    { h: 'small', r: 'reject:fers>1100(2362)', at: daysAgo(2) },   // 2362 <= 3000 -> release
+    { h: 'whale', r: 'reject:fers>1100(50000)', at: daysAgo(2) },  // stays
+  ] }], { now: NOW, softTtlDays: 30, ...OPTS });
+  assert.deepStrictEqual(got, ['whale']);
+});
+test('relaxed ratio releases near-parity fing reject but keeps broadcaster', () => {
+  const got = buildSkipSet([{ rejected: [
+    { h: 'parity', r: 'reject:fing<=fers(165<=323)', at: daysAgo(2) },  // 165>=161.5 -> release
+    { h: 'caster', r: 'reject:fing<=fers(50<=900)', at: daysAgo(2) },   // 50<450 -> stays
+  ] }], { now: NOW, softTtlDays: 30, ...OPTS });
+  assert.deepStrictEqual(got, ['caster']);
+});
+test('threshold release is counted in stats', () => {
+  const stats = {};
+  buildSkipSet([{ rejected: [{ h: 'x', r: 'reject:fers>1100(2362)', at: daysAgo(2) }] }], { now: NOW, softTtlDays: 30, stats, ...OPTS });
+  assert.strictEqual(stats.released_threshold, 1);
+});
+test('without thresholds, fresh soft reject is still skipped (back-compat)', () => {
+  const got = buildSkipSet([{ rejected: [{ h: 'x', r: 'reject:fers>1100(2362)', at: daysAgo(2) }] }], { now: NOW, softTtlDays: 30 });
+  assert.deepStrictEqual(got, ['x']);
+});
 
 // ------------------------------------------------------------------- anomaly
 group('classifyAnomaly (inChrome scoping — the false-positive fix)');
@@ -169,9 +207,9 @@ test('healthy page -> null', () =>
 
 // ------------------------------------------------------- build-queue (E2E-ish)
 group('build-queue.cjs integration (followed-skip + crypto toggle)');
-function runBuildQueue(dir, nocrypto, reeval) {
+function runBuildQueue(dir, nocrypto) {
   execFileSync('node', [path.join(SCRIPTS, 'build-queue.cjs')], {
-    env: { ...process.env, JOB_DIR: dir, NOCRYPTO: nocrypto, REEVAL_REASONS: reeval || '' }, stdio: 'ignore',
+    env: { ...process.env, JOB_DIR: dir, NOCRYPTO: nocrypto }, stdio: 'ignore',
   });
   return JSON.parse(fs.readFileSync(path.join(dir, 'queue.json'), 'utf8'));
 }
@@ -189,12 +227,32 @@ test('NOCRYPTO=0 keeps crypto handle', () => {
   const d = fixtureDir();
   assert.deepStrictEqual(runBuildQueue(d, '0').sort(), ['BTCwhale', 'carol', 'dave']);
 });
-test('REEVAL_REASONS un-skips a config-bound (crypto) reject end-to-end', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-reeval-'));
-  fs.writeFileSync(path.join(d, 'tracker.json'), JSON.stringify({ followed: [], rejected: [{ h: 'blueacct', r: 'reject:blacklist(web3)' }] }));
-  fs.writeFileSync(path.join(d, 'cand-01.json'), JSON.stringify({ items: [{ handle: 'blueacct' }, { handle: 'carol' }] }));
-  assert.deepStrictEqual(runBuildQueue(d, '0').sort(), ['carol']);                       // no reeval -> still skipped
-  assert.deepStrictEqual(runBuildQueue(d, '0', 'reject:blacklist').sort(), ['blueacct', 'carol']); // reeval -> recovered
+
+group('build-queue.cjs DROP_NONBLUE (pre-filter non-verified before campaign)');
+function runBuildQueueEnv(dir, env) {
+  execFileSync('node', [path.join(SCRIPTS, 'build-queue.cjs')], { env: { ...process.env, JOB_DIR: dir, ...env }, stdio: 'ignore' });
+  return JSON.parse(fs.readFileSync(path.join(dir, 'queue.json'), 'utf8'));
+}
+function blueFixture() {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-blue-'));
+  fs.writeFileSync(path.join(d, 'tracker.json'), JSON.stringify({ followed: [], rejected: [] }));
+  fs.writeFileSync(path.join(d, 'cand-01.json'), JSON.stringify({ items: [
+    { handle: 'verified1', blue: true }, { handle: 'plain1', blue: false },
+    { handle: 'verified2', blue: true }, { handle: 'plain2', blue: false },
+  ] }));
+  return d;
+}
+test('DROP_NONBLUE=1 drops blue:false candidates', () => {
+  assert.deepStrictEqual(runBuildQueueEnv(blueFixture(), { NOCRYPTO: '0', DROP_NONBLUE: '1' }).sort(), ['verified1', 'verified2']);
+});
+test('DROP_NONBLUE unset keeps all', () => {
+  assert.deepStrictEqual(runBuildQueueEnv(blueFixture(), { NOCRYPTO: '0' }).sort(), ['plain1', 'plain2', 'verified1', 'verified2']);
+});
+test('priority.json handles bypass the blue filter', () => {
+  const d = blueFixture();
+  fs.writeFileSync(path.join(d, 'priority.json'), JSON.stringify(['vipNoBadge']));
+  const got = runBuildQueueEnv(d, { NOCRYPTO: '0', DROP_NONBLUE: '1' });
+  assert.ok(got.includes('vipNoBadge'), 'priority handle must survive DROP_NONBLUE');
 });
 
 // ------------------------------------------------------------------- summary

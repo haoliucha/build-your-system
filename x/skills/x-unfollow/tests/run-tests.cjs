@@ -14,6 +14,7 @@ const { execFileSync } = require('child_process');
 
 const SCRIPTS = path.join(__dirname, '..', 'scripts');
 const H = require(path.join(SCRIPTS, 'lib', 'hygiene.cjs'));
+const PC = require(path.join(SCRIPTS, 'profile-counts.cjs'));
 
 let pass = 0, fail = 0;
 function test(name, fn) { try { fn(); console.log(`  ✅ ${name}`); pass++; } catch (e) { console.log(`  ❌ ${name}\n     ${e.message}`); fail++; } }
@@ -87,6 +88,33 @@ test('past wait, count >= threshold -> exclude', () => assert.strictEqual(code({
 test('past wait, count < threshold -> eligible', () => assert.strictEqual(code({ elapsed: 4, refreshedFollowers: 1999 }), 'ELIGIBLE_FOR_UNFOLLOW'));
 test('eligible decision string', () => assert.strictEqual(H.classifyDecision({ ...base, elapsed: 8 }, CFG).decision, 'candidate_unfollow'));
 test('refresh decision flags needs_profile_refresh', () => assert.strictEqual(H.classifyDecision({ ...base, elapsed: 8, hasRefreshed: false, refreshedFollowers: null }, CFG).needs_profile_refresh, true));
+
+// ---------------------------------------------- profile-counts JSON-LD parsing
+group('profile-counts extractJsonLd / stat (nonce tolerance)');
+// X serves the ld+json tag WITH a CSP nonce. The parser must tolerate extra attributes,
+// otherwise every refresh returns followers_count:null (the silent-200 bug).
+const LD_NONCE = '<script type="application/ld+json" nonce="S0g3qDb/Sfs/irlMr/p5Uw==">' +
+  JSON.stringify({ '@type': 'ProfilePage', mainEntity: { name: 'Ex Hu', interactionStatistic: [
+    { '@type': 'InteractionCounter', name: 'Follows', userInteractionCount: 730 },
+    { '@type': 'InteractionCounter', name: 'Friends', userInteractionCount: 1200 },
+  ] } }) + '</script>';
+test('extracts ld+json despite nonce attribute', () => {
+  const blocks = PC.extractJsonLd(LD_NONCE);
+  assert.strictEqual(blocks.length, 1);
+  assert.strictEqual(blocks[0]['@type'], 'ProfilePage');
+});
+test('stat reads follower count from ProfilePage', () => {
+  const profile = PC.extractJsonLd(LD_NONCE).find((o) => o['@type'] === 'ProfilePage');
+  assert.strictEqual(PC.stat(profile, 'Follows', 'FollowAction'), 730);
+});
+test('plain tag (no attributes) still parses', () => {
+  const plain = '<script type="application/ld+json">' + JSON.stringify({ '@type': 'ProfilePage', mainEntity: {} }) + '</script>';
+  assert.strictEqual(PC.extractJsonLd(plain).length, 1);
+});
+test('decodes html entities inside ld+json', () => {
+  const enc = '<script type="application/ld+json" nonce="x">' + '{&quot;@type&quot;:&quot;ProfilePage&quot;}' + '</script>';
+  assert.strictEqual(PC.extractJsonLd(enc)[0]['@type'], 'ProfilePage');
+});
 
 // ---------------------------------------------------- classify.cjs integration
 group('classify.cjs integration (state dir + csv escaping)');

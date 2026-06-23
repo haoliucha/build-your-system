@@ -24,7 +24,6 @@ const { chromium } = require('playwright');
 const { EXIT_CODES, detectAnomaly, writeAlert } = require(path.join(__dirname, 'lib', 'anomaly.cjs'));
 const { gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
 const { CRYPTO_TOKENS } = require(path.join(__dirname, 'lib', 'filters.cjs'));
-const { shouldSkipReason } = require(path.join(__dirname, 'lib', 'skipset.cjs'));
 
 // ============ CONFIG ============
 const CFG = {
@@ -35,10 +34,17 @@ const CFG = {
   TRACKER_PATH: process.env.TRACKER_PATH || path.resolve('tracker.json'),
   LOG_PATH: process.env.LOG_PATH || path.resolve('campaign.log'),
   ALERT_PATH: process.env.ALERT_PATH || path.resolve('ALERT.txt'),
+  STATUS_PATH: process.env.STATUS_PATH || (process.env.JOB_DIR ? path.join(process.env.JOB_DIR, 'status.json') : path.resolve('status.json')),
 
   VERIFIED_REQUIRED: process.env.VERIFIED_REQUIRED !== 'false',
   FOLLOWING_GT_FOLLOWERS: process.env.FOLLOWING_GT_FOLLOWERS !== 'false',
-  FERS_MAX: parseInt(process.env.FERS_MAX || '1100', 10),
+  // FERS_MAX 3000 (was 1100): blue-V accounts skew to higher follower counts; 1100 rejected
+  // ~half the harvested pool. Data: rejects in the 1100-3000 band are still small enough to
+  // reciprocate a follow; the bulk of fers>1100 rejects are 10k+ (median 14k) and stay out.
+  FERS_MAX: parseInt(process.env.FERS_MAX || '3000', 10),
+  // FOLLOW_RATIO_MIN 0.5: reject only clear one-way broadcasters (fing < fers*0.5), not every
+  // account whose followers slightly exceed their following. See lib/filters.decide() note.
+  FOLLOW_RATIO_MIN: parseFloat(process.env.FOLLOW_RATIO_MIN || '0.5'),
   // Default blacklist = shared CRYPTO_TOKENS. Override with BIO_BLACKLIST. To DISABLE the
   // crypto filter, pass a never-matching token (empty string falls back to this default).
   BIO_BLACKLIST: (process.env.BIO_BLACKLIST || CRYPTO_TOKENS.join(',')).split(',').map(s => s.trim()).filter(Boolean),
@@ -59,9 +65,6 @@ const CFG = {
 
   DRY_RUN: process.env.DRY_RUN === '1',
   RELOAD_QUEUE_EVERY: parseInt(process.env.RELOAD_QUEUE_EVERY || '20', 10),
-  // Reason-prefixes to RE-EVALUATE (un-skip) because the current config is more permissive
-  // than the run that produced the prior reject. Transient errors are always re-evaluated.
-  REEVAL_REASONS: (process.env.REEVAL_REASONS || '').split(',').map((s) => s.trim()).filter(Boolean),
 };
 
 if (!CFG.TARGET || CFG.TARGET < 1) {
@@ -79,6 +82,12 @@ function loadJSON(p, fallback) {
   try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return fallback; }
 }
 function saveJSON(p, obj) { fs.writeFileSync(p, JSON.stringify(obj, null, 2)); }
+// Heartbeat/progress file — a single small JSON the orchestrator (and the human) can read
+// at any time to see live progress without tailing logs. Written on every iteration so a
+// stale `ts` also signals a hung run. Best-effort: failures here never break the campaign.
+function writeStatus(obj) {
+  try { fs.writeFileSync(CFG.STATUS_PATH, JSON.stringify({ ...obj, ts: new Date().toISOString() }, null, 2)); } catch {}
+}
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const rand = (min, max) => min + Math.floor(Math.random() * (max - min));
 
@@ -157,13 +166,14 @@ function buildVerifyJs(cfg) {
     const VERIFIED_REQUIRED = ${cfg.VERIFIED_REQUIRED};
     const FOLLOWING_GT_FOLLOWERS = ${cfg.FOLLOWING_GT_FOLLOWERS};
     const FERS_MAX = ${cfg.FERS_MAX};
+    const FOLLOW_RATIO_MIN = ${cfg.FOLLOW_RATIO_MIN};
     if (VERIFIED_REQUIRED && !blue) d = 'reject:not_blue';
     else if (gold) d = 'reject:gold_org';
     else if (uB) d = 'reject:already_following';
     else if (!fB) d = 'reject:no_follow_btn';
     else if (fN < 0 || fgN < 0) d = 'reject:cant_parse_stats';
     else if (fN > FERS_MAX) d = \`reject:fers>${cfg.FERS_MAX}(\${fN})\`;
-    else if (FOLLOWING_GT_FOLLOWERS && fgN <= fN) d = \`reject:fing<=fers(\${fgN}<=\${fN})\`;
+    else if (FOLLOWING_GT_FOLLOWERS && fgN < fN * FOLLOW_RATIO_MIN) d = \`reject:fing<fers*${cfg.FOLLOW_RATIO_MIN}(\${fgN}<\${fN})\`;
     else if (cryptoMatch) d = \`reject:blacklist(\${cryptoMatch})\`;
     else if (whitelistFail) d = 'reject:not_in_whitelist';
 
@@ -213,14 +223,11 @@ async function main() {
   let tracker = loadJSON(CFG.TRACKER_PATH, { followed: [], rejected: [], stats: { profiles_checked: 0, follow_success: 0 } });
   let queue = loadJSON(CFG.QUEUE_PATH, []);
   const followedSet = new Set(tracker.followed.map(f => f.handle));
-  // Reason-aware skip: only seed the in-memory reject skip with rejects that are STILL binding
-  // under this run's config. Config-bound rejects opened by REEVAL_REASONS (and transient
-  // errors) are intentionally left out so they get re-evaluated this run.
-  const rejectedSet = new Set((tracker.rejected || []).filter(r => shouldSkipReason(r.r || r.reason, CFG.REEVAL_REASONS)).map(r => r.h));
-  log(`Followed: ${tracker.followed.length}/${CFG.TARGET}, Queue: ${queue.length}, FollowedSet: ${followedSet.size}, RejectedSet: ${rejectedSet.size}, reeval=[${CFG.REEVAL_REASONS.join(',')}]`);
+  const rejectedSet = new Set((tracker.rejected || []).map(r => r.h));
+  log(`Followed: ${tracker.followed.length}/${CFG.TARGET}, Queue: ${queue.length}, FollowedSet: ${followedSet.size}, RejectedSet: ${rejectedSet.size}`);
 
   const ctx = await chromium.launchPersistentContext(CFG.PROFILE_DIR, {
-    channel: 'chrome', headless: false, viewport: { width: 1280, height: 820 },
+    channel: 'chrome', headless: false, chromiumSandbox: true, viewport: { width: 1280, height: 820 },
     ignoreDefaultArgs: ['--enable-automation'], args: ['--disable-blink-features=AutomationControlled'],
   });
   let page = ctx.pages()[0] || await ctx.newPage();
@@ -307,7 +314,9 @@ async function main() {
     if (result.error) {
       log(`${handle} -> ERROR ${result.error}`);
       tracker.rejected = tracker.rejected || [];
-      tracker.rejected.push({ h: handle, r: 'eval_error:' + result.error });
+      // `at` lets lib/skipset apply TTL/transient release later. eval_error is a transient
+      // tier (released next run), so this account gets re-evaluated rather than blacklisted.
+      tracker.rejected.push({ h: handle, r: 'eval_error:' + result.error, at: new Date().toISOString() });
       rejectedSet.add(handle); saveJSON(CFG.TRACKER_PATH, tracker);
       await sleep(rand(CFG.REJECT_WAIT_MIN_MS, CFG.REJECT_WAIT_MAX_MS)); continue;
     }
@@ -323,10 +332,12 @@ async function main() {
       consecutiveRateLimits = 0;
     } else if (result.decision && result.decision.startsWith('reject')) {
       tracker.rejected = tracker.rejected || [];
-      tracker.rejected.push({ h: handle, r: result.decision });
+      tracker.rejected.push({ h: handle, r: result.decision, at: new Date().toISOString() });
       rejectedSet.add(handle);
     }
     saveJSON(CFG.TRACKER_PATH, tracker);
+    writeStatus({ phase: 'campaign', followed: tracker.followed.length, target: CFG.TARGET,
+      queue_total: queue.length, processed: i + 1, last: { handle, decision: result.decision || result.action } });
 
     // Anomaly check AFTER action (esp. after a follow). EMPTY_PAGE excluded (latency artifact).
     const anomaly = await detectAnomaly(page);
