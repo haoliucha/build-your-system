@@ -127,8 +127,16 @@ async function main() {
   if (writeDate) {
     if (!fs.existsSync(REPORTS_DIR)) fs.mkdirSync(REPORTS_DIR, { recursive: true });
     const file = path.join(REPORTS_DIR, `profile-refresh-${writeDate}.json`);
-    fs.writeFileSync(file, JSON.stringify({ generatedAt: new Date().toISOString(), results }, null, 2) + '\n', 'utf8');
-    process.stderr.write(`[profile-counts] refreshed ${results.length} -> ${file}\n`);
+    // Merge with existing data so repeated runs accumulate results instead of clobbering them.
+    const prev = [];
+    if (fs.existsSync(file)) {
+      try { const d = JSON.parse(fs.readFileSync(file, 'utf8')); if (Array.isArray(d.results)) prev.push(...d.results); } catch {}
+    }
+    const byHandle = new Map(prev.map((r) => [r.handle, r]));
+    for (const r of results) byHandle.set(r.handle, r);
+    const merged = [...byHandle.values()];
+    fs.writeFileSync(file, JSON.stringify({ generatedAt: new Date().toISOString(), results: merged }, null, 2) + '\n', 'utf8');
+    process.stderr.write(`[profile-counts] refreshed ${results.length}, total merged=${merged.length} -> ${file}\n`);
   }
   process.stdout.write(JSON.stringify(results, null, 2) + '\n');
 }
