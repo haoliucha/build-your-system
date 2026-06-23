@@ -14,7 +14,7 @@ const { execFileSync } = require('child_process');
 
 const SCRIPTS = path.join(__dirname, '..', 'scripts');
 const { parseCount, isCryptoHandle, backoffMs, decide, CRYPTO_TOKENS } = require(path.join(SCRIPTS, 'lib', 'filters.cjs'));
-const { buildSkipSet, classifyReason } = require(path.join(SCRIPTS, 'lib', 'skipset.cjs'));
+const { buildSkipSet, classifyReason, softRejectNowPasses } = require(path.join(SCRIPTS, 'lib', 'skipset.cjs'));
 const { classifyAnomaly } = require(path.join(SCRIPTS, 'lib', 'anomaly.cjs'));
 
 let pass = 0, fail = 0;
@@ -52,18 +52,24 @@ test('attempt<1 clamps to 1', () => assert.strictEqual(backoffMs(0, 20000, 30000
 
 // --------------------------------------------------------------------- decide
 group('decide (campaign criteria — order matters)');
-const CFG = { VERIFIED_REQUIRED: true, FOLLOWING_GT_FOLLOWERS: true, FERS_MAX: 1100 };
+const CFG = { VERIFIED_REQUIRED: true, FOLLOWING_GT_FOLLOWERS: true, FERS_MAX: 3000, FOLLOW_RATIO_MIN: 0.5 };
 test('good account passes', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 300, fing: 600 }, CFG), 'pass'));
 test('not blue rejected', () => assert.strictEqual(decide({ blue: false, hasFollowBtn: true, fers: 300, fing: 600 }, CFG), 'reject:not_blue'));
 test('gold org rejected', () => assert.strictEqual(decide({ blue: true, gold: true, hasFollowBtn: true, fers: 300, fing: 600 }, CFG), 'reject:gold_org'));
 test('already following never clicked', () => assert.strictEqual(decide({ blue: true, hasUnfollowBtn: true, hasFollowBtn: true, fers: 300, fing: 600 }, CFG), 'reject:already_following'));
 test('no follow button', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: false, fers: 300, fing: 600 }, CFG), 'reject:no_follow_btn'));
-test('whale over FERS_MAX', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 15000, fing: 20000 }, CFG), 'reject:fers>1100(15000)'));
-test('inverted ratio', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 400, fing: 300 }, CFG), 'reject:fing<=fers(300<=400)'));
+test('whale over FERS_MAX', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 15000, fing: 20000 }, CFG), 'reject:fers>3000(15000)'));
+// FERS_MAX 3000: a mid-size blue-V (2362 followers) that 1100 would have rejected now passes.
+test('mid-size account within raised FERS_MAX passes', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 2362, fing: 2000 }, CFG), 'pass'));
+// FOLLOW_RATIO_MIN 0.5: followers may edge out following (NOT a one-way broadcaster) -> pass.
+test('near-parity ratio passes (was over-rejected)', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 400, fing: 300 }, CFG), 'pass'));
+test('borderline ratio passes (fing == fers*0.5)', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 322, fing: 161 }, CFG), 'pass'));
+// only a CLEAR broadcaster (fing < fers*0.5) is still rejected
+test('one-way broadcaster rejected', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 900, fing: 300 }, CFG), 'reject:fing<fers*0.5(300<900)'));
 test('crypto bio (when filter on)', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 300, fing: 600, cryptoMatch: 'web3' }, CFG), 'reject:blacklist(web3)'));
 test('crypto allowed when no match passed', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 300, fing: 600, cryptoMatch: null }, CFG), 'pass'));
 test('whitelist miss', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 300, fing: 600, whitelistFail: true }, CFG), 'reject:not_in_whitelist'));
-test('size beats crypto in order', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 9000, fing: 9999, cryptoMatch: 'btc' }, CFG), 'reject:fers>1100(9000)'));
+test('size beats crypto in order', () => assert.strictEqual(decide({ blue: true, hasFollowBtn: true, fers: 9000, fing: 9999, cryptoMatch: 'btc' }, CFG), 'reject:fers>3000(9000)'));
 
 // ------------------------------------------------------------------ skip-set
 group('buildSkipSet (tracker union)');
@@ -129,6 +135,44 @@ test('release stats are reported', () => {
   ] }], { now: NOW, softTtlDays: 30, stats });
   assert.strictEqual(stats.released_transient, 1);
   assert.strictEqual(stats.released_soft_expired, 1);
+});
+
+// ----------------------------------------- THRESHOLD-AWARE soft release (new)
+group('softRejectNowPasses (threshold-aware unlock)');
+const OPTS = { fersMax: 3000, followRatioMin: 0.5 };
+test('fers reject under raised cap releases', () => assert.strictEqual(softRejectNowPasses('reject:fers>1100(2362)', OPTS), true));
+test('fers reject still over cap stays', () => assert.strictEqual(softRejectNowPasses('reject:fers>1100(14000)', OPTS), false));
+test('fers reject exactly at cap releases', () => assert.strictEqual(softRejectNowPasses('reject:fers>1100(3000)', OPTS), true));
+test('old fing<=fers label re-evaluated by ratio (releases)', () => assert.strictEqual(softRejectNowPasses('reject:fing<=fers(165<=323)', OPTS), true));
+test('new fing<fers*r label re-evaluated (releases)', () => assert.strictEqual(softRejectNowPasses('reject:fing<fers*0.5(165<323)', OPTS), true));
+test('clear broadcaster stays (ratio fails)', () => assert.strictEqual(softRejectNowPasses('reject:fing<=fers(50<=900)', OPTS), false));
+test('fing reject over the cap stays even if ratio ok', () => assert.strictEqual(softRejectNowPasses('reject:fing<=fers(9000<=12000)', OPTS), false));
+test('without opts cannot prove pass -> false', () => assert.strictEqual(softRejectNowPasses('reject:fers>1100(100)', {}), false));
+test('permanent reason never auto-passes', () => assert.strictEqual(softRejectNowPasses('reject:not_blue', OPTS), false));
+
+group('buildSkipSet threshold-aware release (relaxed cap unlocks)');
+test('raising FERS_MAX releases now-eligible fers reject', () => {
+  const got = buildSkipSet([{ rejected: [
+    { h: 'small', r: 'reject:fers>1100(2362)', at: daysAgo(2) },   // 2362 <= 3000 -> release
+    { h: 'whale', r: 'reject:fers>1100(50000)', at: daysAgo(2) },  // stays
+  ] }], { now: NOW, softTtlDays: 30, ...OPTS });
+  assert.deepStrictEqual(got, ['whale']);
+});
+test('relaxed ratio releases near-parity fing reject but keeps broadcaster', () => {
+  const got = buildSkipSet([{ rejected: [
+    { h: 'parity', r: 'reject:fing<=fers(165<=323)', at: daysAgo(2) },  // 165>=161.5 -> release
+    { h: 'caster', r: 'reject:fing<=fers(50<=900)', at: daysAgo(2) },   // 50<450 -> stays
+  ] }], { now: NOW, softTtlDays: 30, ...OPTS });
+  assert.deepStrictEqual(got, ['caster']);
+});
+test('threshold release is counted in stats', () => {
+  const stats = {};
+  buildSkipSet([{ rejected: [{ h: 'x', r: 'reject:fers>1100(2362)', at: daysAgo(2) }] }], { now: NOW, softTtlDays: 30, stats, ...OPTS });
+  assert.strictEqual(stats.released_threshold, 1);
+});
+test('without thresholds, fresh soft reject is still skipped (back-compat)', () => {
+  const got = buildSkipSet([{ rejected: [{ h: 'x', r: 'reject:fers>1100(2362)', at: daysAgo(2) }] }], { now: NOW, softTtlDays: 30 });
+  assert.deepStrictEqual(got, ['x']);
 });
 
 // ------------------------------------------------------------------- anomaly

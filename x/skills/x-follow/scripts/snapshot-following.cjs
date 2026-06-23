@@ -56,7 +56,7 @@ const EXTRACT_JS = `(async (me) => {
 
 async function main() {
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-    channel: 'chrome', headless: false, viewport: { width: 1280, height: 820 },
+    channel: 'chrome', headless: false, chromiumSandbox: true, viewport: { width: 1280, height: 820 },
     ignoreDefaultArgs: ['--enable-automation'], args: ['--disable-blink-features=AutomationControlled'],
   });
   const page = ctx.pages()[0] || await ctx.newPage();

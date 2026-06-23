@@ -45,14 +45,20 @@ const NOCRYPTO = process.env.NOCRYPTO !== '0';
 const DROP_NONBLUE = process.env.DROP_NONBLUE === '1';
 const SKIP_GLOB = process.env.SKIP_GLOB || '';
 const SOFT_TTL_DAYS = parseInt(process.env.SOFT_TTL_DAYS || '30', 10);
+// Current campaign thresholds, mirrored here so the skip-set can do THRESHOLD-AWARE release:
+// accounts soft-rejected under an older, stricter FERS_MAX / ratio whose stored stats now pass
+// are dropped from the skip-set (re-surfaced for a fresh follow attempt). Must match campaign.
+const FERS_MAX = parseInt(process.env.FERS_MAX || '3000', 10);
+const FOLLOW_RATIO_MIN = parseFloat(process.env.FOLLOW_RATIO_MIN || '0.5');
 const read = (f) => { try { return JSON.parse(fs.readFileSync(path.join(JOB, f), 'utf8')); } catch { return null; } };
 
 const tracker = read('tracker.json') || { followed: [], rejected: [] };
 const skipStats = {};
-let skipHandles = buildSkipSet([tracker], { softTtlDays: SOFT_TTL_DAYS, stats: skipStats }); // this run's own decisions
+const skipOpts = { softTtlDays: SOFT_TTL_DAYS, fersMax: FERS_MAX, followRatioMin: FOLLOW_RATIO_MIN, stats: skipStats };
+let skipHandles = buildSkipSet([tracker], skipOpts); // this run's own decisions
 if (SKIP_GLOB) {
   const paths = expandGlob(SKIP_GLOB);
-  const fromGlob = buildSkipSetFromPaths(paths, { softTtlDays: SOFT_TTL_DAYS, stats: skipStats });
+  const fromGlob = buildSkipSetFromPaths(paths, skipOpts);
   skipHandles = skipHandles.concat(fromGlob);
   process.stderr.write(`[build-queue] skip-glob trackers=${paths.length} released=${JSON.stringify(skipStats)}\n`);
 }

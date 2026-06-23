@@ -11,12 +11,21 @@
 // Output: stdout JSON { count, items:[{handle, displayName, blue, text}], perQuery }
 //         (or {count:0,error} on nav failure)
 //
-// PERF: `search-multi` runs ALL queries inside ONE browser context (one launch / one close)
-// instead of cold-starting Chrome per query. This cuts startup cost ~6x AND avoids the 429
-// storm that back-to-back launches provoke (each fresh session = a new burst of requests).
-//
-// All navigation goes through gotoRobust so HTTP 429 ("出错了") and slow VPN renders are
-// handled by exponential backoff rather than retry-hammering.
+// 429 STRATEGY (rewritten after measuring real storms in jobs 50i/50j):
+//   The earlier "all queries in ONE long session" assumption was WRONG for f=live search —
+//   logs proved 429 reliably trips on the 3rd query of a single session (after ~2 clean
+//   SearchTimeline fetches) and then CASCADES, because the backoff waits happen inside the
+//   same throttled session whose IP/session budget never resets. The old one-query-per-launch
+//   jobs almost never 429'd because each fresh launch reset the budget.
+//   So search-multi now:
+//     1. runs at most SESSION_SIZE (default 2) queries per browser session, then closes +
+//        relaunches after a SESSION_COOLDOWN (default 75s) — a fresh session resets the budget;
+//     2. paces QUERY_PACING_MS (default 25s + jitter) between queries inside a session;
+//     3. uses a deeper search backoff (base 45s) so a retry lands OUTSIDE the ~140s live-search
+//        window (the only observed recoveries happened past the old 80s ceiling);
+//     4. ABORTS the round after 2 consecutive hard nav failures (the session is throttled —
+//        the remaining queries are guaranteed to fail too) and reports rateLimited:true so the
+//        orchestrator can cool down instead of mis-counting it as a dry (pool-exhausted) round.
 
 const path = require('path');
 const { chromium } = require('playwright');
@@ -115,35 +124,58 @@ const EXTRACT_JS = `(async (KIND, SCROLLS) => {
   return { count: collected.size, items: Array.from(collected.values()) };
 })(${JSON.stringify(extractKind)}, ${scrolls})`;
 
+// Search backoff base: 45s (vs the 20s default) so a retry lands past the ~140s live-search
+// rate-limit window. retries:3 -> waits 45s then 90s (135s total) before giving up — matching
+// the only observed recovery point. Non-search modes keep the gentler default.
+const SEARCH_BACKOFF_BASE = parseInt(process.env.SEARCH_BACKOFF_BASE || '45000', 10);
+const SEARCH_RETRIES = parseInt(process.env.SEARCH_RETRIES || '3', 10);
+
 async function harvestOne(page, target) {
   process.stderr.write(`[harvest] ${mode}: ${target.url}\n`);
-  const nav = await gotoRobust(page, target.url, { needSel, settle: 5000, retries: 4 });
+  const isSearch = mode === 'search' || mode === 'search-multi';
+  const navOpts = isSearch
+    ? { needSel, settle: 5000, retries: SEARCH_RETRIES, backoffBase: SEARCH_BACKOFF_BASE }
+    : { needSel, settle: 5000, retries: 4 };
+  const nav = await gotoRobust(page, target.url, navOpts);
   if (!nav.ok) {
-    process.stderr.write(`[harvest] page error after ${nav.attempts} retries (${target.label})\n`);
-    return { ok: false, items: [] };
+    process.stderr.write(`[harvest] page error after ${nav.attempts} retries (${target.label}) — likely rate-limited\n`);
+    return { ok: false, items: [], rl: true };
   }
   await page.waitForTimeout(1500);
   const result = await page.evaluate(EXTRACT_JS);
   process.stderr.write(`[harvest] ${target.label}: collected ${result.count}\n`);
-  return { ok: true, items: result.items };
+  return { ok: true, items: result.items, rl: false };
+}
+
+function launchCtx() {
+  return chromium.launchPersistentContext(PROFILE_DIR, {
+    channel: 'chrome', headless: false, chromiumSandbox: true, viewport: { width: 1280, height: 820 },
+    ignoreDefaultArgs: ['--enable-automation'], args: ['--disable-blink-features=AutomationControlled'],
+  });
 }
 
 async function main() {
-  const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-    channel: 'chrome', headless: false, viewport: { width: 1280, height: 820 },
-    ignoreDefaultArgs: ['--enable-automation'], args: ['--disable-blink-features=AutomationControlled'],
-  });
-  const page = ctx.pages()[0] || await ctx.newPage();
+  // 429 pacing/session knobs (see header). search-multi splits queries across short sessions;
+  // single-target modes (search/replies/followers) run one query so they ignore SESSION_SIZE.
+  const SESSION_SIZE = parseInt(process.env.SESSION_SIZE || '2', 10);
+  const PACING_MS = parseInt(process.env.QUERY_PACING_MS || '25000', 10);
+  const PACING_JITTER = parseInt(process.env.QUERY_PACING_JITTER_MS || '15000', 10);
+  const SESSION_COOLDOWN_MS = parseInt(process.env.SESSION_COOLDOWN_MS || '75000', 10);
+  const isSearchMulti = mode === 'search-multi';
 
   // Merge all targets into ONE deduped item map (handle-keyed). The first time we see a
   // handle wins — and we OR the blue flag so a verified sighting in any query sticks.
   const merged = new Map();
   const perQuery = {};
-  let anyOk = false;
+  let anyOk = false, rateLimited = false, consecFail = 0;
+  let ctx = null, page = null, inSession = 0;
+
   for (let t = 0; t < targets.length; t++) {
+    if (!ctx) { ctx = await launchCtx(); page = ctx.pages()[0] || await ctx.newPage(); inSession = 0; }
     const tg = targets[t];
     const r = await harvestOne(page, tg);
-    if (r.ok) anyOk = true;
+    if (r.ok) { anyOk = true; consecFail = 0; }
+    else { rateLimited = rateLimited || !!r.rl; consecFail++; }
     let added = 0;
     for (const it of r.items) {
       const ex = merged.get(it.handle);
@@ -151,18 +183,37 @@ async function main() {
       else if (it.blue && !ex.blue) ex.blue = true;  // verified sighting wins
     }
     perQuery[tg.label] = (perQuery[tg.label] || 0) + added;
-    // gentle pacing between queries inside the same session (skip after the last one)
-    if (t < targets.length - 1) await sleep(6000);
+    inSession++;
+
+    // Hard-throttle abort: once 2 queries in a row fail, the session/IP is rate-limited and
+    // the remaining f=live queries will fail too (50i: 4/4). Bail and let the orchestrator
+    // cool down instead of burning ~10min of backoff for zero new candidates.
+    if (consecFail >= 2) {
+      process.stderr.write('[harvest] 2 consecutive nav failures — aborting round (rate-limited)\n');
+      rateLimited = true;
+      break;
+    }
+    if (t < targets.length - 1) {
+      if (isSearchMulti && inSession >= SESSION_SIZE) {
+        // session full -> fresh launch resets X's rate-limit budget
+        await ctx.close(); ctx = null;
+        const cd = Math.round(SESSION_COOLDOWN_MS / 1000);
+        process.stderr.write(`[harvest] session full (${SESSION_SIZE} queries) — close + cooldown ${cd}s + relaunch\n`);
+        await sleep(SESSION_COOLDOWN_MS);
+      } else {
+        await sleep(PACING_MS + Math.floor(Math.random() * PACING_JITTER));
+      }
+    }
   }
 
-  await ctx.close();
+  if (ctx) await ctx.close();
 
   if (!anyOk && merged.size === 0) {
-    console.log(JSON.stringify({ count: 0, error: 'page_error_after_retries', items: [] }, null, 2));
+    console.log(JSON.stringify({ count: 0, error: 'page_error_after_retries', items: [], rateLimited: true }, null, 2));
     return;
   }
   const items = Array.from(merged.values());
-  console.log(JSON.stringify({ count: items.length, items, perQuery }, null, 2));
+  console.log(JSON.stringify({ count: items.length, items, perQuery, rateLimited }, null, 2));
 }
 
 main().catch(e => { console.error('FATAL', e); process.exit(99); });

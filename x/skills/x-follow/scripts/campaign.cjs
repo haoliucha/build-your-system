@@ -38,7 +38,13 @@ const CFG = {
 
   VERIFIED_REQUIRED: process.env.VERIFIED_REQUIRED !== 'false',
   FOLLOWING_GT_FOLLOWERS: process.env.FOLLOWING_GT_FOLLOWERS !== 'false',
-  FERS_MAX: parseInt(process.env.FERS_MAX || '1100', 10),
+  // FERS_MAX 3000 (was 1100): blue-V accounts skew to higher follower counts; 1100 rejected
+  // ~half the harvested pool. Data: rejects in the 1100-3000 band are still small enough to
+  // reciprocate a follow; the bulk of fers>1100 rejects are 10k+ (median 14k) and stay out.
+  FERS_MAX: parseInt(process.env.FERS_MAX || '3000', 10),
+  // FOLLOW_RATIO_MIN 0.5: reject only clear one-way broadcasters (fing < fers*0.5), not every
+  // account whose followers slightly exceed their following. See lib/filters.decide() note.
+  FOLLOW_RATIO_MIN: parseFloat(process.env.FOLLOW_RATIO_MIN || '0.5'),
   // Default blacklist = shared CRYPTO_TOKENS. Override with BIO_BLACKLIST. To DISABLE the
   // crypto filter, pass a never-matching token (empty string falls back to this default).
   BIO_BLACKLIST: (process.env.BIO_BLACKLIST || CRYPTO_TOKENS.join(',')).split(',').map(s => s.trim()).filter(Boolean),
@@ -160,13 +166,14 @@ function buildVerifyJs(cfg) {
     const VERIFIED_REQUIRED = ${cfg.VERIFIED_REQUIRED};
     const FOLLOWING_GT_FOLLOWERS = ${cfg.FOLLOWING_GT_FOLLOWERS};
     const FERS_MAX = ${cfg.FERS_MAX};
+    const FOLLOW_RATIO_MIN = ${cfg.FOLLOW_RATIO_MIN};
     if (VERIFIED_REQUIRED && !blue) d = 'reject:not_blue';
     else if (gold) d = 'reject:gold_org';
     else if (uB) d = 'reject:already_following';
     else if (!fB) d = 'reject:no_follow_btn';
     else if (fN < 0 || fgN < 0) d = 'reject:cant_parse_stats';
     else if (fN > FERS_MAX) d = \`reject:fers>${cfg.FERS_MAX}(\${fN})\`;
-    else if (FOLLOWING_GT_FOLLOWERS && fgN <= fN) d = \`reject:fing<=fers(\${fgN}<=\${fN})\`;
+    else if (FOLLOWING_GT_FOLLOWERS && fgN < fN * FOLLOW_RATIO_MIN) d = \`reject:fing<fers*${cfg.FOLLOW_RATIO_MIN}(\${fgN}<\${fN})\`;
     else if (cryptoMatch) d = \`reject:blacklist(\${cryptoMatch})\`;
     else if (whitelistFail) d = 'reject:not_in_whitelist';
 
@@ -220,7 +227,7 @@ async function main() {
   log(`Followed: ${tracker.followed.length}/${CFG.TARGET}, Queue: ${queue.length}, FollowedSet: ${followedSet.size}, RejectedSet: ${rejectedSet.size}`);
 
   const ctx = await chromium.launchPersistentContext(CFG.PROFILE_DIR, {
-    channel: 'chrome', headless: false, viewport: { width: 1280, height: 820 },
+    channel: 'chrome', headless: false, chromiumSandbox: true, viewport: { width: 1280, height: 820 },
     ignoreDefaultArgs: ['--enable-automation'], args: ['--disable-blink-features=AutomationControlled'],
   });
   let page = ctx.pages()[0] || await ctx.newPage();

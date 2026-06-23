@@ -53,18 +53,25 @@ function backoffMs(attempt, base = 20000, cap = 300000) {
 // PURE mirror of campaign VERIFY_JS decision logic — lets the criteria be unit-tested
 // without a browser. `p` is the parsed profile, `cfg` the gates.
 //   p: { blue, gold, hasFollowBtn, hasUnfollowBtn, fers, fing, cryptoMatch, whitelistFail }
-//   cfg: { VERIFIED_REQUIRED, FOLLOWING_GT_FOLLOWERS, FERS_MAX }
+//   cfg: { VERIFIED_REQUIRED, FOLLOWING_GT_FOLLOWERS, FERS_MAX, FOLLOW_RATIO_MIN }
 // Order matters and MUST match VERIFY_JS so tests reflect production behavior.
+//
+// FOLLOW_RATIO_MIN (default 0.5): the old gate required fing > fers, which over-rejected
+// legit 互关 accounts whose followers merely edge out their following (data: 153/218
+// fing<=fers rejects had fers <= 2x fing — i.e. NOT one-way broadcasters). We now reject
+// only CLEAR broadcasters: fing < fers * FOLLOW_RATIO_MIN. At 0.5 that means "reject if
+// the account follows fewer than half as many as follow it" — keeps the mutual-follow pool.
 function decide(p, cfg) {
   const fers = p.fers == null ? -1 : p.fers;
   const fing = p.fing == null ? -1 : p.fing;
+  const ratio = cfg.FOLLOW_RATIO_MIN != null ? cfg.FOLLOW_RATIO_MIN : 0.5;
   if (cfg.VERIFIED_REQUIRED && !p.blue) return 'reject:not_blue';
   if (p.gold) return 'reject:gold_org';
   if (p.hasUnfollowBtn) return 'reject:already_following'; // SAFETY: never click if already followed
   if (!p.hasFollowBtn) return 'reject:no_follow_btn';
   if (fers < 0 || fing < 0) return 'reject:cant_parse_stats';
   if (fers > cfg.FERS_MAX) return `reject:fers>${cfg.FERS_MAX}(${fers})`;
-  if (cfg.FOLLOWING_GT_FOLLOWERS && fing <= fers) return `reject:fing<=fers(${fing}<=${fers})`;
+  if (cfg.FOLLOWING_GT_FOLLOWERS && fing < fers * ratio) return `reject:fing<fers*${ratio}(${fing}<${fers})`;
   if (p.cryptoMatch) return `reject:blacklist(${p.cryptoMatch})`;
   if (p.whitelistFail) return 'reject:not_in_whitelist';
   return 'pass';

@@ -47,6 +47,7 @@ async function main() {
     ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
       channel: 'chrome',
       headless: false,
+      chromiumSandbox: true,  // suppress the "--no-sandbox / security will suffer" infobar
       viewport: { width: 1280, height: 820 },
       ignoreDefaultArgs: ['--enable-automation'],
       args: ['--disable-blink-features=AutomationControlled'],
