@@ -24,6 +24,7 @@ const { chromium } = require('playwright');
 const { EXIT_CODES, detectAnomaly, writeAlert } = require(path.join(__dirname, 'lib', 'anomaly.cjs'));
 const { gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
 const { CRYPTO_TOKENS } = require(path.join(__dirname, 'lib', 'filters.cjs'));
+const { generateComment } = require(path.join(__dirname, 'lib', 'comment-generator.cjs'));
 
 // ============ CONFIG ============
 const CFG = {
@@ -65,6 +66,10 @@ const CFG = {
 
   DRY_RUN: process.env.DRY_RUN === '1',
   RELOAD_QUEUE_EVERY: parseInt(process.env.RELOAD_QUEUE_EVERY || '20', 10),
+  // COMMENT_AFTER_FOLLOW: after a successful follow, reply to the target's pinned post with
+  // a varied follow引流 comment hinting at reciprocal following. Only comments on pinned posts
+  // (no pinned post → skip silently). Varied templates avoid spam-signal pattern repetition.
+  COMMENT_AFTER_FOLLOW: process.env.COMMENT_AFTER_FOLLOW === '1' || process.env.COMMENT_AFTER_FOLLOW === 'true',
 };
 
 if (!CFG.TARGET || CFG.TARGET < 1) {
@@ -210,13 +215,75 @@ function buildVerifyJs(cfg) {
 
 const isFollowAction = (a) => a === 'followed' || a === 'followed_via_confirm' || a === 'followed_assumed';
 
+// ============ COMMENT ON PINNED POST ============
+// Called after a confirmed follow when COMMENT_AFTER_FOLLOW=true. Tries to reply to the
+// target's pinned post with a varied引流 comment. Silently skips if:
+//   - no pinned post found on the current profile page
+//   - reply composer doesn't open within timeout
+//   - tweet button is absent or disabled
+// Any anomaly detected AFTER posting is returned in {status:'anomaly'} and the caller halts.
+async function commentOnPinnedPost(page, handle, cfg) {
+  try {
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(1000 + Math.floor(Math.random() * 500));
+
+    const socialCtx = await page.$('[data-testid="socialContext"]');
+    if (!socialCtx) { log(`COMMENT SKIP ${handle}: no pinned post`); return { status: 'no_pinned_post' }; }
+    const ctxText = await socialCtx.textContent().catch(() => '');
+    if (!ctxText.includes('置顶') && !ctxText.includes('Pinned')) {
+      log(`COMMENT SKIP ${handle}: socialContext not pinned ("${ctxText.slice(0, 30)}")`);
+      return { status: 'no_pinned_post' };
+    }
+
+    const replyBtn = await page.$('article[data-testid="tweet"] [data-testid="reply"]');
+    if (!replyBtn) { log(`COMMENT SKIP ${handle}: no reply button`); return { status: 'no_reply_btn' }; }
+
+    const comment = generateComment();
+
+    if (cfg.DRY_RUN) {
+      log(`COMMENT DRY_RUN ${handle}: would post "${comment}"`);
+      return { status: 'dry_run', comment };
+    }
+
+    log(`COMMENT ${handle}: replying to pinned post: "${comment}"`);
+    await replyBtn.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(400 + Math.floor(Math.random() * 600));
+    await replyBtn.click();
+
+    const textarea = await page.waitForSelector('[data-testid="tweetTextarea_0"]', { timeout: 6000 }).catch(() => null);
+    if (!textarea) { log(`COMMENT SKIP ${handle}: composer didn't open`); return { status: 'no_composer' }; }
+
+    await textarea.click();
+    await page.waitForTimeout(300 + Math.floor(Math.random() * 200));
+    await page.keyboard.type(comment, { delay: 30 + Math.floor(Math.random() * 35) });
+    await page.waitForTimeout(700 + Math.floor(Math.random() * 500));
+
+    const tweetBtn = await page.$('[data-testid="tweetButton"]:not([disabled])');
+    if (!tweetBtn) {
+      log(`COMMENT SKIP ${handle}: submit button absent/disabled`);
+      await page.keyboard.press('Escape');
+      return { status: 'no_submit_btn' };
+    }
+
+    await tweetBtn.click();
+    await page.waitForTimeout(cfg.POST_CLICK_SETTLE_MS);
+    log(`✅ COMMENT POSTED ${handle}: "${comment}"`);
+    return { status: 'posted', comment };
+  } catch (e) {
+    log(`COMMENT ERROR ${handle}: ${e.message}`);
+    try { await page.keyboard.press('Escape'); } catch {}
+    return { status: 'error', error: e.message };
+  }
+}
+
 // ============ MAIN ============
 async function main() {
   log(`=== CAMPAIGN START ===`);
-  log(`Config: TARGET=${CFG.TARGET}, FERS_MAX=${CFG.FERS_MAX}, SETTLE=${CFG.POST_CLICK_SETTLE_MS}ms, DRY_RUN=${CFG.DRY_RUN}`);
+  log(`Config: TARGET=${CFG.TARGET}, FERS_MAX=${CFG.FERS_MAX}, SETTLE=${CFG.POST_CLICK_SETTLE_MS}ms, DRY_RUN=${CFG.DRY_RUN}, COMMENT=${CFG.COMMENT_AFTER_FOLLOW}`);
   log(`SAFETY MANIFEST:`);
   log(`  - Will only click follow buttons matching 'aria-label="关注 @{handle}"' (or "Follow @{handle}")`);
-  log(`  - Will NEVER click unfollow / block / report / like / tweet / dm`);
+  log(`  - Will NEVER click unfollow / block / report / like / dm`);
+  log(`  - Comment (if COMMENT_AFTER_FOLLOW): ONLY on pinned post of just-followed account; varied templates`);
   log(`  - Will exit on any anomaly (CAPTCHA/RATE_LIMIT/LOGIN/LOCK) without retry beyond budget`);
   log(`  - Works on profile copy at ${CFG.PROFILE_DIR}; original profile untouched`);
 
@@ -349,6 +416,28 @@ async function main() {
         log(`RATE_LIMIT first hit, pause 30 min and retry once`); await sleep(1800_000); continue;
       }
       await ctx.close(); process.exit(EXIT_CODES[anomaly.type] || 99);
+    }
+
+    // Comment on pinned post (引流回关): only when follow succeeded, no prior anomaly, feature enabled.
+    if (isFollowAction(result.action) && CFG.COMMENT_AFTER_FOLLOW) {
+      await page.waitForTimeout(1500 + Math.floor(Math.random() * 1000));
+      const cr = await commentOnPinnedPost(page, handle, CFG);
+      tracker.followed[tracker.followed.length - 1].comment = cr;
+      saveJSON(CFG.TRACKER_PATH, tracker);
+      // Re-check anomaly after comment interaction (typing/clicking can trigger rate limits).
+      if (cr.status === 'posted' || cr.status === 'error') {
+        const ca = await detectAnomaly(page);
+        if (ca && ca.type !== 'EVAL_ERROR' && ca.type !== 'EMPTY_PAGE') {
+          log(`!!! ANOMALY AFTER COMMENT: ${ca.type} - ${ca.text}`);
+          writeAlert(CFG.ALERT_PATH, { ...ca, handle, url: page.url(), context: 'after_comment', profileDir: CFG.PROFILE_DIR });
+          if (ca.type === 'RATE_LIMIT') {
+            if (++consecutiveRateLimits >= 2) { log(`RATE_LIMIT twice (comment), exiting`); await ctx.close(); process.exit(EXIT_CODES.RATE_LIMIT); }
+            log(`RATE_LIMIT after comment, pause 30 min`); await sleep(1800_000);
+          } else {
+            await ctx.close(); process.exit(EXIT_CODES[ca.type] || 99);
+          }
+        }
+      }
     }
 
     // Pace
