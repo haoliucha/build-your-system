@@ -20,6 +20,7 @@
 #   NOCRYPTO=1               CAND_MULT=8   (harvest until queue >= TARGET*CAND_MULT)
 #   SKIP_GLOB="$HOME/.claude/jobs/x-follow-*/tracker.json"   (prior trackers -> skip-set)
 #   FERS_MAX=1100            HARVEST_SCROLLS=18        MAX_CAMPAIGN_ATTEMPTS=12
+#   COMMENT_AFTER_FOLLOW=true   (reply to pinned post after follow, 引流回关; default false)
 #   NODE_PATH must point at a node_modules with playwright (set by caller).
 
 set -o pipefail
@@ -77,7 +78,10 @@ POOL_MIN_GAIN="${POOL_MIN_GAIN:-5}"
 # counting it toward POOL_DRY_ROUNDS — so a throttled run no longer bails early as "exhausted".
 ROUND_COOLDOWN_RL_S="${ROUND_COOLDOWN_RL_S:-300}"
 MAX_RL_RETRIES="${MAX_RL_RETRIES:-3}"
-export SKIP_GLOB SOFT_TTL_DAYS DROP_NONBLUE VERIFIED_REQUIRED FERS_MAX FOLLOW_RATIO_MIN
+# Comment引流: after each follow, reply to the target's pinned post with a varied comment
+# hinting at reciprocal following. Default OFF. Set COMMENT_AFTER_FOLLOW=true to enable.
+COMMENT_AFTER_FOLLOW="${COMMENT_AFTER_FOLLOW:-false}"
+export SKIP_GLOB SOFT_TTL_DAYS DROP_NONBLUE VERIFIED_REQUIRED FERS_MAX FOLLOW_RATIO_MIN COMMENT_AFTER_FOLLOW
 
 mkdir -p "$JOB_DIR"
 TRACKER="$JOB_DIR/tracker.json"
