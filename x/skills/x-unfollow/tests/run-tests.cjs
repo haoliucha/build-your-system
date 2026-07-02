@@ -129,6 +129,8 @@ function fixtureDir() {
   fs.writeFileSync(path.join(snap, '2026-06-18.jsonl'), [
     row('alice', 'Alice, the great', 100), row('bob', 'B', 100), row('dave', 'D', 100),
     row('carol', 'C', 5), row('home', 'nav', 0),
+    // post-fix snapshots also carry mutual rows — classify must skip them
+    JSON.stringify({ handle: 'mallory', name: 'M', followers: 0, isFollowingMe: true }),
   ].join('\n') + '\n');
   // alice refreshed below threshold (eligible), bob above (exclude). carol/dave not refreshed.
   fs.writeFileSync(path.join(rep, 'profile-refresh-2026-06-18.json'), JSON.stringify({ results: [
@@ -163,6 +165,150 @@ test('csv quotes values containing commas', () => {
   runClassify(d);
   const csv = fs.readFileSync(path.join(d, 'reports', 'non-recip-reasons-2026-06-18.csv'), 'utf8');
   assert.ok(csv.includes('"Alice, the great"'), 'comma-containing name must be quoted');
+});
+test('mutual (isFollowingMe:true) rows are skipped from today', () => {
+  const d = fixtureDir();
+  const out = runClassify(d);
+  assert.strictEqual(out.rows.find((r) => r.handle === 'mallory'), undefined, 'mutual row must not be classified');
+  assert.strictEqual(out.totals.todayMutualRowsSkipped, 1);
+  assert.deepStrictEqual(out.rows.filter((r) => r.decision === 'candidate_unfollow').map((r) => r.handle), ['alice'], 'candidate list unchanged');
+});
+
+// --------------------------------------- follower-count reuse across days (TTL)
+// The expensive profile-counts fetch must NOT re-run for an account whose count was
+// gathered within --refresh-ttl-days. These lock the reuse window + the staleness boundary.
+group('follower-count reuse across days (--refresh-ttl-days)');
+function ttlFixtureDir() {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xu-ttl-'));
+  const snap = path.join(d, 'snapshots'); const rep = path.join(d, 'reports');
+  fs.mkdirSync(snap, { recursive: true }); fs.mkdirSync(rep, { recursive: true });
+  const row = (handle, name) => JSON.stringify({ handle, name, followers: 0, isFollowingMe: false });
+  // firstSeen 2026-06-10 -> on 2026-06-25 everyone is well past the 3-day wait.
+  fs.writeFileSync(path.join(snap, '2026-06-10.jsonl'), [row('alice', 'A'), row('bob', 'B'), row('dave', 'D')].join('\n') + '\n');
+  fs.writeFileSync(path.join(snap, '2026-06-25.jsonl'), [row('alice', 'A'), row('bob', 'B'), row('dave', 'D')].join('\n') + '\n');
+  // alice: refreshed 2 days ago (within 14d TTL) -> reuse 500, no re-fetch.
+  fs.writeFileSync(path.join(rep, 'profile-refresh-2026-06-23.json'), JSON.stringify({ results: [
+    { handle: 'alice', followers_count: 500, ok: true, refreshedAt: '2026-06-23T08:00:00.000Z' },
+  ] }));
+  // bob: refreshed 20 days ago (older than 14d TTL) -> stale, must re-fetch.
+  fs.writeFileSync(path.join(rep, 'profile-refresh-2026-06-05.json'), JSON.stringify({ results: [
+    { handle: 'bob', followers_count: 300, ok: true, refreshedAt: '2026-06-05T08:00:00.000Z' },
+  ] }));
+  // dave: an OLD success (400) then a NEWER FAILED refresh (null). The failure must not
+  // shadow the good value — dave stays reusable at 400.
+  fs.writeFileSync(path.join(rep, 'profile-refresh-2026-06-20.json'), JSON.stringify({ results: [
+    { handle: 'dave', followers_count: 400, ok: true, refreshedAt: '2026-06-20T08:00:00.000Z' },
+  ] }));
+  fs.writeFileSync(path.join(rep, 'profile-refresh-2026-06-24.json'), JSON.stringify({ results: [
+    { handle: 'dave', followers_count: null, ok: false, refreshedAt: '2026-06-24T08:00:00.000Z' },
+  ] }));
+  return d;
+}
+function runTtlClassify(dir, ttl) {
+  execFileSync('node', [path.join(SCRIPTS, 'classify.cjs'), '--date=2026-06-25', '--min-days=3', '--follower-threshold=2000', `--refresh-ttl-days=${ttl}`],
+    { env: { ...process.env, XU_DATA_DIR: dir }, stdio: 'ignore' });
+  return JSON.parse(fs.readFileSync(path.join(dir, 'reports', 'non-recip-reasons-2026-06-25.json'), 'utf8'));
+}
+test('within-TTL count is reused (no re-fetch, refreshed_at carried)', () => {
+  const out = runTtlClassify(ttlFixtureDir(), 14);
+  const alice = out.rows.find((r) => r.handle === 'alice');
+  assert.strictEqual(alice.reason_code, 'ELIGIBLE_FOR_UNFOLLOW');
+  assert.strictEqual(alice.needs_profile_refresh, false);
+  assert.strictEqual(alice.refreshed_followers_count, 500);
+  assert.ok(String(alice.refreshed_at).startsWith('2026-06-23'), 'refreshed_at exposes the update time');
+});
+test('aged-past-TTL count is NOT reused (forces re-fetch)', () => {
+  const out = runTtlClassify(ttlFixtureDir(), 14);
+  const bob = out.rows.find((r) => r.handle === 'bob');
+  assert.strictEqual(bob.reason_code, 'ELIGIBLE_FOR_FOLLOWER_REFRESH');
+  assert.strictEqual(bob.needs_profile_refresh, true);
+  assert.strictEqual(bob.refreshed_followers_count, null);
+});
+test('newer FAILED refresh does not shadow older good count', () => {
+  const out = runTtlClassify(ttlFixtureDir(), 14);
+  const dave = out.rows.find((r) => r.handle === 'dave');
+  assert.strictEqual(dave.refreshed_followers_count, 400);
+  assert.strictEqual(dave.reason_code, 'ELIGIBLE_FOR_UNFOLLOW');
+});
+test('ttl=0 disables reuse (every past-wait account re-fetches)', () => {
+  const out = runTtlClassify(ttlFixtureDir(), 0);
+  const alice = out.rows.find((r) => r.handle === 'alice');
+  assert.strictEqual(alice.reason_code, 'ELIGIBLE_FOR_FOLLOWER_REFRESH');
+  assert.strictEqual(alice.needs_profile_refresh, true);
+});
+
+// ------------------------------------- cell-parse (UserCell decision + everTrue merge)
+// Locks down the 2026-07-02 false-positive fix: ghost sub-divs yield NO observation,
+// badge presence is definitive and can never be downgraded by a later badge-less read.
+group('cell-parse (UserCell decision + everTrue merge)');
+const CP = require(path.join(SCRIPTS, 'lib', 'cell-parse.cjs'));
+const CELL = (over) => ({
+  avatarTestId: 'UserAvatar-Container-alice', hrefs: ['/alice'], hasFollowIndicator: false,
+  hasActionButton: true, nameText: 'Alice', innerText: 'Alice\n@alice\nsome bio', ...over,
+});
+test('ghost sub-div (the old-bug shape) yields NO observation', () => {
+  assert.strictEqual(CP.parseCell({
+    avatarTestId: null, hrefs: ['/SomeUser123'], hasFollowIndicator: false,
+    hasActionButton: false, nameText: '', innerText: '@SomeUser123',
+  }), null);
+});
+test('badge indicator present -> isFollowingMe true', () => {
+  assert.strictEqual(CP.parseCell(CELL({ hasFollowIndicator: true })).isFollowingMe, true);
+});
+test('hydrated cell (action button) without badge -> false', () => {
+  assert.strictEqual(CP.parseCell(CELL()).isFollowingMe, false);
+});
+test('text fallback matches en / zh-Hans / zh-Hant', () => {
+  for (const t of ['Follows you', '关注了你', '跟隨你']) {
+    assert.strictEqual(CP.parseCell(CELL({ innerText: `Alice\n@alice\n${t}` })).isFollowingMe, true, t);
+  }
+});
+test('handle from avatar testid', () => {
+  assert.strictEqual(CP.handleFromAvatarTestId('UserAvatar-Container-Alice_99'), 'Alice_99');
+});
+test('invalid avatar suffix falls through to href (skipping /i/...)', () => {
+  const r = CP.parseCell(CELL({ avatarTestId: 'UserAvatar-Container-way_too_long_handle_xx', hrefs: ['/i/premium', '/bob/status/1'] }));
+  assert.strictEqual(r.handle, 'bob');
+});
+test('nav-only hrefs -> no observation', () => {
+  assert.strictEqual(CP.parseCell(CELL({ avatarTestId: null, hrefs: ['/notifications', '/home'] })), null);
+});
+test('merge: false then true -> upgrades to true', () => {
+  const m = new Map();
+  CP.mergeObservation(m, CP.parseCell(CELL()));
+  CP.mergeObservation(m, CP.parseCell(CELL({ hasFollowIndicator: true })));
+  assert.strictEqual(m.get('alice').isFollowingMe, true);
+});
+test('merge: true then false -> STAYS true (badge absence never downgrades)', () => {
+  const m = new Map();
+  CP.mergeObservation(m, CP.parseCell(CELL({ hasFollowIndicator: true })));
+  CP.mergeObservation(m, CP.parseCell(CELL()));
+  assert.strictEqual(m.get('alice').isFollowingMe, true);
+});
+test('merge keeps first-seen original-case handle', () => {
+  const m = new Map();
+  CP.mergeObservation(m, CP.parseCell(CELL({ avatarTestId: 'UserAvatar-Container-Alice' })));
+  CP.mergeObservation(m, CP.parseCell(CELL()));
+  assert.strictEqual(m.size, 1);
+  assert.strictEqual(m.get('alice').handle, 'Alice');
+});
+test('parseFollowersFromText handles 1.2万 / 12K / none', () => {
+  assert.strictEqual(CP.parseFollowersFromText('1.2万 关注者'), 12000);
+  assert.strictEqual(CP.parseFollowersFromText('12K followers'), 12000);
+  assert.strictEqual(CP.parseFollowersFromText('no count here'), 0);
+});
+
+// ------------------------------------------- clean-snapshots (retro-clean filter)
+group('clean-snapshots (retro-clean filter)');
+const CS = require(path.join(SCRIPTS, 'clean-snapshots.cjs'));
+test('removes followers case-insensitively, keeps original casing', () => {
+  const rows = [{ handle: 'Alice' }, { handle: 'bob' }, { handle: 'Carol' }];
+  const kept = CS.cleanSnapshotRows(rows, new Set(['alice', 'carol']));
+  assert.deepStrictEqual(kept.map((r) => r.handle), ['bob']);
+});
+test('empty followers set is identity', () => {
+  const rows = [{ handle: 'a' }, { handle: 'b' }];
+  assert.deepStrictEqual(CS.cleanSnapshotRows(rows, new Set()), rows);
 });
 
 // ------------------------------------------------------------------- summary

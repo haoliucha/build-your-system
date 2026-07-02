@@ -21,9 +21,15 @@
 #
 # Key env:
 #   MY_HANDLE=you (required)   MODE=report|unfollow      MIN_DAYS=3   FOLLOWER_THRESHOLD=2000
+#   REFRESH_TTL_DAYS=14 (reuse a follower count this many days before re-fetching; 0=always)
 #   XU_DATA_DIR=~/.config/x-unfollow-data   PROFILE_DIR=~/.config/playwright-chrome-profile-campaign
 #   LIMIT=0 (cap unfollows; 0=all)          DRY_RUN=1 (unfollow mode: verify selectors, no click)
 #   NODE_PATH must point at a node_modules with playwright (set by caller).
+#
+# Follower-count reuse: profile-counts.cjs is the slow step (one serial HTTP fetch per
+# past-wait account). classify.cjs now reuses any follower count gathered within
+# REFRESH_TTL_DAYS, so a re-run only re-fetches accounts that are new or whose count aged
+# out. The first run on a fresh data dir is still a full sweep; subsequent runs are cheap.
 
 set -o pipefail
 export NO_COLOR=1 NODE_DISABLE_COLORS=1 FORCE_COLOR=0
@@ -34,6 +40,7 @@ MY_HANDLE="${MY_HANDLE:-}"
 MODE="${MODE:-report}"
 MIN_DAYS="${MIN_DAYS:-3}"
 FOLLOWER_THRESHOLD="${FOLLOWER_THRESHOLD:-2000}"
+REFRESH_TTL_DAYS="${REFRESH_TTL_DAYS:-14}"
 XU_DATA_DIR="${XU_DATA_DIR:-$HOME/.config/x-unfollow-data}"
 PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
 LIMIT="${LIMIT:-0}"
@@ -78,16 +85,20 @@ if [ "$code" -ne 0 ]; then say "snapshot failed (exit $code)"; exit "$code"; fi
 cleanup_locks
 
 # ---- Phase 3: classify -----------------------------------------------------
-say "classify (min-days=$MIN_DAYS, follower-threshold=$FOLLOWER_THRESHOLD)..."
-node "$SCRIPTS/classify.cjs" --date="$DATE" --min-days="$MIN_DAYS" --follower-threshold="$FOLLOWER_THRESHOLD"
+say "classify (min-days=$MIN_DAYS, follower-threshold=$FOLLOWER_THRESHOLD, refresh-ttl=${REFRESH_TTL_DAYS}d)..."
+node "$SCRIPTS/classify.cjs" --date="$DATE" --min-days="$MIN_DAYS" --follower-threshold="$FOLLOWER_THRESHOLD" --refresh-ttl-days="$REFRESH_TTL_DAYS"
 
-# ---- Phase 4: refresh follower counts for past-wait accounts, then re-classify
+# ---- Phase 4: refresh follower counts ONLY for accounts without a fresh (within-TTL) count,
+#               then re-classify. needs_profile_refresh already excludes TTL-reusable accounts,
+#               so this set shrinks to new/aged-out accounts on repeat runs.
 NEED_REFRESH=$(node -e "try{const o=require('$XU_DATA_DIR/reports/non-recip-reasons-$DATE.json');process.stdout.write(String((o.rows||[]).filter(r=>r.needs_profile_refresh).length))}catch(e){process.stdout.write('0')}")
 if [ "${NEED_REFRESH:-0}" -gt 0 ]; then
-  say "refreshing public follower counts for $NEED_REFRESH past-wait accounts..."
+  say "refreshing public follower counts for $NEED_REFRESH account(s) lacking a fresh count..."
   node "$SCRIPTS/profile-counts.cjs" --from-classify="$DATE" >/dev/null 2>&1
   say "re-classify after refresh..."
-  node "$SCRIPTS/classify.cjs" --date="$DATE" --min-days="$MIN_DAYS" --follower-threshold="$FOLLOWER_THRESHOLD"
+  node "$SCRIPTS/classify.cjs" --date="$DATE" --min-days="$MIN_DAYS" --follower-threshold="$FOLLOWER_THRESHOLD" --refresh-ttl-days="$REFRESH_TTL_DAYS"
+else
+  say "no accounts need a fresh follower count (all reused within ${REFRESH_TTL_DAYS}d TTL)."
 fi
 
 CAND=$(node -e "try{const o=require('$XU_DATA_DIR/reports/non-recip-reasons-$DATE.json');process.stdout.write(String((o.rows||[]).filter(r=>r.decision==='candidate_unfollow').length))}catch(e){process.stdout.write('0')}")

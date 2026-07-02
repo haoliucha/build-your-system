@@ -71,6 +71,10 @@ async function fetchProfileOnce(handle) {
     friends_count: stat(profile, 'Friends', 'SubscribeAction'),
     tweets_count: stat(profile, 'Tweets', 'WriteAction'),
     profile_url: url,
+    // Per-row update time so classify.cjs can reuse this count for a TTL window instead of
+    // re-fetching every run. Stamped per fetch (not per file) so a merged file with rows
+    // gathered at different times keeps each row's true age.
+    refreshedAt: new Date().toISOString(),
   };
 }
 
@@ -84,7 +88,7 @@ async function fetchProfile(handle, retries = 2) {
       last = await fetchProfileOnce(handle);
       if (last.ok) return last;
     } catch (error) {
-      last = { handle, ok: false, error: String((error && error.message) || error), profile_url: `https://x.com/${handle}` };
+      last = { handle, ok: false, error: String((error && error.message) || error), profile_url: `https://x.com/${handle}`, refreshedAt: new Date().toISOString() };
     }
     if (attempt < retries) await sleep(2000 + attempt * 2000);
   }

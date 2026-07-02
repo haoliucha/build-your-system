@@ -110,8 +110,9 @@ $XU_DATA_DIR/
 ## 脚本(架构详见 `README.md`)
 
 - `run.sh` — 一条龙编排(report / unfollow 双模式)
-- `scripts/snapshot.cjs` — 抓 /following 未回关 → 每日快照(gotoRobust + 异常自停)
-- `scripts/classify.cjs` — 快照系列 → elapsed/reason 码 → 报告(json+csv)
+- `scripts/snapshot.cjs` — 扫 /following 全量 UserCell → 每日快照(真实 isFollowingMe,徽章走 userFollowIndicator testid + everTrue 合并,覆盖率对照 header;gotoRobust + 异常自停)
+- `scripts/classify.cjs` — 快照系列 → elapsed/reason 码 → 报告(json+csv;互关行跳过)
+- `scripts/clean-snapshots.cjs` — 回溯清洗:按权威粉丝名单移除误报行(先备份 snapshots-bad/)
 - `scripts/profile-counts.cjs` — 公开主页 JSON-LD 刷新粉丝数(纯 fetch)
 - `scripts/unfollow.cjs` — 硬化取关执行(精确选择器白名单 + 确认 + 节奏 + 异常自停)
 - `scripts/verify-unfollow.cjs` — 复核目标已不再被关注
