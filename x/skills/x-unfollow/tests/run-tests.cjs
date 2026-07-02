@@ -165,6 +165,69 @@ test('csv quotes values containing commas', () => {
   assert.ok(csv.includes('"Alice, the great"'), 'comma-containing name must be quoted');
 });
 
+// --------------------------------------- follower-count reuse across days (TTL)
+// The expensive profile-counts fetch must NOT re-run for an account whose count was
+// gathered within --refresh-ttl-days. These lock the reuse window + the staleness boundary.
+group('follower-count reuse across days (--refresh-ttl-days)');
+function ttlFixtureDir() {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xu-ttl-'));
+  const snap = path.join(d, 'snapshots'); const rep = path.join(d, 'reports');
+  fs.mkdirSync(snap, { recursive: true }); fs.mkdirSync(rep, { recursive: true });
+  const row = (handle, name) => JSON.stringify({ handle, name, followers: 0, isFollowingMe: false });
+  // firstSeen 2026-06-10 -> on 2026-06-25 everyone is well past the 3-day wait.
+  fs.writeFileSync(path.join(snap, '2026-06-10.jsonl'), [row('alice', 'A'), row('bob', 'B'), row('dave', 'D')].join('\n') + '\n');
+  fs.writeFileSync(path.join(snap, '2026-06-25.jsonl'), [row('alice', 'A'), row('bob', 'B'), row('dave', 'D')].join('\n') + '\n');
+  // alice: refreshed 2 days ago (within 14d TTL) -> reuse 500, no re-fetch.
+  fs.writeFileSync(path.join(rep, 'profile-refresh-2026-06-23.json'), JSON.stringify({ results: [
+    { handle: 'alice', followers_count: 500, ok: true, refreshedAt: '2026-06-23T08:00:00.000Z' },
+  ] }));
+  // bob: refreshed 20 days ago (older than 14d TTL) -> stale, must re-fetch.
+  fs.writeFileSync(path.join(rep, 'profile-refresh-2026-06-05.json'), JSON.stringify({ results: [
+    { handle: 'bob', followers_count: 300, ok: true, refreshedAt: '2026-06-05T08:00:00.000Z' },
+  ] }));
+  // dave: an OLD success (400) then a NEWER FAILED refresh (null). The failure must not
+  // shadow the good value — dave stays reusable at 400.
+  fs.writeFileSync(path.join(rep, 'profile-refresh-2026-06-20.json'), JSON.stringify({ results: [
+    { handle: 'dave', followers_count: 400, ok: true, refreshedAt: '2026-06-20T08:00:00.000Z' },
+  ] }));
+  fs.writeFileSync(path.join(rep, 'profile-refresh-2026-06-24.json'), JSON.stringify({ results: [
+    { handle: 'dave', followers_count: null, ok: false, refreshedAt: '2026-06-24T08:00:00.000Z' },
+  ] }));
+  return d;
+}
+function runTtlClassify(dir, ttl) {
+  execFileSync('node', [path.join(SCRIPTS, 'classify.cjs'), '--date=2026-06-25', '--min-days=3', '--follower-threshold=2000', `--refresh-ttl-days=${ttl}`],
+    { env: { ...process.env, XU_DATA_DIR: dir }, stdio: 'ignore' });
+  return JSON.parse(fs.readFileSync(path.join(dir, 'reports', 'non-recip-reasons-2026-06-25.json'), 'utf8'));
+}
+test('within-TTL count is reused (no re-fetch, refreshed_at carried)', () => {
+  const out = runTtlClassify(ttlFixtureDir(), 14);
+  const alice = out.rows.find((r) => r.handle === 'alice');
+  assert.strictEqual(alice.reason_code, 'ELIGIBLE_FOR_UNFOLLOW');
+  assert.strictEqual(alice.needs_profile_refresh, false);
+  assert.strictEqual(alice.refreshed_followers_count, 500);
+  assert.ok(String(alice.refreshed_at).startsWith('2026-06-23'), 'refreshed_at exposes the update time');
+});
+test('aged-past-TTL count is NOT reused (forces re-fetch)', () => {
+  const out = runTtlClassify(ttlFixtureDir(), 14);
+  const bob = out.rows.find((r) => r.handle === 'bob');
+  assert.strictEqual(bob.reason_code, 'ELIGIBLE_FOR_FOLLOWER_REFRESH');
+  assert.strictEqual(bob.needs_profile_refresh, true);
+  assert.strictEqual(bob.refreshed_followers_count, null);
+});
+test('newer FAILED refresh does not shadow older good count', () => {
+  const out = runTtlClassify(ttlFixtureDir(), 14);
+  const dave = out.rows.find((r) => r.handle === 'dave');
+  assert.strictEqual(dave.refreshed_followers_count, 400);
+  assert.strictEqual(dave.reason_code, 'ELIGIBLE_FOR_UNFOLLOW');
+});
+test('ttl=0 disables reuse (every past-wait account re-fetches)', () => {
+  const out = runTtlClassify(ttlFixtureDir(), 0);
+  const alice = out.rows.find((r) => r.handle === 'alice');
+  assert.strictEqual(alice.reason_code, 'ELIGIBLE_FOR_FOLLOWER_REFRESH');
+  assert.strictEqual(alice.needs_profile_refresh, true);
+});
+
 // ------------------------------------------------------------------- summary
 console.log(`\n${'='.repeat(40)}`);
 console.log(`  ${pass} passed, ${fail} failed`);
