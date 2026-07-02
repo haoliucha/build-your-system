@@ -72,10 +72,16 @@ function loadTodaySnapshot(targetDate) {
   const file = path.join(SNAP_DIR, `${targetDate}.jsonl`);
   if (!fs.existsSync(file)) throw new Error(`Missing snapshot: ${file} (run snapshot.cjs first)`);
   const rows = [];
-  for (const [idx, line] of fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).entries()) {
-    rows.push({ row_index: idx + 1, ...JSON.parse(line) });
+  let mutualRowsSkipped = 0;
+  const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
+  for (const [idx, line] of lines.entries()) {
+    const parsed = JSON.parse(line);
+    // Post-fix snapshots also record mutual (isFollowingMe: true) rows so scan
+    // coverage is auditable in-file; only non-reciprocal rows enter classification.
+    if (parsed.isFollowingMe !== false) { mutualRowsSkipped++; continue; }
+    rows.push({ row_index: idx + 1, ...parsed });
   }
-  return rows;
+  return { rows, mutualRowsSkipped, rawRows: lines.length };
 }
 
 // Accounts already unfollowed (and verified) in prior logs — never re-target.
@@ -205,7 +211,7 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   ensureDir(REPORTS_DIR);
 
-  const todayRows = loadTodaySnapshot(args.date);
+  const { rows: todayRows, mutualRowsSkipped, rawRows } = loadTodaySnapshot(args.date);
   const seen = new Set();
   const uniqueRows = todayRows.filter((r) => {
     const k = H.normalizeHandle(r.handle);
@@ -227,7 +233,7 @@ function main() {
     generatedAt: new Date().toISOString(),
     snapshotDate: args.date,
     criteria: { minNaturalElapsedDaysExclusive: args.minDays, followerThresholdExclusive: args.followerThreshold, followerCountReuseTtlDays: args.refreshTtlDays, actionRule: 'Only ELIGIBLE_FOR_UNFOLLOW rows may be unfollowed.' },
-    totals: { rawSnapshotRows: todayRows.length, uniqueSnapshotHandles: uniqueRows.length, historyHandles: ctx.history.size, exclusionHandles: ctx.exclusions.size, reusableRefreshHandles: ctx.profileRefresh.size, byReason, byDecision },
+    totals: { rawSnapshotRows: rawRows, todayMutualRowsSkipped: mutualRowsSkipped, uniqueSnapshotHandles: uniqueRows.length, historyHandles: ctx.history.size, exclusionHandles: ctx.exclusions.size, reusableRefreshHandles: ctx.profileRefresh.size, byReason, byDecision },
     rows,
   };
 
