@@ -1,6 +1,6 @@
 # x — X (Twitter) 增长工具集
 
-精准批量关注 + 互关 campaign 自动化,带完整的 anti-风控护栏。
+精准批量关注 + 互关 campaign 自动化(带完整 anti-风控护栏)+ 文章封面一键生成。
 
 ## 它解决什么问题
 
@@ -37,6 +37,23 @@
 - "X 帮我关注 50 个蓝v 互关一波"
 - "Twitter 批量 follow 100 个非币圈账号"
 - "找一批小号互关,粉丝数 ≤ 500"
+
+## /x:cover — 文章封面一键生成
+
+给任何 X 文章(Markdown)一键出 **2.5:1 封面**(X 文章封面框实测 900×360,非此比例上传会被中心裁切):
+
+```
+/x:cover articles/2026-06-12-fanqiang          # 文章目录
+/x:cover ~/notes/my-post.md                    # 单个 md
+/x:cover draft.md 暗色玻璃拟态,用对比表版式      # 带风格/版式备注
+```
+
+流程:读文章 → 蒸馏画面 prompt(主标题 ≤7 字 / 主数字带单位 / 单一图形钩子 / 版式 8 类)→ codex imagegen(gpt-image-2)**整张直出含中文文字** → 比例门禁(近轴自动裁到精确 2.5:1)→ `images/cover.png` + `thumb-375.png` + 原图/旧封面留档 → 逐字 QC 报告。
+
+- 出图纪律(禁 glow / 禁本地叠字 / 数字带单位 / 单条曲线 / 中文逐字)由捆绑脚本注入,不靠人抄。
+- **绝不发布/上传**,只产出本地文件;codex 用量上限立即停。
+- 依赖:codex CLI(≥0.142)+ 内置 imagegen skill(gpt-image-2)+ ImageMagick + macOS sips。
+- headless 不可用时有桌面 app 手动兜底(`cover-gen.sh from`),详见 skill `x-cover`。
 
 ## 它**不**做什么
 
