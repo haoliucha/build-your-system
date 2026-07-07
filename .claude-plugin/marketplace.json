@@ -47,6 +47,14 @@
       "homepage": "https://github.com/haoliucha/build-your-system"
     },
     {
+      "name": "bid",
+      "source": "./bid",
+      "description": "To-B 投标/交付物项目方法论 - 单一真源生成器纪律、口径级联同步、可辩护成本测算、PERT 排期、对抗审校、去AI味、图表与中文PDF管线、调研取证、售前谈判、原型交接。10 个 skills + 6 个流程节点命令(/bid:init·meeting·sync·handoff·review·status),提炼自真实投标项目全周期实战(318 条经验,已全脱敏)。",
+      "version": "0.1.0",
+      "category": "productivity",
+      "homepage": "https://github.com/haoliucha/build-your-system/tree/main/bid"
+    },
+    {
       "name": "x",
       "source": "./x",
       "description": "X (Twitter) 增长工具集 - 精准批量关注(x-follow)+ 关注卫生取关未回关(x-unfollow)+ 文章封面一键生成(cover:codex/gpt-image-2 直出 2.5:1 含中文整张 + 门禁 + QC)。参数化筛选 + 4 层 anti-风控。基于真实 campaign 与封面流水线实战提炼。",

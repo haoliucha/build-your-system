@@ -1,0 +1,915 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bid 插件 · To-B 投标交付物方法论导读</title>
+</head>
+<body>
+<style>
+:root{
+  --paper:#F6F3EC; --panel:#FFFFFF; --ink:#241F17; --muted:#6E6557; --line:#E0D8C8;
+  --seal:#B23A2E; --seal-ink:#8F2D23; --seal-soft:#F7E8E4; --seal-line:#E3BFB6;
+  --ext:#17635A; --ext-ink:#0F4A43; --ext-soft:#E3EFEA; --ext-line:#B9D6CD;
+  --int:#92621B; --int-ink:#734C12; --int-soft:#F5ECD9; --int-line:#E0CBA1;
+  --ok:#3A7D44; --ok-soft:#E6F0E4; --warn:#A97B14; --warn-soft:#F5EEDA; --bad:#B23A2E; --bad-soft:#F7E8E4;
+  --code-bg:#EFEAE0; --shadow:0 1px 3px rgba(36,31,23,.08),0 8px 24px rgba(36,31,23,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --paper:#15110B; --panel:#1E1912; --ink:#E8E1D2; --muted:#A2977F; --line:#37301F;
+    --seal:#D96A5B; --seal-ink:#E89485; --seal-soft:#33201B; --seal-line:#553028;
+    --ext:#57B3A4; --ext-ink:#84CCC0; --ext-soft:#15302B; --ext-line:#234A43;
+    --int:#D0A052; --int-ink:#E0BC7F; --int-soft:#2E2413; --int-line:#4E3D1D;
+    --ok:#6FB379; --ok-soft:#1B2C1C; --warn:#D2A445; --warn-soft:#2C2412; --bad:#D96A5B; --bad-soft:#33201B;
+    --code-bg:#241E13; --shadow:0 1px 3px rgba(0,0,0,.35),0 8px 24px rgba(0,0,0,.25);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#15110B; --panel:#1E1912; --ink:#E8E1D2; --muted:#A2977F; --line:#37301F;
+  --seal:#D96A5B; --seal-ink:#E89485; --seal-soft:#33201B; --seal-line:#553028;
+  --ext:#57B3A4; --ext-ink:#84CCC0; --ext-soft:#15302B; --ext-line:#234A43;
+  --int:#D0A052; --int-ink:#E0BC7F; --int-soft:#2E2413; --int-line:#4E3D1D;
+  --ok:#6FB379; --ok-soft:#1B2C1C; --warn:#D2A445; --warn-soft:#2C2412; --bad:#D96A5B; --bad-soft:#33201B;
+  --code-bg:#241E13; --shadow:0 1px 3px rgba(0,0,0,.35),0 8px 24px rgba(0,0,0,.25);
+}
+:root[data-theme="light"]{
+  --paper:#F6F3EC; --panel:#FFFFFF; --ink:#241F17; --muted:#6E6557; --line:#E0D8C8;
+  --seal:#B23A2E; --seal-ink:#8F2D23; --seal-soft:#F7E8E4; --seal-line:#E3BFB6;
+  --ext:#17635A; --ext-ink:#0F4A43; --ext-soft:#E3EFEA; --ext-line:#B9D6CD;
+  --int:#92621B; --int-ink:#734C12; --int-soft:#F5ECD9; --int-line:#E0CBA1;
+  --ok:#3A7D44; --ok-soft:#E6F0E4; --warn:#A97B14; --warn-soft:#F5EEDA; --bad:#B23A2E; --bad-soft:#F7E8E4;
+  --code-bg:#EFEAE0; --shadow:0 1px 3px rgba(36,31,23,.08),0 8px 24px rgba(36,31,23,.05);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){ html{scroll-behavior:auto} }
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font:16px/1.85 -apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{display:grid; grid-template-columns:236px minmax(0,1fr); max-width:1200px; margin:0 auto; gap:0 40px; padding:0 24px}
+@media (max-width:960px){ .wrap{grid-template-columns:minmax(0,1fr)} nav.toc{display:none} }
+nav.toc{position:sticky; top:0; align-self:start; height:100vh; overflow-y:auto; padding:36px 0 24px; font-size:13px}
+nav.toc .toc-head{font-family:"Noto Serif SC","Songti SC",serif; font-weight:700; letter-spacing:.14em; font-size:12px; color:var(--muted); margin-bottom:14px}
+nav.toc a{display:flex; gap:8px; align-items:baseline; color:var(--muted); text-decoration:none; padding:5px 10px; border-left:2px solid var(--line); line-height:1.5}
+nav.toc a .n{font:600 10px/1 ui-monospace,"SF Mono",Menlo,monospace; min-width:22px; color:var(--muted); opacity:.75}
+nav.toc a:hover{color:var(--ink)}
+nav.toc a.on{color:var(--seal); border-left-color:var(--seal); background:linear-gradient(90deg,var(--seal-soft),transparent)}
+nav.toc a:focus-visible, a:focus-visible, summary:focus-visible, button:focus-visible, select:focus-visible{outline:2px solid var(--seal); outline-offset:2px; border-radius:2px}
+main{padding:36px 0 100px; max-width:880px}
+
+/* ---------- hero ---------- */
+.hero{border-bottom:1px solid var(--line); padding-bottom:30px; margin-bottom:14px; position:relative}
+.eyebrow{font:600 12px/1 ui-monospace,"SF Mono",Menlo,monospace; letter-spacing:.08em; color:var(--seal); background:var(--seal-soft); border:1px solid var(--seal-line); display:inline-block; padding:6px 10px; border-radius:3px; margin-bottom:18px}
+h1{font-family:"Noto Serif SC","Songti SC",serif; font-size:clamp(30px,4.5vw,42px); line-height:1.32; margin:0 0 14px; letter-spacing:.01em; text-wrap:balance; font-weight:900}
+.lede{font-size:17px; color:var(--muted); max-width:44em; margin:0 0 26px}
+.lede b{color:var(--ink); font-weight:600}
+.stamp{position:absolute; right:6px; top:64px; width:96px; height:96px; border:3px solid var(--seal); border-radius:50%; color:var(--seal);
+  display:flex; align-items:center; justify-content:center; text-align:center; transform:rotate(-12deg); opacity:.5; pointer-events:none;
+  font-family:"Noto Serif SC","Songti SC",serif; font-weight:900; font-size:15px; line-height:1.4; letter-spacing:.2em; padding:8px}
+@media (max-width:720px){ .stamp{display:none} }
+.stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(128px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); border-radius:6px; overflow:hidden}
+.stat{background:var(--panel); padding:14px 16px}
+.stat .v{font:700 22px/1.2 ui-monospace,"SF Mono",Menlo,monospace; font-variant-numeric:tabular-nums; letter-spacing:-.02em}
+.stat .k{font-size:12px; color:var(--muted); margin-top:4px; line-height:1.5}
+.stat .v .u{font-size:13px; font-weight:600; color:var(--muted)}
+
+/* ---------- sections ---------- */
+section{padding:44px 0 8px; border-bottom:1px solid var(--line)}
+section:last-of-type{border-bottom:none}
+.sec-eyebrow{display:flex; align-items:baseline; gap:12px; margin-bottom:6px}
+.sec-eyebrow .num{font:700 13px/1 ui-monospace,"SF Mono",Menlo,monospace; color:var(--seal)}
+.sec-eyebrow .tag{font-size:12px; letter-spacing:.12em; color:var(--muted); font-weight:600}
+h2{font-family:"Noto Serif SC","Songti SC",serif; font-size:27px; margin:0 0 8px; font-weight:900; text-wrap:balance}
+h3{font-size:16.5px; margin:34px 0 10px; font-weight:700}
+h3 .h3n{font:700 12px/1 ui-monospace,"SF Mono",Menlo,monospace; color:var(--muted); margin-right:8px}
+p{max-width:42em; margin:10px 0}
+p.note, li{max-width:42em}
+ul,ol{padding-left:1.4em; margin:10px 0}
+li{margin:5px 0}
+li::marker{color:var(--muted)}
+b,strong{font-weight:650}
+a{color:var(--ext)}
+hr{border:none;border-top:1px solid var(--line);margin:28px 0}
+
+/* ---------- inline atoms ---------- */
+code,.mono{font:.86em ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+code{background:var(--code-bg); padding:2px 6px; border-radius:4px; overflow-wrap:anywhere}
+.pill{display:inline-block; font:600 11.5px/1 ui-monospace,"SF Mono",Menlo,monospace; padding:4px 8px; border-radius:20px; border:1px solid; vertical-align:1px; white-space:nowrap}
+.pill.ext{color:var(--ext-ink); background:var(--ext-soft); border-color:var(--ext-line)}
+.pill.itn{color:var(--int-ink); background:var(--int-soft); border-color:var(--int-line)}
+.pill.ok{color:var(--ok); background:var(--ok-soft); border-color:transparent}
+.pill.warn{color:var(--warn); background:var(--warn-soft); border-color:transparent}
+.pill.bad{color:var(--bad); background:var(--bad-soft); border-color:transparent}
+.pill.gray{color:var(--muted); background:var(--code-bg); border-color:var(--line)}
+
+/* ---------- callouts ---------- */
+.callout{border:1px solid var(--line); border-left:3px solid var(--ext); background:var(--panel); border-radius:0 6px 6px 0; padding:14px 18px; margin:18px 0; box-shadow:var(--shadow)}
+.callout.seal{border-left-color:var(--seal)}
+.callout.itn{border-left-color:var(--int)}
+.callout.warn{border-left-color:var(--warn)}
+.callout.ok{border-left-color:var(--ok)}
+.callout .ct{font-weight:700; font-size:13.5px; margin-bottom:4px; letter-spacing:.02em}
+.callout p{margin:6px 0; font-size:14.5px}
+.callout p:first-child{margin-top:0}.callout p:last-child{margin-bottom:0}
+
+/* ---------- story card(实战案例) ---------- */
+.story{border:1px dashed var(--seal-line); background:linear-gradient(180deg,var(--seal-soft),var(--panel) 60%); border-radius:6px; padding:14px 18px; margin:18px 0}
+.story .st{font-weight:700; font-size:13.5px; color:var(--seal-ink); margin-bottom:4px}
+.story .st::before{content:"卷宗 · "; font:600 11px ui-monospace,"SF Mono",Menlo,monospace; letter-spacing:.1em; color:var(--seal)}
+.story p{margin:6px 0; font-size:14.5px}
+
+/* ---------- tables ---------- */
+.tbl-wrap{overflow-x:auto; margin:16px 0; border:1px solid var(--line); border-radius:6px; background:var(--panel); box-shadow:var(--shadow)}
+table{border-collapse:collapse; width:100%; font-size:13.5px; line-height:1.6}
+th,td{padding:9px 14px; text-align:left; vertical-align:top; border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:none}
+th{font-size:12px; letter-spacing:.06em; color:var(--muted); font-weight:650; background:var(--code-bg); white-space:nowrap}
+td code{white-space:nowrap}
+tr.hl-ok td{background:var(--ok-soft)}
+tr.hl-warn td{background:var(--warn-soft)}
+tr.hl-bad td{background:var(--bad-soft)}
+
+/* ---------- code blocks ---------- */
+pre{background:var(--code-bg); border:1px solid var(--line); border-radius:6px; padding:14px 18px; overflow-x:auto; font:12.8px/1.75 ui-monospace,"SF Mono",Menlo,Consolas,monospace; margin:14px 0}
+pre code{background:none; padding:0}
+pre .cm{color:var(--muted)}
+pre .k{color:var(--ext); font-weight:600}
+pre .r{color:var(--seal)}
+
+/* ---------- flow steps ---------- */
+.steps{counter-reset:st; margin:16px 0; padding:0; list-style:none}
+.steps>li{position:relative; padding:10px 0 10px 44px; margin:0; max-width:none}
+.steps>li::before{counter-increment:st; content:counter(st); position:absolute; left:0; top:10px; width:26px; height:26px; border-radius:50%; background:var(--panel); border:1.5px solid var(--seal); color:var(--seal); font:700 12px/24px ui-monospace,"SF Mono",Menlo,monospace; text-align:center}
+.steps>li::after{content:""; position:absolute; left:13px; top:40px; bottom:-6px; width:1px; background:var(--line)}
+.steps>li:last-child::after{display:none}
+.steps.ext>li::before{border-color:var(--ext); color:var(--ext)}
+.steps .st-t{font-weight:650; font-size:14.5px}
+.steps .st-d{font-size:13.5px; color:var(--muted); line-height:1.7}
+
+/* ---------- cards ---------- */
+.cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; margin:16px 0}
+.card{background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:14px 16px; box-shadow:var(--shadow)}
+.card .ch{font-weight:700; font-size:14px; margin-bottom:6px; display:flex; gap:8px; align-items:baseline}
+.card .ch .cn{font:700 11px/1 ui-monospace,"SF Mono",Menlo,monospace; color:var(--seal)}
+.card p{font-size:13.5px; margin:5px 0; color:var(--muted)}
+.card p b{color:var(--ink)}
+
+/* ---------- details ---------- */
+details{border:1px solid var(--line); border-radius:6px; background:var(--panel); margin:12px 0; box-shadow:var(--shadow)}
+details summary{cursor:pointer; padding:12px 16px; font-weight:650; font-size:14px; list-style:none; display:flex; align-items:center; gap:8px}
+details summary::before{content:"›"; font-weight:700; color:var(--seal); transition:transform .15s; display:inline-block}
+details[open] summary::before{transform:rotate(90deg)}
+details .dbody{padding:2px 18px 14px; border-top:1px solid var(--line); font-size:14px}
+@media (prefers-reduced-motion: reduce){ details summary::before{transition:none} }
+
+.legend{display:flex; gap:18px; flex-wrap:wrap; font-size:13px; color:var(--muted); margin:14px 0; align-items:center}
+.kbd{font:600 12px/1 ui-monospace,"SF Mono",Menlo,monospace; background:var(--code-bg); border:1px solid var(--line); border-bottom-width:2px; padding:3px 7px; border-radius:4px; white-space:nowrap}
+.small{font-size:13px; color:var(--muted)}
+.footer{margin-top:40px; padding-top:20px; color:var(--muted); font-size:12.5px; border-top:1px solid var(--line)}
+</style>
+
+<div class="wrap">
+<nav class="toc" aria-label="目录">
+  <div class="toc-head">卷宗目录</div>
+  <a href="#s0"><span class="n">00</span>导言:四种失控</a>
+  <a href="#s1"><span class="n">01</span>总纲与路由</a>
+  <a href="#s2"><span class="n">02</span>单一真源与口径级联</a>
+  <a href="#sdemo"><span class="n">▶</span>系统动态演示</a>
+  <a href="#s3"><span class="n">03</span>调研取证</a>
+  <a href="#s4"><span class="n">04</span>售前报价与谈判</a>
+  <a href="#s5"><span class="n">05</span>可辩护的成本测算</a>
+  <a href="#s6"><span class="n">06</span>排期与资源平衡</a>
+  <a href="#s7"><span class="n">07</span>去 AI 味写作</a>
+  <a href="#s8"><span class="n">08</span>图表与中文 PDF 管线</a>
+  <a href="#s9"><span class="n">09</span>原型交接包</a>
+  <a href="#s10"><span class="n">10</span>对抗审校</a>
+  <a href="#s11"><span class="n">11</span>附录:清单与对照</a>
+</nav>
+<main>
+
+<!-- ================= HERO ================= -->
+<header class="hero" id="top">
+  <div class="eyebrow">bid 插件 · 方法论导读</div>
+  <div class="stamp">全流程<br>已审校</div>
+  <h1>把投标做成流水线:<br>交付物的单一真源方法论</h1>
+  <p class="lede">这份导读浓缩一套 To-B 投标/交付物项目方法论:方案、报价、排期、图表、PDF、原型全部由<b>单一数据源生成</b>,口径变更走固定级联链,交付前过<b>多透镜对抗审校</b>,客户向与内部材料<b>物理隔离</b>。方法论挖掘自一个真实投标项目的全周期 AI-coding 实战,<b>案例线已化名重构,数字为教学示例值</b>。</p>
+  <div class="stats">
+    <div class="stat"><div class="v">9<span class="u"> 场</span></div><div class="k">实战会话(全周期)</div></div>
+    <div class="stat"><div class="v">318</div><div class="k">条挖掘经验(去重前)</div></div>
+    <div class="stat"><div class="v">16</div><div class="k">个经验域(证据聚类)</div></div>
+    <div class="stat"><div class="v">10+6</div><div class="k">skills + 流程节点命令</div></div>
+    <div class="stat"><div class="v">0</div><div class="k">处手编 Excel(纪律目标)</div></div>
+  </div>
+  <div class="legend">
+    <span>全文语义配色:</span>
+    <span class="pill ext">客户向 · 对外</span>
+    <span class="pill itn">内部 · 勿外发</span>
+    <span class="pill bad">✗ 红线/翻车</span>
+    <span class="pill ok">✓ 已验证做法</span>
+    <span class="pill warn">⚠ 注意</span>
+  </div>
+</header>
+
+<!-- ================= S0 ================= -->
+<section id="s0">
+  <div class="sec-eyebrow"><span class="num">00</span><span class="tag">导言</span></div>
+  <h2>四种失控:投标交付物为什么需要工程化</h2>
+  <p>一个投标项目的交付物是一组互相咬合的文档:方案书引用成本表的数字,成本表对照排期的工作包,PPT 抄方案书的措辞,内部底稿藏着对客不可见的依据。它们由不同轮次的修改各自演化——失控只需要几天:</p>
+  <div class="cards">
+    <div class="card"><div class="ch"><span class="cn">失控一</span>口径漂移</div><p>客户砍一轮价、压一轮工期,每轮变更要同步 5+ 份文档。漏一处,评审拿两份文件一对,<b>头条数字对不上</b>,整套材料的可信度当场归零。</p></div>
+    <div class="card"><div class="ch"><span class="cn">失控二</span>手编失控</div><p>深夜直接改 xlsx 最快——也最致命:公式断链、汇总行漏改、办公软件回存覆盖。<b>手改过的文件从此没有可信的真源</b>。</p></div>
+    <div class="card"><div class="ch"><span class="cn">失控三</span>AI 味与 overclaim</div><p>AI 起草的方案书自带指纹:段末升华、buzzword、绝对化断言。评审读得出来,竞品一通电话能证伪的断言更是自爆。</p></div>
+    <div class="card"><div class="ch"><span class="cn">失控四</span>分层泄露</div><p>内部成本中位数、竞品攻防话术、折扣底线,混进客户向文档或投屏页面——<b>一次泄露,谈判筹码清零</b>。</p></div>
+  </div>
+  <p>应对这四种失控的总答案只有一句:<b>把交付物当作由单一数据源生成、经固定管线加工、过审校门收口的工业品</b>,而不是一堆各自为政的手工文档。本导读按这条生产线展开:总纲(01)定目录与节奏,单一真源(02)管数字的家,03–09 各管一道工序,对抗审校(10)是出厂前的最后一道门。中间的「系统动态演示」可以直接<b>播放</b>这条流水线。</p>
+  <div class="story">
+    <div class="st">投屏前夜的半截手改</div>
+    <p>客户会前傍晚,两份生成的报价表被直接手改了数字——只改了一半:两文件的首年合计对不上,汇总表出现三处引用错误,某项费用被改到低于自己调研报告标注的行情下限。当晚投屏必穿帮。</p>
+    <p>修复动作不是「把表改对」,而是先问清<b>已报给客户的是哪套数字</b>,以已报口径为锁定约束回写生成器重出双文件——过程中还顺带挖出一个多年合计漏括号的真公式 bug。此后确立铁律:<b>客户演示前,必从生成器重出全部表格交叉核对</b>。这一晚的完整机制,见 02 章。</p>
+  </div>
+</section>
+
+<!-- ================= S1 ================= -->
+<section id="s1">
+  <div class="sec-eyebrow"><span class="num">01</span><span class="tag">总纲 · bid-playbook</span></div>
+  <h2>项目操作系统:目录、节奏与红线</h2>
+  <p>入口 skill <code>bid-playbook</code> 管三件事:目录与编号规范、执行节奏(何时问/何时自决)、合规与口径红线。它也是路由器——每个阶段该加载哪个 skill、跑哪个命令,查下面的路由表。</p>
+  <h3><span class="h3n">1.1</span>目录规范:客户向与内部的物理防火墙</h3>
+  <pre><code>&lt;project&gt;/
+├─ meeting/        <span class="cm"># 纪要按日期编年(YYYY-MM-DD-主题.md),多项目共享、打「涉及项目」标签</span>
+├─ docs/           <span class="cm"># </span><span class="k">客户向</span><span class="cm">交付物,序号化(01-, 02-, …)</span>
+│  └─ 内部/         <span class="cm"># </span><span class="r">内部</span><span class="cm">底稿:成本依据/谈判红线/口径登记 —— 绝不外发</span>
+├─ build/          <span class="cm"># 生成器脚本:xlsx/PDF/图 的唯一真源</span>
+└─ .claude/memory/ <span class="cm"># 口径决策即时落盘,防跨会话回潮</span></code></pre>
+  <ul>
+    <li>客户向与内部<b>物理分目录</b>是故意设计:防误发、防投屏。两层对同一事实可以有意持不同口径(内部保留的前提=报价的成本依据),但差异必须显式记录。</li>
+    <li>交付物按<b>依赖/阅读顺序</b>编号,不按产出先后;后补文档用字母后缀插位(02 的展开编 02B 紧跟其后),既有编号<b>绝不 renumber</b>。</li>
+    <li>多主体项目按项目拆交付物目录并声明独立性;新线索先落临时目录,成单再转正。</li>
+  </ul>
+  <h3><span class="h3n">1.2</span>执行节奏:真分叉才问</h3>
+  <ul>
+    <li><b>真分叉才问,且带推荐项</b>:只把实质改变交付物形态/数字的岔路口收敛成选择题请示;机械可推导的自决推进。</li>
+    <li><b>宽级联前先锁完整取值表</b>:用户只改部分条目却触发全链路级联时,逐项列全表(含推理值与未动项)确认,未提及的条目不猜。</li>
+    <li>指令顺序会固化矛盾时<b>提替代顺序</b>:「先 commit 手改再更新下游」会把不一致锁进版本库,改为「意图落源→重生成→一次一致 commit」,说明理由。</li>
+    <li>未知客户事实不当阻塞项:压成摸底问题清单带去现场,准备不停。</li>
+  </ul>
+  <h3><span class="h3n">1.3</span>两条第 0 级红线</h3>
+  <div class="callout seal">
+    <div class="ct">✗ 数据授权是先于代码的第 0 步</div>
+    <p>反模式:先设计数据管线,授权后补。正确:首谈就问「存量数据当年采集的知情同意是否覆盖新用途」;答不上就按最坏情形默认走「去标识化+合成重建」的安全路径——推进不依赖答复,但方案形态由它决定。</p>
+  </div>
+  <div class="callout seal">
+    <div class="ct">✗ 已报客户的数字即锁定口径</div>
+    <p>对外一律用锁定值;内部区间/中位数只留内部文件,红线写明<b>勿口播勿投屏</b>。发现一处泄漏,立即对同类文档全量 grep 清零,不是只修被点名的那一处。</p>
+  </div>
+  <h3><span class="h3n">1.4</span>全流程路由表</h3>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>阶段</th><th>用什么</th><th>做什么</th></tr></thead>
+    <tbody>
+      <tr><td>立项</td><td><code>/bid:init</code></td><td>双层目录脚手架 + P0 问题清单 + memory 初始化</td></tr>
+      <tr><td>调研</td><td><code>bid-research</code></td><td>竞品实证、录屏拆解、license 穿透、证据链三角验证(03)</td></tr>
+      <tr><td>谈判设计</td><td><code>presales-tactics</code></td><td>体量摸底、三档锚定、砍价预案、红线成文(04)</td></tr>
+      <tr><td>成本</td><td><code>bid-costing</code></td><td>价格阶梯、依据分层、区间口径(05)</td></tr>
+      <tr><td>排期</td><td><code>bid-scheduling</code></td><td>PERT + 资源平衡器 + 倒挂校验(06)</td></tr>
+      <tr><td>写作</td><td><code>deai-writing</code></td><td>去 AI 味,信息零损失只改外壳(07)</td></tr>
+      <tr><td>出图/出版</td><td><code>diagram-pdf-pipeline</code></td><td>图表生成、中文 PDF 导出(08)</td></tr>
+      <tr><td>原型移交</td><td><code>prototype-handoff</code> + <code>/bid:handoff</code></td><td>按接收工具定包形态(09)</td></tr>
+      <tr><td>改口径</td><td><code>single-source-sync</code> + <code>/bid:sync</code></td><td>改源→重生成→级联→grep 残留(02)</td></tr>
+      <tr><td>会议</td><td><code>/bid:meeting</code></td><td>会前准备包五件套;会后归档+口径落 memory</td></tr>
+      <tr><td>速查</td><td><code>/bid:status</code></td><td>锁定口径表+红线清单+遗留待办(只读)</td></tr>
+      <tr><td>收口</td><td><code>adversarial-review</code> + <code>/bid:review</code></td><td>多透镜对抗审校(10)</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ================= S2 ================= -->
+<section id="s2">
+  <div class="sec-eyebrow"><span class="num">02</span><span class="tag">核心纪律 · single-source-sync</span></div>
+  <h2>单一真源与口径级联</h2>
+  <p>全套方法论的心脏:<b>全部数字、称谓、口径只存在于「数据文件 + 生成器」这一个真源</b>;xlsx/PDF/图都是产物,只能重生成,绝不手改后提交。这条纪律在实战里被三类事故反复捶打成型。</p>
+  <h3><span class="h3n">2.1</span>生成器纪律</h3>
+  <ul>
+    <li>派生展示值(小计/合计/斜率/散文里的数字)一律参数实算,<b>禁止硬编码</b>——模板里写死的数字在下一次口径变更时必然腐烂。</li>
+    <li>报价表显要金额列必须「逐项可见加总 = 小计」;小计由条目数组实算,汇总再从小计派生。反模式:逐项与小计各自硬编码,客户两次抓到子项加总 ≠ 小计。</li>
+    <li>单元格双写 <code>cell.value = { formula, result }</code>:公式呈现可审计的加总关系,实算值保证不重算公式的查看器也显示正确。</li>
+  </ul>
+  <h3><span class="h3n">2.2</span>手改回捕:产物永远不是真源</h3>
+  <ol class="steps">
+    <li><div class="st-t">备份手改版</div><div class="st-d">用户手改是意图输入,不是垃圾——先保全。</div></li>
+    <li><div class="st-t">干净重生成一份对照版,逐格逻辑值 diff</div><div class="st-d">办公软件保存会重排内部 XML,raw diff 噪声大不可用;用 cell-dump(<code>xlsx-dump.cjs</code>)按「sheet!addr → 值/公式/格式」对比,精确捕捉每一处手改。</div></li>
+    <li><div class="st-t">与用户确认权威口径</div><div class="st-d">哪套数字算数?删除类改动是有意还是误删?</div></li>
+    <li><div class="st-t">意图落回生成器源,再重生成</div><div class="st-d">改参数格仍自动重算;默认怀疑派生字段——手改往往主表改全了,汇总曲线、结论行、颜色标注漏改成自相矛盾。</div></li>
+  </ol>
+  <div class="story">
+    <div class="st">办公软件的回存覆盖</div>
+    <p>脚本重新生成报价表后,用户截图发现内容竟回退到旧版——桌面办公软件一直开着该文件,在脚本写盘之后把内存里的旧副本保存了回去,静默覆盖脚本输出。同类事故在后续两轮重生成前又险些复发。</p>
+    <p>固化下来的前置步(macOS 语境):<b>重生成前 <code>lsof</code> 检测写句柄,检出即暂停,请用户「关闭且不保存」</b>。此后连续多轮成功拦截。</p>
+  </div>
+  <h3><span class="h3n">2.3</span>口径级联固定链(/bid:sync 的执行序)</h3>
+  <ol class="steps ext">
+    <li><div class="st-t">lsof 写句柄检查</div><div class="st-d">检出即停(见上)。</div></li>
+    <li><div class="st-t">手改检测(cell-dump diff)</div><div class="st-d">产物与干净重生成版对比;检出手改先回捕落源。</div></li>
+    <li><div class="st-t">改源 → 跑生成器</div><div class="st-d">先映射爆炸半径:grep 全库,区分「公式驱动(自动级联)」与「硬编码副本(逐处清单)」;封面模板常藏在构建脚本里,兄弟文档与 memory 同属级联对象。</div></li>
+    <li><div class="st-t">内容抽验</div><div class="st-d">命令零退出 ≠ 产物已更新。验三件事:新串在、旧串亡、格式存活;小计对了明细行仍可能陈旧,逐行复核。</div></li>
+    <li><div class="st-t">全库 grep 残留,逐条判读</div><div class="st-d">数字子串巧合(365 含 65)、规则自述、同词多义都是合法误报,不误伤;真残留改源后回到第 3 步。</div></li>
+    <li><div class="st-t">memory 核对 + 落决策</div><div class="st-d">把口径变更的决策与理由写入 memory,防后续会话按旧口径回潮。</div></li>
+    <li><div class="st-t">分组提交预览</div><div class="st-d">显式文件路径、禁 <code>git add -A</code>、排除集点名列出;只预览,不自动 commit。</div></li>
+  </ol>
+  <p class="small">完整规则与提交纪律见 skill <code>single-source-sync</code>;下面的动态演示场景 ② 就是这条链在跑。</p>
+</section>
+
+<!-- ================= DEMO ================= -->
+<section id="sdemo">
+  <div class="sec-eyebrow"><span class="num">▶</span><span class="tag">动态演示</span></div>
+  <h2>系统动态演示:看着口径在流水线上跑</h2>
+  <p>下面是这套方法论的<b>可播放动画</b>:粒子沿真实工作流边流动,右侧状态面板同步口径一致性/AI 味/待同步数,控制台滚动的日志贴近命令的真实输出形态(<code>$ /bid:*</code> 为命令轨迹)。上半区是<span class="pill ext">客户向</span>生产线,下半区是<span class="pill itn">内部</span>证据区,两区之间隔着<b>审校门</b>。四个场景对应四种关键工况——文件名、数字均为演示用教学值,<b>流程顺序与机制语义与 skill/command 正文一一对应</b>。</p>
+  <div class="dm-wrap">
+    <div class="dm-controls">
+      <div class="dm-tabs" role="group" aria-label="演示场景">
+        <button class="dm-tab on" data-sc="0">① 首轮全流程</button>
+        <button class="dm-tab" data-sc="1">② 口径变更级联</button>
+        <button class="dm-tab" data-sc="2">③ 异常工况</button>
+        <button class="dm-tab" data-sc="3">④ 审校收口</button>
+      </div>
+      <div class="dm-btns">
+        <button class="dm-btn" id="dm-play">▶ 播放</button>
+        <button class="dm-btn dm-btn2" id="dm-restart" aria-label="重播">↺</button>
+        <select id="dm-speed" class="dm-sel" aria-label="播放速度">
+          <option value="0.6">0.6×</option>
+          <option value="1" selected>1×</option>
+          <option value="1.6">1.6×</option>
+        </select>
+      </div>
+    </div>
+    <div class="dm-narr" id="dm-narr" aria-live="polite">…</div>
+    <div class="dm-map">
+      <svg viewBox="0 0 960 440" role="img" aria-label="投标交付物流水线动画">
+        <path id="dme-meet_mem" class="dm-edge" d="M120,66 L120,110"/>
+        <path id="dme-mem_src" class="dm-edge" d="M220,133 L300,128"/>
+        <path id="dme-src_xlsx" class="dm-edge" d="M560,112 L640,44"/>
+        <path id="dme-src_doc" class="dm-edge" d="M560,128 L640,118"/>
+        <path id="dme-xlsx_gate" class="dm-edge" d="M872,66 C918,120 918,170 852,212"/>
+        <path id="dme-doc_gate" class="dm-edge" d="M760,142 L760,210"/>
+        <path id="dme-res_int" class="dm-edge" d="M240,352 L300,352"/>
+        <path id="dme-int_src" class="dm-edge" d="M410,330 L410,158"/>
+        <path id="dme-int_gate" class="dm-edge" d="M520,344 L660,242"/>
+        <path id="dme-gate_pkg" class="dm-edge" d="M760,264 L760,330"/>
+        <g class="dm-lane-label"><text x="628" y="14" text-anchor="end">▲ 客户向生产线</text></g>
+        <g class="dm-lane-label int"><text x="952" y="432" text-anchor="end">▼ 内部证据区 · 勿外发</text></g>
+        <g class="dm-node" id="dmn-meet">
+          <rect x="20" y="20" width="200" height="46" rx="7"/>
+          <text class="t1" x="120" y="40">会议纪要</text>
+          <text class="t2" x="120" y="56">meeting/ · 编年归档</text>
+        </g>
+        <g class="dm-node" id="dmn-mem">
+          <rect x="20" y="110" width="200" height="46" rx="7"/>
+          <text class="t1" x="120" y="130">锁定口径 memory</text>
+          <text class="t2" x="120" y="146">决策即时落盘 · 防回潮</text>
+        </g>
+        <g class="dm-node dm-core" id="dmn-src">
+          <rect x="300" y="96" width="260" height="62" rx="7"/>
+          <text class="t1" x="430" y="120">单一数据源 build/</text>
+          <text class="t2" x="430" y="138">数据文件 + 生成器 · 数字唯一的家 ★</text>
+        </g>
+        <g class="dm-node ext" id="dmn-xlsx">
+          <rect x="640" y="20" width="240" height="46" rx="7"/>
+          <text class="t1" x="760" y="40">报价 · 排期 xlsx</text>
+          <text class="t2" x="760" y="56">docs/ · {formula,result} 双写</text>
+        </g>
+        <g class="dm-node ext" id="dmn-doc">
+          <rect x="640" y="96" width="240" height="46" rx="7"/>
+          <text class="t1" x="760" y="116">方案 md · 图 · PDF</text>
+          <text class="t2" x="760" y="132">docs/ · spec 同源三件套</text>
+        </g>
+        <g class="dm-node dm-core" id="dmn-gate">
+          <rect x="660" y="210" width="200" height="54" rx="7"/>
+          <text class="t1" x="760" y="232">审校门(多透镜)</text>
+          <text class="t2" x="760" y="250">一致性·算术·脱敏·溯源 ★</text>
+        </g>
+        <g class="dm-node ext" id="dmn-pkg">
+          <rect x="660" y="330" width="200" height="46" rx="7"/>
+          <text class="t1" x="760" y="350">交付包(对客)</text>
+          <text class="t2" x="760" y="366">只含锁定口径</text>
+        </g>
+        <g class="dm-node int" id="dmn-res">
+          <rect x="20" y="330" width="220" height="46" rx="7"/>
+          <text class="t1" x="130" y="350">调研取证 · 成本依据</text>
+          <text class="t2" x="130" y="366">实证竞品 · list 价核验</text>
+        </g>
+        <g class="dm-node int" id="dmn-int">
+          <rect x="300" y="330" width="220" height="46" rx="7"/>
+          <text class="t1" x="410" y="350">内部底稿 docs/内部/</text>
+          <text class="t2" x="410" y="366">区间·红线·口径依据 · 勿外发</text>
+        </g>
+        <g class="dm-badge" id="dmb-meet" transform="translate(224,18)" visibility="hidden"><rect x="-20" y="-10" width="40" height="20" rx="10"/><text y="4"></text></g>
+        <g class="dm-badge" id="dmb-mem" transform="translate(224,108)" visibility="hidden"><rect x="-20" y="-10" width="40" height="20" rx="10"/><text y="4"></text></g>
+        <g class="dm-badge" id="dmb-src" transform="translate(564,94)" visibility="hidden"><rect x="-20" y="-10" width="40" height="20" rx="10"/><text y="4"></text></g>
+        <g class="dm-badge" id="dmb-xlsx" transform="translate(884,18)" visibility="hidden"><rect x="-20" y="-10" width="40" height="20" rx="10"/><text y="4"></text></g>
+        <g class="dm-badge" id="dmb-doc" transform="translate(884,94)" visibility="hidden"><rect x="-20" y="-10" width="40" height="20" rx="10"/><text y="4"></text></g>
+        <g class="dm-badge" id="dmb-gate" transform="translate(864,208)" visibility="hidden"><rect x="-20" y="-10" width="40" height="20" rx="10"/><text y="4"></text></g>
+        <g class="dm-badge" id="dmb-pkg" transform="translate(864,328)" visibility="hidden"><rect x="-20" y="-10" width="40" height="20" rx="10"/><text y="4"></text></g>
+        <g class="dm-badge" id="dmb-int" transform="translate(524,328)" visibility="hidden"><rect x="-20" y="-10" width="40" height="20" rx="10"/><text y="4"></text></g>
+        <g id="dm-pkts"></g>
+      </svg>
+    </div>
+    <div class="dm-lower">
+      <div class="dm-console" id="dm-console" role="log" aria-live="off" tabindex="0" aria-label="流水线日志(演示)"></div>
+      <aside class="dm-status">
+        <div class="dm-st"><span>口径一致性(全交付物)</span>
+          <div class="dm-bar" id="dm-cwrap"><i id="dm-cbar"></i></div>
+          <div class="dm-qt" id="dm-ctext">—</div>
+        </div>
+        <div class="dm-st"><span>AI 味命中(净口径)</span><b id="dm-ai">—</b></div>
+        <div class="dm-st"><span>待同步文档</span><b id="dm-sync">—</b></div>
+        <div class="dm-st"><span>审校透镜</span><div id="dm-lens" class="dm-chips"></div></div>
+        <div class="dm-st"><span>命令轨迹</span><div id="dm-cmd" class="dm-chips"></div></div>
+      </aside>
+    </div>
+    <div class="legend" style="margin:12px 0 0">
+      <span>粒子配色:</span>
+      <span class="pill ext">客户向流</span>
+      <span class="pill itn">内部流</span>
+      <span class="pill ok">✓ 通过</span>
+      <span class="pill warn">⚠ 判读/退避</span>
+      <span class="pill bad">✗ 拦截/停线</span>
+    </div>
+  </div>
+  <p class="small">场景①走完 01 章路由表的主线;场景②是 02 章级联七步链;场景③对应 02 章的 lsof 前置与 07 章的双层测量;场景④对应 10 章的透镜装配与反向泄露拦截。系统尊重「减弱动态效果」偏好:开启时粒子瞬移、保留步进式日志。</p>
+</section>
+<style>
+.dm-wrap{border:1px solid var(--line); border-radius:8px; background:var(--panel); box-shadow:var(--shadow); padding:14px 16px 16px; margin:18px 0}
+.dm-controls{display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center}
+.dm-tabs{display:flex; gap:6px; flex-wrap:wrap}
+.dm-tab{font:600 12.5px/1.3 -apple-system,"PingFang SC","Hiragino Sans GB",sans-serif; padding:8px 11px; border-radius:20px; border:1px solid var(--line); background:var(--paper); color:var(--muted); cursor:pointer}
+.dm-tab.on{background:var(--seal-soft); border-color:var(--seal-line); color:var(--seal-ink)}
+.dm-btns{display:flex; gap:6px; align-items:center}
+.dm-btn{font:600 13px/1.3 -apple-system,"PingFang SC",sans-serif; padding:8px 14px; border-radius:6px; border:1px solid var(--seal-line); background:var(--seal-soft); color:var(--seal-ink); cursor:pointer; min-width:88px}
+.dm-btn2{min-width:0; padding:8px 11px}
+.dm-sel{font:600 12.5px ui-monospace,"SF Mono",Menlo,monospace; padding:7px 6px; border-radius:6px; border:1px solid var(--line); background:var(--paper); color:var(--ink)}
+.dm-narr{margin:12px 2px 6px; font-weight:650; font-size:14px; min-height:1.7em; color:var(--ink)}
+.dm-narr::before{content:"▸ "; color:var(--seal)}
+.dm-map{overflow-x:auto}
+.dm-map svg{width:100%; min-width:680px; height:auto; display:block}
+.dm-node rect{fill:var(--paper); stroke:var(--line); stroke-width:1.5}
+.dm-node.ext rect{stroke:var(--ext-line); fill:var(--ext-soft)}
+.dm-node.int rect{stroke:var(--int-line); fill:var(--int-soft)}
+.dm-node.dm-core rect{stroke:var(--seal); stroke-width:2}
+.dm-node .t1{font:700 13px -apple-system,"PingFang SC","Hiragino Sans GB",sans-serif; fill:var(--ink); text-anchor:middle}
+.dm-node .t2{font:500 9.5px ui-monospace,"SF Mono",Menlo,monospace; fill:var(--muted); text-anchor:middle}
+.dm-lane-label text{font:700 11px -apple-system,"PingFang SC",sans-serif; fill:var(--ext); letter-spacing:.12em; opacity:.6}
+.dm-lane-label.int text{fill:var(--int)}
+.dm-edge{stroke:var(--line); stroke-width:2; fill:none}
+.dm-pkt circle{stroke:var(--panel); stroke-width:1.5}
+.dm-pkt text{font:600 10px ui-monospace,"SF Mono",Menlo,monospace; fill:var(--ink); paint-order:stroke; stroke:var(--panel); stroke-width:3px; stroke-linejoin:round; text-anchor:middle}
+.dm-c-ext circle{fill:var(--ext)} .dm-c-int circle{fill:var(--int)} .dm-c-ok circle{fill:var(--ok)}
+.dm-c-warn circle{fill:var(--warn)} .dm-c-bad circle{fill:var(--bad)} .dm-c-gray circle{fill:var(--muted)}
+.dm-badge rect{stroke:none}
+.dm-badge text{font:700 10px ui-monospace,"SF Mono",Menlo,monospace; text-anchor:middle}
+.dm-b-gray rect{fill:var(--code-bg)} .dm-b-gray text{fill:var(--muted)}
+.dm-b-ok rect{fill:var(--ok-soft)} .dm-b-ok text{fill:var(--ok)}
+.dm-b-warn rect{fill:var(--warn-soft)} .dm-b-warn text{fill:var(--warn)}
+.dm-b-bad rect{fill:var(--bad-soft)} .dm-b-bad text{fill:var(--bad)}
+.dm-lower{display:grid; grid-template-columns:minmax(0,1.8fr) minmax(210px,1fr); gap:12px; margin-top:12px}
+@media (max-width:700px){ .dm-lower{grid-template-columns:1fr} }
+.dm-console{background:var(--code-bg); border:1px solid var(--line); border-radius:6px; height:238px; overflow-y:auto; padding:10px 12px; font:11.5px/1.85 ui-monospace,"SF Mono",Menlo,monospace}
+.dm-console .ln{white-space:pre-wrap; overflow-wrap:anywhere}
+.dm-console .ln-sys{color:var(--muted)} .dm-console .ln-ext{color:var(--ext-ink)} .dm-console .ln-int{color:var(--int-ink)}
+.dm-console .ln-ok{color:var(--ok)} .dm-console .ln-warn{color:var(--warn)} .dm-console .ln-bad{color:var(--bad); font-weight:700}
+.dm-status{display:flex; flex-direction:column; gap:10px}
+.dm-st{border:1px solid var(--line); border-radius:6px; padding:8px 10px 9px; background:var(--paper)}
+.dm-st>span{font-size:11px; color:var(--muted); letter-spacing:.04em; display:block; margin-bottom:3px}
+.dm-st b{font:700 19px/1.3 ui-monospace,"SF Mono",Menlo,monospace; font-variant-numeric:tabular-nums}
+.dm-bar{height:8px; border-radius:4px; background:var(--code-bg); border:1px solid var(--line); overflow:hidden; margin:6px 0 4px}
+.dm-bar i{display:block; height:100%; width:0%; background:var(--ext); transition:width .4s}
+.dm-bar.c-warn i{background:var(--warn)} .dm-bar.c-bad i{background:var(--bad)}
+.dm-qt{font:600 12px ui-monospace,"SF Mono",Menlo,monospace; font-variant-numeric:tabular-nums; color:var(--muted)}
+.dm-chips{display:flex; flex-wrap:wrap; gap:4px; min-height:22px; align-items:center}
+.dm-chip{font:600 10.5px/1 ui-monospace,"SF Mono",Menlo,monospace; padding:4px 8px; border-radius:10px; background:var(--code-bg); color:var(--muted)}
+.dm-chip.ok{background:var(--ok-soft); color:var(--ok)} .dm-chip.warn{background:var(--warn-soft); color:var(--warn)} .dm-chip.bad{background:var(--bad-soft); color:var(--bad)}
+.dm-sep{color:var(--muted); font-size:10px}
+@media (prefers-reduced-motion: reduce){ .dm-bar i{transition:none} }
+</style>
+<script>
+(function(){
+  var SVGNS='http://www.w3.org/2000/svg';
+  var RM=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function $(id){return document.getElementById(id)}
+  var consoleEl=$('dm-console'),narrEl=$('dm-narr'),aiEl=$('dm-ai'),syncEl=$('dm-sync'),
+      cbar=$('dm-cbar'),cwrap=$('dm-cwrap'),ctext=$('dm-ctext'),
+      lensEl=$('dm-lens'),cmdEl=$('dm-cmd'),
+      playBtn=$('dm-play'),speedSel=$('dm-speed'),pktLayer=$('dm-pkts');
+  var SC=[
+  {cal0:null,intro:'点击 ▶ 播放:从 /bid:init 立项到交付包盖章——一条完整生产线。',ev:[
+    {t:0.0,pn:['/bid:init','gray']},
+    {t:0.0,l:['$ /bid:init 某企业员工服务平台','sys']},
+    {t:0.6,l:['[INIT] 双层目录:docs/ · docs/内部/ · build/ · meeting/ ✓  P0 清单 4 项(数据授权=第 0 步)','sys']},
+    {t:0.7,pc:100},
+    {t:1.6,n:'首谈会议:纪要编年归档,口径定案落 memory'},
+    {t:1.7,pn:['/bid:meeting','gray']},
+    {t:1.8,l:['$ /bid:meeting 2026-01-15','sys']},
+    {t:2.4,p:['meet_mem',1,'定案 ×3','gray',0.7]},
+    {t:3.2,l:['[MEM] 锁定口径:用户规模 10000 · 工期 12 周 · 报价三档 —— 出处=首谈定案','sys']},
+    {t:4.0,n:'内部证据区先行:调研取证 → 成本依据入内部底稿'},
+    {t:4.4,p:['res_int',1,'竞品实证+list价','int',0.8]},
+    {t:5.3,l:['[RES] 竞品运营主体实证 ✓ · 单价对齐官网列表价(活动价不作基线)','int']},
+    {t:6.0,p:['int_src',1,'成本依据','int',0.8]},
+    {t:6.9,p:['mem_src',1,'锁定参数','ext',0.7]},
+    {t:7.7,n:'生成器一键出全套:数字只有一个家'},
+    {t:7.8,l:['[GEN] gen-budget → 报价.xlsx · gen-plan → 排期.xlsx({formula,result} 双写)','ext']},
+    {t:8.4,p:['src_xlsx',1,'xlsx ×2','ext',0.8]},
+    {t:9.0,l:['[GEN] gen-report → 方案.md + 架构图(spec 同源)+ PDF(CJK-first 字体栈)','ext']},
+    {t:9.4,p:['src_doc',1,'md+图+PDF','ext',0.8]},
+    {t:10.4,ps:0},
+    {t:11.0,n:'交付前收口:/bid:review 装配四透镜'},
+    {t:11.1,pn:['/bid:review','gray']},
+    {t:11.2,l:['$ /bid:review docs/','sys']},
+    {t:11.8,p:['xlsx_gate',1,'送审','ext',0.9]},
+    {t:12.0,p:['doc_gate',1,'送审','ext',0.8]},
+    {t:13.0,l:['[REVIEW] 透镜①一致性:0 矛盾 ✓','ok']},
+    {t:13.1,pl:['一致性','ok']},
+    {t:13.7,l:['[REVIEW] 透镜②算术配平:每总额=分项Σ ✓','ok']},
+    {t:13.8,pl:['算术','ok']},
+    {t:14.4,l:['[REVIEW] 透镜③脱敏五类 grep:0 命中 ✓','ok']},
+    {t:14.5,pl:['脱敏','ok']},
+    {t:15.1,l:['[REVIEW] 透镜④去AI味:净口径 0 ✓','ok']},
+    {t:15.2,pl:['AI味','ok']},
+    {t:16.0,p:['gate_pkg',1,'放行','ok',0.8]},
+    {t:16.9,b:['pkg','已盖章','ok']},
+    {t:17.6,n:'✓ 首轮交付包出厂:全部数字可溯源到 build/ 单一数据源'}
+  ]},
+  {cal0:100,intro:'点击 ▶ 播放:客户要求工期 12→10 周——一处口径变更,级联同步全部交付物。',ev:[
+    {t:0.0,n:'会议定案:工期压缩。/bid:meeting 只提取登记,不动交付物'},
+    {t:0.1,pn:['/bid:meeting','gray']},
+    {t:0.2,l:['$ /bid:meeting 2026-02-01','sys']},
+    {t:0.8,p:['meet_mem',1,'工期 12→10 周','warn',0.8]},
+    {t:1.7,l:['[MEM] 新口径 10 周登记 · 旧口径 12 周标记废弃(防回潮)','sys']},
+    {t:2.2,ps:5},
+    {t:2.3,pc:62},
+    {t:2.4,l:['[MEET] 爆炸半径预览:排期xlsx · 报价xlsx · 方案md · 封面模板 · memory —— 5 处待同步 → 走 /bid:sync','warn']},
+    {t:3.4,n:'/bid:sync 七步链启动'},
+    {t:3.5,pn:['/bid:sync','gray']},
+    {t:3.6,l:['$ /bid:sync 工期 12→10 周','sys']},
+    {t:4.2,l:['[SYNC] ① lsof 写句柄:干净 ✓   ② cell-dump diff:无手改 ✓','ok']},
+    {t:5.0,p:['mem_src',1,'改源:weeks=10','ext',0.7]},
+    {t:5.9,l:['[SYNC] ③ 改 plan-data 源 → 重跑生成器(派生值全部实算)','ext']},
+    {t:6.4,p:['src_xlsx',1,'重生成','ext',0.7]},
+    {t:7.2,b:['xlsx','已同步','ok']},
+    {t:7.3,ps:3},
+    {t:7.6,p:['src_doc',1,'重生成','ext',0.7]},
+    {t:8.4,b:['doc','已同步','ok']},
+    {t:8.5,ps:2},
+    {t:8.9,l:['[SYNC] ⚠ 封面模板内嵌在构建脚本里 —— 历史上最易漏的一处,本轮已入清单','warn']},
+    {t:9.7,l:['[SYNC] ④ 内容抽验:新串「10 周」在 ✓ · 旧串「12 周」亡 ✓ · numFmt 存活 ✓','ok']},
+    {t:10.3,ps:1},
+    {t:10.8,l:['[SYNC] ⑤ 全库 grep「12 周」:命中 2 → 判读:1 处数字子串巧合(合法误报,保留)· 1 处真残留(方案 §3)','warn']},
+    {t:11.8,p:['src_doc',1,'残留改源重出','ext',0.7]},
+    {t:12.6,ps:0},
+    {t:12.7,pc:100},
+    {t:13.2,l:['[SYNC] ⑥ memory:决策+理由落盘(2026-02-01 会议定案,工期 10 周)','sys']},
+    {t:14.0,l:['[SYNC] ⑦ 分组提交预览(不执行):build/×1 · docs/×3 · memory×1;排除集:1 个无关预存改动','sys']},
+    {t:14.9,n:'✓ 级联完成:5 处全同步,口径一致性回到 100%'}
+  ]},
+  {cal0:100,intro:'点击 ▶ 播放(两幕):① 重生成撞上办公软件写句柄 → 停线;② AI 味扫描的双层测量与回炉。',ev:[
+    {t:0.0,n:'第一幕:重生成前的 lsof 检查——这个坑实测复发过 3 次'},
+    {t:0.1,pn:['/bid:sync','gray']},
+    {t:0.2,l:['$ /bid:sync 报价档位微调','sys']},
+    {t:0.9,l:['[SYNC] ① lsof 报价.xlsx → 检出 WPS 写句柄(PID 4242)!','bad']},
+    {t:1.0,b:['src','停线','bad']},
+    {t:1.8,n:'停线:办公软件的内存旧副本会在脚本写盘后回存覆盖——请关闭且不保存'},
+    {t:3.0,l:['[SYS] 用户已关闭(未保存)→ 复查 lsof:干净 ✓ 恢复流水线','ok']},
+    {t:3.2,b:['src','','gray']},
+    {t:3.8,p:['src_xlsx',1,'重生成','ext',0.8]},
+    {t:4.7,b:['xlsx','已同步','ok']},
+    {t:5.6,n:'第二幕:方案文稿的 AI 味双层测量——毛命中先别动手'},
+    {t:5.8,l:['$ node aiflavor-scan.cjs docs/ --json /tmp/stats.json','sys']},
+    {t:6.6,pa:41},
+    {t:6.7,l:['[SCAN] 18 类正则毛命中 41 · 密度 12.3/千字 —— 这只是取证层','warn']},
+    {t:7.7,l:['[SCAN] 语义判读:34 处为正当用法(引用括注/表格勾选符/术语加粗)→ 净口径 7','sys']},
+    {t:8.0,pa:7},
+    {t:9.0,l:['[DEAI] 性价比最高两刀:段末升华句 ×3 删 · 拟物化词 ×2 清 —— 近零信息损失','ext']},
+    {t:9.6,pa:2},
+    {t:10.4,l:['[DEAI] 对抗 diff 复核(独立实例):发现 1 处领域术语被软化 → 回滚该处,信息零损失红线','warn']},
+    {t:11.6,pa:0},
+    {t:12.2,b:['doc','净口径 0','ok']},
+    {t:12.8,n:'✓ 两种工况同一个收口式:停下 → 定位根因 → 修复 → 复验,绝不带病继续'}
+  ]},
+  {cal0:100,intro:'点击 ▶ 播放:交付前最后一道门——四透镜扇出,一颗内部数字粒子试图混进客户向交付包。',ev:[
+    {t:0.0,n:'/bid:review 按交付物类型装配透镜,并行扇出互不通气'},
+    {t:0.1,pn:['/bid:review','gray']},
+    {t:0.2,l:['$ /bid:review docs/ --送审前自修已完成','sys']},
+    {t:0.9,p:['xlsx_gate',1,'送审','ext',0.9]},
+    {t:1.1,p:['doc_gate',1,'送审','ext',0.8]},
+    {t:2.1,l:['[REVIEW] 透镜①一致性:0 矛盾 ✓','ok']},
+    {t:2.2,pl:['一致性','ok']},
+    {t:2.9,l:['[REVIEW] 透镜②算术配平:总额=Σ · 差额=相减 · 中点=均值 ✓','ok']},
+    {t:3.0,pl:['算术','ok']},
+    {t:3.8,n:'内部底稿里的测算区间,正沿引用链流向客户向文档……'},
+    {t:4.2,p:['int_gate',1,'内部区间 90–120','bad',1.4]},
+    {t:5.7,b:['gate','BLOCKED','bad']},
+    {t:5.8,l:['[REVIEW] 透镜③反向泄露:客户向引用了内部测算区间 → 拦截!已报口径=锁定值 100,区间勿外发','bad']},
+    {t:6.9,p:['int_gate',-1,'弹回内部','int',1.0]},
+    {t:8.0,l:['[FIX] 客户向只保留锁定值 100;区间留 docs/内部/ 并标注「勿口播勿投屏」','ext']},
+    {t:8.2,pl:['脱敏','ok']},
+    {t:9.0,l:['[REVIEW] 透镜④引用溯源:1 篇「完美贴合结论」的文献查无实据 → 整体剔除,结论改由三条独立证据链支撑 + 透明度声明','warn']},
+    {t:10.4,pl:['溯源','ok']},
+    {t:11.2,l:['[REVIEW] 检查器反向验证:注入已知脏词 → 检查器抓到 ✓ 删除复测干净 ✓(防空转假通过)','sys']},
+    {t:12.4,l:['[REVIEW] 修复后复跑全部透镜:清零 ✓','ok']},
+    {t:13.2,p:['gate_pkg',1,'放行','ok',0.8]},
+    {t:14.1,b:['pkg','已盖章','ok']},
+    {t:14.8,n:'✓ 收口完成——审校门拦下的从来不是错字,是自己引入的矛盾与泄露'}
+  ]}];
+  var cur=0,clock=0,idx=0,playing=false,raf=null,last=0,speed=1,pkts=[];
+  function setNarr(t){narrEl.textContent=t}
+  function log(t,c){var d=document.createElement('div');d.className='ln ln-'+(c||'sys');d.textContent=t;consoleEl.appendChild(d);consoleEl.scrollTop=consoleEl.scrollHeight}
+  function setCal(v){if(v===null){ctext.textContent='—';cbar.style.width='0%';cwrap.className='dm-bar';return}
+    cbar.style.width=v+'%';ctext.textContent=v+' %';
+    cwrap.className='dm-bar'+(v<70?' c-bad':(v<100?' c-warn':''))}
+  function setAi(v){aiEl.textContent=(v===null?'—':v)}
+  function setSync(v){syncEl.textContent=(v===null?'—':v)}
+  function chip(el,txt,cls){if(el.children.length){var s=document.createElement('span');s.className='dm-sep';s.textContent='→';el.appendChild(s)}
+    var c=document.createElement('span');c.className='dm-chip'+(cls?' '+cls:'');c.textContent=txt;el.appendChild(c)}
+  function badge(node,txt,cls){var g=$('dmb-'+node);if(!txt){g.setAttribute('visibility','hidden');return}
+    var t=g.querySelector('text'),r=g.querySelector('rect');t.textContent=txt;
+    g.setAttribute('class','dm-badge dm-b-'+(cls||'gray'));g.setAttribute('visibility','visible');
+    var w=Math.max(30,t.getComputedTextLength()+16);r.setAttribute('width',w);r.setAttribute('x',-w/2)}
+  function clearBadges(){['meet','mem','src','xlsx','doc','gate','pkg','int'].forEach(function(n){$('dmb-'+n).setAttribute('visibility','hidden')})}
+  function colorVar(c){return c==='int'?'--int':c==='ext'?'--ext':c==='ok'?'--ok':c==='warn'?'--warn':c==='bad'?'--bad':'--muted'}
+  function place(pk){var at=pk.dir>0?pk.prog:1-pk.prog;var pt=pk.p.getPointAtLength(Math.max(0,Math.min(1,at))*pk.len);
+    pk.g.setAttribute('transform','translate('+pt.x.toFixed(1)+','+pt.y.toFixed(1)+')')}
+  function spawn(edge,dir,label,color,dur){var p=$('dme-'+edge);if(!p)return;
+    var g=document.createElementNS(SVGNS,'g');g.setAttribute('class','dm-pkt dm-c-'+color);
+    var c=document.createElementNS(SVGNS,'circle');c.setAttribute('r','6');
+    var tx=document.createElementNS(SVGNS,'text');tx.setAttribute('y','-11');tx.textContent=label;
+    g.appendChild(c);g.appendChild(tx);pktLayer.appendChild(g);
+    p.style.stroke='var('+colorVar(color)+')';p.dataset.live=String((+(p.dataset.live||0))+1);
+    var pk={g:g,p:p,len:p.getTotalLength(),dir:dir,prog:0,dur:(RM?0.05:dur)};pkts.push(pk);place(pk)}
+  function exec(e){if(e.n!==undefined)setNarr(e.n);if(e.l)log(e.l[0],e.l[1]);
+    if(e.p)spawn(e.p[0],e.p[1],e.p[2],e.p[3],e.p[4]||0.8);
+    if(e.b)badge(e.b[0],e.b[1],e.b[2]);
+    if(e.pc!==undefined)setCal(e.pc);if(e.pa!==undefined)setAi(e.pa);if(e.ps!==undefined)setSync(e.ps);
+    if(e.pl)chip(lensEl,e.pl[0],e.pl[1]);
+    if(e.pn)chip(cmdEl,e.pn[0],e.pn[1])}
+  function tick(ts){if(!playing)return;
+    var dt=Math.min(0.1,(ts-last)/1000)*speed;last=ts;clock+=dt;
+    var ev=SC[cur].ev;
+    while(idx<ev.length&&ev[idx].t<=clock){exec(ev[idx]);idx++}
+    for(var i=pkts.length-1;i>=0;i--){var pk=pkts[i];pk.prog+=dt/pk.dur;
+      if(pk.prog>=1){pk.prog=1;place(pk);pk.g.remove();
+        var lv=(+(pk.p.dataset.live||1))-1;pk.p.dataset.live=String(lv);
+        if(lv<=0)pk.p.style.stroke='';pkts.splice(i,1)}
+      else place(pk)}
+    if(idx>=ev.length&&pkts.length===0){playing=false;playBtn.textContent='↺ 重播';return}
+    raf=requestAnimationFrame(tick)}
+  function reset(){if(raf)cancelAnimationFrame(raf);playing=false;clock=0;idx=0;
+    pkts.forEach(function(pk){pk.g.remove();pk.p.style.stroke='';pk.p.dataset.live='0'});pkts=[];
+    consoleEl.innerHTML='';lensEl.innerHTML='';cmdEl.innerHTML='';
+    setAi(null);setSync(null);setCal(SC[cur].cal0);clearBadges();
+    setNarr(SC[cur].intro);playBtn.textContent='▶ 播放'}
+  function play(){if(playing){playing=false;playBtn.textContent='▶ 播放';if(raf)cancelAnimationFrame(raf);return}
+    if(idx>=SC[cur].ev.length&&pkts.length===0)reset();
+    playing=true;playBtn.textContent='⏸ 暂停';last=performance.now();raf=requestAnimationFrame(tick)}
+  var tabs=Array.prototype.slice.call(document.querySelectorAll('.dm-tab'));
+  tabs.forEach(function(tab){tab.addEventListener('click',function(){
+    tabs.forEach(function(t){t.classList.remove('on')});tab.classList.add('on');
+    cur=+tab.dataset.sc;reset();play()})});
+  playBtn.addEventListener('click',play);
+  $('dm-restart').addEventListener('click',function(){reset();play()});
+  speedSel.addEventListener('change',function(){speed=parseFloat(speedSel.value)||1});
+  reset();
+})();
+</script>
+
+<!-- ================= S3 ================= -->
+<section id="s3">
+  <div class="sec-eyebrow"><span class="num">03</span><span class="tag">工序 · bid-research</span></div>
+  <h2>调研取证:断言以查证为界</h2>
+  <p>调研管「怎么取证」,成稿核查归审校(10)。三条铁律:<b>无一手素材不臆写</b>(公开信息近零就停下索要录屏/截图,绝不基于近似名产品硬写)、<b>断言以查证为界</b>(只落可证事实)、<b>亲测 &gt; 转述</b>(子 agent 结论矛盾、链接死活,一律亲测定)。</p>
+  <h3><span class="h3n">3.1</span>对标先实证,再定打法</h3>
+  <p>第一步核实对标产品的<b>运营主体、商业模式、真实护城河</b>——护城河常是安全资质与行业认证,而非表面 AI 能力。写着「轻量打卡小工具」的对标,实证后可能是老牌厂商的企业服务获客漏斗;这类纠偏会颠覆整个方案重心,必须显式标「重要纠偏」。竞品普遍语焉不详的合规空白,可以反做成己方先行完成的信任卖点。</p>
+  <div class="story">
+    <div class="st">一通电话就能证伪的断言</div>
+    <p>方案初稿把竞品钉成「套壳产品」、称其数据「须经第三方平台」。用户只问了一句:「这句话有根据么?」多路联网取证的结果:对方技术形态零公开披露,所谓自研仅指后台数据平台——而这一断言与自家调研报告里「未公开、需核实」的标注直接自相矛盾,对方一通电话即可证伪。</p>
+    <p>修正:逐句定级,行业概括加限定保留,点名竞品的无据断言彻底删除,统一降级为「官方未公开,不评判其技术路线」,并配三条<b>『别说』红线</b>随材料上桌。</p>
+  </div>
+  <h3><span class="h3n">3.2</span>攻击话术三问 + 录屏拆解</h3>
+  <ul>
+    <li>每条攻击话术落纸前过三问:<b>可查证吗 / 会自打脸吗 / 对方该维度是否反而更强</b>。过不了的进『别说』红线清单。</li>
+    <li>录屏拆解用<b>固定节奏抽帧 + 编号 contact sheet</b>(先通读 sheet 建地图,再回原帧细读);禁用运动检测去重——滚动动画会击穿帧差法。主动追竞品在合规关键时刻的真实处理路径:录屏可实证的短板,是方案最有力的正面差异化打点。</li>
+    <li>人机验证墙两路技术路径失败即止损:用既有资产兜底 + 例外显式入报告 + 给用户可执行的手工采集说明,<b>禁止伪造</b>。</li>
+  </ul>
+  <h3><span class="h3n">3.3</span>license 穿透与三角验证</h3>
+  <ul>
+    <li>开源选型穿透 license 继承链:<b>仓库协议宽松 ≠ 权重可商用</b>——微调权重继承底座模型协议;常见结局是真正可商用的只有数据集与方法论。</li>
+    <li>重大技术路线用多条<b>互相独立</b>的证据链互证(学术实证 + 法规条款 + 业界工程实践),单路结论不直接进报告。</li>
+    <li>量化结论按六字段落纸:<b>区间 / 典型值 / 主驱动 / 来源 / 置信度 / caveat</b>;联网检索到的金额只取定性,查不到的显式留白附核验路径。</li>
+  </ul>
+</section>
+
+<!-- ================= S4 ================= -->
+<section id="s4">
+  <div class="sec-eyebrow"><span class="num">04</span><span class="tag">工序 · presales-tactics</span></div>
+  <h2>售前报价与谈判:结构先于数字</h2>
+  <p>与成本测算(05)的分界:那边管数字<b>怎么算得可辩护</b>,这边管算好的数字<b>怎么报、怎么谈、怎么守</b>。七条硬纪律的核心四条:</p>
+  <div class="cards">
+    <div class="card"><div class="ch"><span class="cn">纪律一</span>先摸底再报价</div><p>报价锚 = <b>规模 × 频次 × 人数</b>,不是技术难度——同一需求在不同体量下可差 10–50 倍。按大团队剧本套小客户,一句「你说的我都没有」就全盘失信。</p></div>
+    <div class="card"><div class="ch"><span class="cn">纪律二</span>三档锚定自洽</div><p>保底档必须「做残」——不包主推档的真痛点功能,否则客户踩上台阶就不走;高档离客户体量太远反而摧毁整个定价可信度,只在被问时报并明说「你这体量用不上」。</p></div>
+    <div class="card"><div class="ch"><span class="cn">纪律三</span>砍范围不砍量级</div><p>确认体量后报一个干净数字;被砍价时给砍掉部分功能的中间档,保住价格量级——<b>一步降十倍等于自爆虚高</b>,定价信誉当场崩。</p></div>
+    <div class="card"><div class="ch"><span class="cn">纪律四</span>红线先成文再上桌</div><p>降价预案只砍功能范围与后置阶段;<b>安全合规基线永不进砍价空间</b>——可谈的是薪酬档位与由谁承担,法定角色与动作本身不可删。</p></div>
+  </div>
+  <p>另外三条:报价<b>三层口径严格分离</b>(市场价值锚 / 阶段建议价+内部底线 / 对客只报量级),小额第 0 期降成交门槛;<b>主动降预期是信任杠杆</b>(明说做不到的场景、先把免费竞品摆上桌再做区隔,真痛点解决不了时如实劝退);<b>数据受托落合同</b>(控制者归属/权限交还/不留存,话术层承诺等于裸奔)。</p>
+</section>
+
+<!-- ================= S5 ================= -->
+<section id="s5">
+  <div class="sec-eyebrow"><span class="num">05</span><span class="tag">工序 · bid-costing</span></div>
+  <h2>可辩护的成本测算</h2>
+  <p>成本表的每一行都会被客户逐格挑战。回答挑战的不是话术,是<b>结构</b>:每行数字标注四级依据(确定算式 &gt; 官方 list 价 &gt; 人力薪酬行情 &gt; 估算带)与置信度;被质疑的头条数用「溯源原始出处 + 自底向上逐件重构」双管齐下互证——两者同量级则<b>常量不改、证据落档</b>,补证据不等于改数。</p>
+  <div class="story">
+    <div class="st">双重打折</div>
+    <p>测算云端算力成本时,把厂商「首购 5 折·限购一台」的活动价当成列表价,又乘了一次折扣系数——整套多年成本模型建立在一个根本拿不到的单价上。用户贴出购买页截图:「这已经是 5 折了。」</p>
+    <p>修正:以截图为硬锚点发起多源对抗式核价,重建「官网列表价 → 首购折(限一台,盖不住生产规模)→ 包年承诺折 → 按量时价」四级价格阶梯,由用户拍板基线后全模型重算,待实测参数列成上线前压测清单。固化的纪律:<b>折扣只能乘在列表价上、只乘一次;二手折扣标签必须算术反算互证,对不上整行撤回</b>。</p>
+  </div>
+  <div class="story">
+    <div class="st">为凑目标数调高参数</div>
+    <p>用户嫌弹性算力数量太吓人要求减半,执行时擅自把单卡并发能力上调六成来凑。用户质问:「这数据经得起推敲么?我的意思是通过降低预期用户规模来实现。」查公开基准:上调后的并发意味着单路速度慢到不可用。</p>
+    <p>修正:参数回滚并注明原值已是乐观上沿;按用户本意收紧<b>需求侧</b>规模档;新机制实算结果比口头目标还差一档,如实报告差距而不是硬凑。固化的纪律:<b>降数字走需求侧,不调能力参数;容量参数须有公开 benchmark 可辩护,否则回滚并标「待压测」</b>。</p>
+  </div>
+  <h3><span class="h3n">5.1</span>范围与表格口径</h3>
+  <ul>
+    <li>低~高区间 = <b>全低位情景 ~ 全高位情景</b>,两端同情景配对,禁混口径;跨方案对比同会计口径。</li>
+    <li>免/不免的二元情形不是区间:收敛基线值,触发条件入备注。</li>
+    <li>一张表禁两轴叠加(规模档 × 低高区间):主表锁单一基准,规模档单独成曲线子表。</li>
+    <li>附「未计入项」清单;可选项 = 不进合计的 +Δ 行;「X 万起」改成区间 + 典型值。</li>
+    <li>影响全表的关键单价由用户拍板,拍板前<b>冻结重算</b>——防按错价白算一轮。</li>
+  </ul>
+</section>
+
+<!-- ================= S6 ================= -->
+<section id="s6">
+  <div class="sec-eyebrow"><span class="num">06</span><span class="tag">工序 · bid-scheduling</span></div>
+  <h2>排期:机器排出,机器校验,诚实呈报</h2>
+  <p>排期表是评审逐格挑刺的对象:一处依赖倒挂、一格超载,整份材料可信度就崩。四条硬规则:</p>
+  <ol class="steps">
+    <li><div class="st-t">排期禁手摆</div><div class="st-d">工作包起止由带依赖拓扑约束的资源平衡器算出(附带 <code>level.cjs</code>,PERT 三点估算 + 每人每周人天上限)。手摆均摊曾排出单人单周 11+ 人天(上限 5)的不可行表。</div></li>
+    <li><div class="st-t">产出后必做倒挂校验</div><div class="st-d">每包开始周 ≥ 全部前置完成周。曾有一版自动输出的依赖倒挂被 3 个独立评审同时标出——校验要靠算法内置,评审只是兜底。</div></li>
+    <li><div class="st-t">不可行时呈分叉,不静默变通</div><div class="st-d">工期约束经平衡器证明不可行时,给「压缩硬塞 vs 放宽窗口」两选项及各自代价让用户裁决;禁止静默延长工期、静默降范围。</div></li>
+    <li><div class="st-t">数据不撒谎</div><div class="st-d">目标利用率倒推只走诚实口径重定义(分母改为「有效可投产能」并显式拆解余量),不虚改底层工时。利用率对比先辨 work-bound 还是 gating-bound(合规/审批日历撑大分母)。</div></li>
+  </ol>
+  <p class="small">AI 提效写<b>明账</b>(原始估算 × 系数 → 净值),系数只给代码生成类工作包——ML 训练、监管审批类不吃红利,悲观值反而要拉宽。结构性溢出(腾挪 owner 只是跷跷板)按弹性范围条款把非基线可选项后置运营期,不硬塞也不留表内缺口。</p>
+</section>
+
+<!-- ================= S7 ================= -->
+<section id="s7">
+  <div class="sec-eyebrow"><span class="num">07</span><span class="tag">工序 · deai-writing</span></div>
+  <h2>去 AI 味:信息零损失,只改外壳</h2>
+  <p>投标语境的去 AI 味与通用检测工具关注点不同:<b>误删领域术语、压平排名标记,比留下几个 buzzword 更致命</b>。全程红线是信息零损失。</p>
+  <ol class="steps ext">
+    <li><div class="st-t">双层测量,拿净口径再动手</div><div class="st-d">先跑 18 类正则扫描(附带 <code>aiflavor-scan.cjs</code>)取毛统计;毛命中<b>六成以上是正当用法</b>(引用括注/表格勾选符/术语加粗),叠加语义判读扣误报、补录正则抓不到的结构性 tell(段末升华/对仗标题/拟物化)。实测净密度仅约毛数的三分之一——别追毛密度指标。</div></li>
+    <li><div class="st-t">先砍性价比最高的两刀</div><div class="st-d">删段末口号式升华句;清拟物化/道德化词汇。近零信息损失,去掉最强指纹。</div></li>
+    <li><div class="st-t">改写守三条红线</div><div class="st-d">排名/强弱标记、领域术语、数字与出处一律不动;「必须→建议」级的义务强度变化单独申报,不得混入「语义等价」的自称;防御性定语全文只留一处——过度自证也是 AI 味。</div></li>
+    <li><div class="st-t">对抗 diff 复核(勿信改写者自评)</div><div class="st-d">由不带改写上下文的独立实例逐段专查四类:排名标记被压平、术语被软化、生造缩略词、新引入的比喻。实测改写 agent 自称「语义等价」,复核抓出四类各一处。</div></li>
+    <li><div class="st-t">客户向验收 grep 清零</div><div class="st-d">禁「甲方/乙方」合同式称谓(要主语用「我们」);术语首现给定义+可核实引用;标题/封面脱离括注必须自足。</div></li>
+  </ol>
+</section>
+
+<!-- ================= S8 ================= -->
+<section id="s8">
+  <div class="sec-eyebrow"><span class="num">08</span><span class="tag">工序 · diagram-pdf-pipeline</span></div>
+  <h2>图表与中文 PDF:一条强耦合的管线</h2>
+  <p>配图与中文 PDF 导出按「出图 → 导出 → 验收」三段执行;CJK 字体问题贯穿两域,SVG 滤镜会崩打印,图编号被 PDF 索引硬引用——所以是一条管线,不是两件事。</p>
+  <div class="story">
+    <div class="st">中文图集全空</div>
+    <p>交付物架构图用 mermaid 生成,HTML 预览一切正常,自检全部通过。用户「随便看一下」PDF:所有图的中文标签整体消失——浏览器打印 PDF 时 mermaid 不内嵌中文字体,框和箭头都在,唯独文字全空,自检极易漏过。</p>
+    <p>修正:全部图改为代码 spec 驱动的可栅格化管线(自动布局根治连线交叉、2x PNG 内嵌打印),「交付物配图绝不用 mermaid」写入长期记忆,<b>终稿逐页人工目检</b>从此成为铁律。</p>
+  </div>
+  <div class="story">
+    <div class="st">静默失败的陈旧 PDF</div>
+    <p>导出链路中加书签一步对内嵌 SVG 滤镜静默报错,只吐出一个裸括号——旧版 PDF 一直冒充新版通过了多轮「重新生成」,直到页面上出现源文件里早已删除的旧图注才暴露。</p>
+    <p>修正:逐字核对导出日志的成功行 + 重生成后内容抽验(新口径字符串出现/旧字符串消失);嵌图从带滤镜 SVG 全部换成高清 PNG(Chrome printToPDF 对 filter 直接报 Printing failed)。</p>
+  </div>
+  <h3><span class="h3n">8.1</span>速查规则</h3>
+  <ul>
+    <li><b>字体栈必须 CJK-first</b>:Latin-first 栈的症状是「汉字正常、仅全角标点坏」(标点在部分西文字体里有字形,直接取错)。headless 环境先跑字体探测页实测可用 CJK 字体。</li>
+    <li>每张图 = 一份代码 spec,同源出三件套(展示 SVG / 内嵌 2x PNG / 可编辑源);GUI 手改用语义级 diff 反向移植回 spec。</li>
+    <li>编号纪律:插新图用纯新增编号(如「图 0」),<b>绝不 renumber</b>;近似总览图以超集为准收口单一事实源。</li>
+    <li>长文档 PDF 默认带书签(Chrome 打印天然无 outline,附带 <code>add-outline.cjs</code> 注入)。</li>
+    <li>风格层与布局层分离:连线交叉是布局问题,换自动布局引擎即可,不必丢掉已验证的 CJK/矢量能力。</li>
+  </ul>
+</section>
+
+<!-- ================= S9 ================= -->
+<section id="s9">
+  <div class="sec-eyebrow"><span class="num">09</span><span class="tag">工序 · prototype-handoff</span></div>
+  <h2>原型交接包:先吃透接收工具,再定形态</h2>
+  <p>交接包不是给人看的文档,是<b>喂给另一个工具的输入</b>——做错形态等于白做。第 0 步永远是研究接收方:它吃什么输入?概念分层(可复用品牌层 vs 一次性原型生成层)?自身设计能力强弱?</p>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>形态</th><th>接收工具特征</th><th>包的主体</th></tr></thead>
+    <tbody>
+      <tr><td><b>A:prompt + 知识库</b></td><td>吃文件上传(含图),稠密结构化 prompt 远胜模糊描述,自带设计 craft</td><td>master prompt + 全量真实文案 + 带借鉴注记的参考图板</td></tr>
+      <tr><td><b>B:令牌 + 组件</b></td><td>读 tokens.css / 组件库代码,面向可复用设计系统</td><td>设计令牌 + 组件规范 + 示例组件代码</td></tr>
+    </tbody>
+  </table></div>
+  <p>形态 A 的价值序:<b>内容完整的真实文案 &gt; 稠密 master prompt &gt; 带注记视觉参考 &gt; 逐像素规范</b>——设计令牌当护栏,不当圣经。实战翻车:对着吃令牌+组件的工具喂 prompt 形态的包,只得到很薄的仅令牌系统。</p>
+  <ul>
+    <li><b>合规文案逐字锁定</b>(医疗/心理/金融/政务等强合规行业):标准化问卷题干、风险提示、免责声明、知情同意等锁定语句必须逐字提供并标注「禁止改写」——AI 设计工具会自行编造貌似合理的界面文案,生成后逐字核对。</li>
+    <li><b>宿主视觉实测为准,不信官方 VI</b>:真实录屏抽帧 + 像素取样,才能得出「主题色是点睛不是底色」这类结论——官方规范色与 App 实际渲染常不一致;双层令牌(<code>--host-*</code> / 自有品牌)隔离两套视觉。</li>
+    <li><b>P0/P1/P2 分批放行</b>:几十屏一次生成会爆上下文且跨屏一致性崩;核心流程审过再放行下一批。</li>
+    <li>交付前按用户真实打开方式跑<b>最劣环境</b>:双击 file:// 打开、现场断网,亲自验证。</li>
+  </ul>
+</section>
+
+<!-- ================= S10 ================= -->
+<section id="s10">
+  <div class="sec-eyebrow"><span class="num">10</span><span class="tag">出厂门 · adversarial-review</span></div>
+  <h2>对抗审校:拦下自己引入的矛盾</h2>
+  <p>改写、级联、多 agent 综合——这些工作的真风险不是错字,是<b>自己引入的隐性自相矛盾与 overclaim</b>。实测一轮定位改写引入 6 处缺陷,全部被 4 个独立透镜抓出。审校门按交付物类型装配透镜:</p>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>对象</th><th>透镜</th></tr></thead>
+    <tbody>
+      <tr><td><b>文档类</b></td><td>内部一致性 · 跨文档 claim 溯源 · 脱敏五类 grep · overclaim(绝对化否定句/孤儿引用)· 时效 · 口径分层</td></tr>
+      <tr><td><b>财务表</b></td><td>算术配平独立重算(每总额=分项Σ、每差额=两方相减、中点=均值、章节对账)· 残留 grep 计数清零</td></tr>
+      <tr><td><b>视觉类</b></td><td>逐页渲染目检(中文完整/边线路由/图不跨页)——代码跑通、子代理自检通过都不等于排版正确</td></tr>
+    </tbody>
+  </table></div>
+  <div class="story">
+    <div class="st">全票否决的完美论文</div>
+    <p>一篇与核心技术路线结论完美贴合的论文,承载了报告中五条关键主张,险些写进客户交付物。三票独立对抗验证全票否决:<b>无法核实这篇论文真实存在</b>。</p>
+    <p>修正:整体剔除该来源的全部主张,同一结论改由同行评审实证、法规条款、业界工程实践三条互相独立的证据链支撑,报告末尾加透明度声明。固化的纪律:<b>完美贴合结论的引用最可疑,必单独核验存在性</b>。</p>
+  </div>
+  <h3><span class="h3n">10.1</span>让检查器自己也过审</h3>
+  <ul>
+    <li><b>检查器有效性反向验证</b>:检查绿灯后注入一个已知错误,确认真能抓到,删除后复测干净——防空转假通过;报错的检查 ≠ 通过的检查。</li>
+    <li><code>grep | head</code> 会掩盖退出码造成假阴性,清零判据用 <code>grep -c</code> 计数;命中逐条人工分类(「禁止出现 XX」的规则自述不是泄露)。</li>
+    <li>机械可检问题(算术/超载/残留)送审前自修,评审只留判断类;≥3 个独立视角共指的发现基本必为真问题。</li>
+    <li>审校结论与用户已明确给出的事实冲突时,按用户事实定稿,冲突转为置顶的现场核实项。</li>
+    <li>多 agent 编排要点:子代理简报四件套(基线常量/输出 schema/来源优先级/反编造条款);schema 属性键只用 ASCII;批量生产先手写锚点样例锁约定。</li>
+  </ul>
+</section>
+
+<!-- ================= S11 ================= -->
+<section id="s11">
+  <div class="sec-eyebrow"><span class="num">11</span><span class="tag">附录</span></div>
+  <h2>清单与对照</h2>
+  <h3><span class="h3n">11.1</span>skill × command 对照</h3>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>skill</th><th>一句话</th><th>脚本</th></tr></thead>
+    <tbody>
+      <tr><td><code>bid-playbook</code></td><td>入口总纲:目录/编号/节奏/红线 + 路由表</td><td>—</td></tr>
+      <tr><td><code>single-source-sync</code></td><td>单一真源生成器纪律 + 口径级联七步链 + 手改回捕</td><td>xlsx-dump.cjs</td></tr>
+      <tr><td><code>bid-costing</code></td><td>价格阶梯、依据分层、范围配对、报价=参数改动</td><td>discount-check.cjs</td></tr>
+      <tr><td><code>bid-scheduling</code></td><td>PERT + 资源平衡器 + 倒挂校验 + 利用率口径</td><td>level.cjs</td></tr>
+      <tr><td><code>adversarial-review</code></td><td>多透镜对抗审校 + 检查器反向验证</td><td>check-residuals.sh</td></tr>
+      <tr><td><code>deai-writing</code></td><td>18 类扫描 + 净口径 + 零损失改写 + 对抗 diff</td><td>aiflavor-scan.cjs</td></tr>
+      <tr><td><code>diagram-pdf-pipeline</code></td><td>出图/导出/验收三段纪律</td><td>add-outline.cjs</td></tr>
+      <tr><td><code>prototype-handoff</code></td><td>按接收工具定包形态,合规文案逐字锁定</td><td>extract-frames.sh</td></tr>
+      <tr><td><code>bid-research</code></td><td>竞品实证、录屏拆解、license 穿透、三角验证</td><td>extract-frames.sh</td></tr>
+      <tr><td><code>presales-tactics</code></td><td>体量摸底、三档锚定、口径分层、降级预案</td><td>—</td></tr>
+    </tbody>
+  </table></div>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>command</th><th>节点</th><th>要点</th></tr></thead>
+    <tbody>
+      <tr><td><code>/bid:init</code></td><td>立项</td><td>三分支判定(新线索/成单/重组)+ 双层目录 + P0 清单 + memory 初始化</td></tr>
+      <tr><td><code>/bid:meeting</code></td><td>会议循环</td><td>会后:归档 + 口径变更落 memory;<code>--prep</code> 会前:准备包五件套</td></tr>
+      <tr><td><code>/bid:sync</code></td><td>口径变更</td><td>七步:lsof → 手改回捕 → 重生成 → 抽验 → grep 残留 → memory → 提交预览</td></tr>
+      <tr><td><code>/bid:handoff</code></td><td>原型移交</td><td>研究接收工具 → 定包形态 → 四必含件 → 分批放行</td></tr>
+      <tr><td><code>/bid:review</code></td><td>交付收口</td><td>送审前自修 → 按类型装配透镜并行扇出 → 裁决修复复验 → 只预览不 commit</td></tr>
+      <tr><td><code>/bid:status</code></td><td>任意时点</td><td>锁定口径表(对客/内部分层)+ 红线清单 + 遗留待办,全程只读</td></tr>
+    </tbody>
+  </table></div>
+  <h3><span class="h3n">11.2</span>出厂 checklist(交付前最后五问)</h3>
+  <ol>
+    <li>全部数字能溯源到 build/ 数据源吗?有手改过而未回捕的产物吗?(02)</li>
+    <li>最近一轮口径变更,级联清单清零了吗?grep 残留判读过了吗?(02)</li>
+    <li>客户向文档里有内部区间、竞品无据断言、甲乙方称谓吗?(04/07/10)</li>
+    <li>PDF 逐页目检过了吗——中文完整、图不跨页、书签在?(08)</li>
+    <li>多透镜审校跑了吗?检查器自己反向验证过了吗?(10)</li>
+  </ol>
+  <h3><span class="h3n">11.3</span>安装与来源</h3>
+  <p>Claude Code 内 <span class="kbd">/plugin</span> → marketplace <code>build-your-system</code> → 安装 <code>bid</code>。方法论挖掘自一个真实 To-B 投标项目的 9 个全周期会话(318 条经验、16 个经验域,19-agent 工作流两级挖掘+裁决);本导读的案例全部化名重构,数字为教学示例值。</p>
+  <div class="footer">bid 插件 v0.1.0 · 方法论导读 · 生成于 2026-07-07 · 与 skills/ 正文同源汇编,口径一致性由同一套审校纪律保障(自我实践)</div>
+</section>
+
+</main>
+</div>
+<script>
+(function(){
+  var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a'));
+  var map = {};
+  links.forEach(function(a){ map[a.getAttribute('href').slice(1)] = a; });
+  var obs = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if(e.isIntersecting){
+        links.forEach(function(a){ a.classList.remove('on'); });
+        var a = map[e.target.id]; if(a) a.classList.add('on');
+      }
+    });
+  }, {rootMargin:'-15% 0px -70% 0px'});
+  document.querySelectorAll('section').forEach(function(s){ if(s.id) obs.observe(s); });
+})();
+</script>
+</body>
+</html>

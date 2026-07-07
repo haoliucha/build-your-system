@@ -12,6 +12,7 @@
 | Claude Code | `x/` | 1.0.2 | X (Twitter) 增长工具集:`/x:x-follow` 精准批量关注、`/x:x-unfollow` 关注卫生、**`/x:cover` 文章封面一键生成**(codex/gpt-image-2 直出 2.5:1 含中文整张 + 门禁 + QC) |
 | Claude Code | `goal-creator/` | 0.1.0 | `/goal` 命令提示词工程辅助(引导式 brainstorm) |
 | Claude Code | `coding-anywhere/` | 1.0.0 | 远程开发栈:mosh + tmux + SSH 中继一键搭建 |
+| Claude Code | `bid/` | 0.1.0 | To-B 投标/交付物方法论:单一真源生成器、口径级联、成本/排期、对抗审校、去AI味、图表与中文PDF管线;10 skills + 6 命令(`/bid:init·meeting·sync·handoff·review·status`),附 HTML 方法论导读(含系统动态演示) |
 | Codex | `targets/codex/build-your-system-assistant/` | — | Obsidian Vault 助手的 Codex 适配版 |
 
 ## 为什么是单仓多目标

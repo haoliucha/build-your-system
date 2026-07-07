@@ -1,0 +1,7 @@
+{
+  "name": "bid",
+  "version": "0.1.0",
+  "description": "To-B 投标/交付物项目方法论工具集 - 沉淀自真实投标全周期实战:单一数据源交付物工程与口径级联同步、可辩护的成本测算与排期、对抗审校、去AI味写作、图表与中文PDF管线、调研取证、售前报价结构、原型交接;配 6 个流程节点命令 /bid:init·meeting·sync·handoff·review·status 与 HTML 方法论导读",
+  "commands": "./commands",
+  "skills": "./skills"
+}
