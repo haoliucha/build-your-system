@@ -49,8 +49,8 @@
     {
       "name": "x",
       "source": "./x",
-      "description": "X (Twitter) 增长工具集 - 精准批量关注、互关 campaign。参数化筛选(蓝V/粉丝数/bio 关键词) + 4 层 anti-风控(浏览器指纹/行为节奏/异常感知/不可逆操作保护)。基于一次真实 100/100 follow campaign 实战提炼。",
-      "version": "1.0.1",
+      "description": "X (Twitter) 增长工具集 - 精准批量关注(x-follow)+ 关注卫生取关未回关(x-unfollow)+ 文章封面一键生成(cover:codex/gpt-image-2 直出 2.5:1 含中文整张 + 门禁 + QC)。参数化筛选 + 4 层 anti-风控。基于真实 campaign 与封面流水线实战提炼。",
+      "version": "1.0.2",
       "category": "productivity",
       "homepage": "https://github.com/haoliucha/build-your-system/tree/main/x"
     }

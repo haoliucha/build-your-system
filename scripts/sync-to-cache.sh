@@ -9,7 +9,9 @@
 
 set -e
 MARKETPLACE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-MARKETPLACE_NAME="$(basename "$MARKETPLACE_DIR")"
+# marketplace 名以 .claude-plugin/marketplace.json 的 name 为准(本地 checkout 目录名可能不同,如 build-your-system-x-plugin)
+MARKETPLACE_NAME="$(/usr/bin/python3 -c "import json; print(json.load(open('$MARKETPLACE_DIR/.claude-plugin/marketplace.json'))['name'])" 2>/dev/null)"
+[ -n "$MARKETPLACE_NAME" ] || MARKETPLACE_NAME="$(basename "$MARKETPLACE_DIR")"
 CACHE_BASE="$HOME/.claude/plugins/cache/$MARKETPLACE_NAME"
 
 if [ ! -d "$CACHE_BASE" ]; then
