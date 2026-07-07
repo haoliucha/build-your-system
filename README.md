@@ -1,28 +1,29 @@
 # Build Your System
 
-基于 Obsidian Vault 的个人效率系统仓库。现在采用“单仓多目标”结构：Claude Code 目标保留在仓库根目录，Codex 目标放在 `targets/codex/` 下统一版本管理。
+个人效率系统插件仓库,"单仓多目标"结构:Claude Code 插件(marketplace)在仓库根目录,Codex 目标在 `targets/codex/` 下统一版本管理。
 
 ## 当前目标
 
-| 宿主 | 目标路径 | 说明 |
-|------|----------|------|
-| Claude Code | `assistant/` | 任务管理、知识管理、每日回顾 |
-| Claude Code | `media/` | 短视频创作工作流 |
-| Claude Code | `claude-notify/` | macOS 通知与跳转辅助 |
-| Codex | `targets/codex/build-your-system-assistant/` | Obsidian Vault 助手的 Codex 适配版 |
+| 宿主 | 目标 | 版本 | 说明 |
+|------|------|------|------|
+| Claude Code | `assistant/` | 1.0.0 | 个人 AI 助手:任务捕获、每日回顾、知识分发(基于 Obsidian Vault) |
+| Claude Code | `media/` | 1.0.0 | 短视频创作工作流:选题评估、Hook 设计、逐字稿生成 |
+| Claude Code | `claude-notify/` | 1.0.0 | macOS 通知与跳转辅助(任务完成/需要权限时提醒) |
+| Claude Code | `x/` | 1.0.2 | X (Twitter) 增长工具集:`/x:x-follow` 精准批量关注、`/x:x-unfollow` 关注卫生、**`/x:cover` 文章封面一键生成**(codex/gpt-image-2 直出 2.5:1 含中文整张 + 门禁 + QC) |
+| Claude Code | `goal-creator/` | 0.1.0 | `/goal` 命令提示词工程辅助(引导式 brainstorm) |
+| Claude Code | `coding-anywhere/` | 1.0.0 | 远程开发栈:mosh + tmux + SSH 中继一键搭建 |
+| Codex | `targets/codex/build-your-system-assistant/` | — | Obsidian Vault 助手的 Codex 适配版 |
 
-## 为什么改成单仓多目标
+## 为什么是单仓多目标
 
 - `build-your-system` 作为唯一 source of truth
-- 停止继续维护独立的 `build-your-system-codex` 副本
-- 保留各宿主自己的包装层，不强行合并为同一原生插件格式
-- 后续如果接入 Cursor 或 MCP 共享层，可以继续在同一仓库演进
+- 停止维护独立的 `build-your-system-codex` 副本
+- 保留各宿主自己的包装层,不强行合并为同一原生插件格式
+- 后续接入 Cursor 或 MCP 共享层可在同一仓库演进
 
 ## 安装方式
 
 ### Claude Code
-
-Claude 目标仍然按原来的 marketplace 结构工作。
 
 ```bash
 # 在 Claude Code 中运行
@@ -30,102 +31,61 @@ Claude 目标仍然按原来的 marketplace 结构工作。
 
 # Add Marketplace:
 haoliucha/build-your-system
+
+# 然后安装需要的插件:
+# assistant / media / claude-notify / x / goal-creator / coding-anywhere
 ```
-
-可安装目标：
-
-- `assistant`
-- `media`
-- `claude-notify`
 
 ### Codex
 
-Codex 目标位于：
-
-- `targets/codex/build-your-system-assistant`
-
-仓库内已经提供 repo marketplace：
-
-- `.agents/plugins/marketplace.json`
-
-如果你要在本机直接安装这个 Codex 目标，进入目标目录运行：
+Codex 目标位于 `targets/codex/build-your-system-assistant`,仓库内已提供 repo marketplace(`.agents/plugins/marketplace.json`)。本机直接安装:
 
 ```bash
 cd targets/codex/build-your-system-assistant
 ./scripts/install-local-plugin.sh
 ```
 
-这个脚本会：
-
-- 把 `~/plugins/build-your-system-assistant` 指向当前 monorepo 内的 Codex target
-- 更新 `~/.agents/plugins/marketplace.json`
-- 同步到 Codex 本地缓存目录
-
 ## 首次设置
 
-### Claude Code
-
-在 Vault 目录里运行：
-
-```bash
-/a-setup
-```
-
-### Codex
-
-在 Vault 目录里用自然语言触发即可，或显式调用相关 skill。Codex 目标的详细说明见：
-
-- `targets/codex/build-your-system-assistant/README.md`
-- `targets/codex/build-your-system-assistant/docs/user-guide.md`
+- **assistant(Claude Code)**:在 Vault 目录里运行 `/a-setup`。推荐 Vault 结构:`00-Inbox / 10-Projects / 20-Areas / 30-Resources / 40-Archives / 50-GTD / 60-Memory`。
+- **Codex**:在 Vault 目录用自然语言触发,详见 `targets/codex/build-your-system-assistant/README.md` 与 `docs/user-guide.md`。
+- 各插件的用法见对应目录的 `README.md`(如 `x/README.md`)。
 
 ## 仓库结构
 
 ```text
 build-your-system/
 ├── .claude-plugin/
-│   └── marketplace.json          # Claude marketplace
+│   └── marketplace.json          # Claude marketplace(插件清单 + 版本)
 ├── .agents/
-│   └── plugins/
-│       └── marketplace.json      # Codex repo marketplace
-├── assistant/                    # Claude target
-├── media/                        # Claude target
-├── claude-notify/                # Claude target
-├── targets/
-│   └── codex/
-│       └── build-your-system-assistant/
-│           ├── .codex-plugin/
-│           ├── commands/
-│           ├── skills/
-│           ├── scripts/
-│           ├── tests/
-│           └── docs/
-├── examples/
-│   └── minimal-vault/
+│   └── plugins/marketplace.json  # Codex repo marketplace
+├── assistant/                    # Claude 插件(下同:.claude-plugin/ + commands/ + skills/)
+├── media/
+├── claude-notify/
+├── x/                            # x-follow / x-unfollow / cover(封面一键生成)
+├── goal-creator/
+├── coding-anywhere/
+├── targets/codex/build-your-system-assistant/
+├── scripts/
+│   ├── sync-to-cache.sh          # 源码 → Claude Code 运行时 cache
+│   └── githooks/post-commit      # 提交后自动跑 sync(见下)
+├── examples/minimal-vault/
 └── docs/
-    └── superpowers/
 ```
 
-## Vault 前提
+## 开发说明(改插件必读)
 
-推荐的 Vault 结构仍然保持不变：
-
-```text
-YourVault/
-├── 00-Inbox/
-├── 10-Projects/
-├── 20-Areas/
-├── 30-Resources/
-├── 40-Archives/
-├── 50-GTD/
-└── 60-Memory/
-```
-
-## 开发说明
-
-- Claude 相关改动优先落在根目录目标：`assistant/`、`media/`、`claude-notify/`
-- Codex 相关改动优先落在 `targets/codex/build-your-system-assistant/`
-- 本次只是仓库收敛，不代表 Claude 与 Codex 已经共享同一套内部实现
-- 下一阶段再考虑抽取共享 core、共享脚本和 MCP 层
+1. **本地统一路径 = `~/Projects/build-your-system`**;git 身份 haoliucha(origin 走 SSH alias `github.com-haoliucha`)。
+2. Claude Code **不直接加载本仓库**,它按 `~/.claude/plugins/installed_plugins.json` 钉死的版本目录加载 `~/.claude/plugins/cache/build-your-system/<plugin>/<version>/`。改完源码必须同步:
+   ```bash
+   bash scripts/sync-to-cache.sh   # 只同步本机已安装且版本目录存在的插件
+   ```
+3. **自动同步 hook**(每个 clone 启用一次,之后每次 commit 自动同步):
+   ```bash
+   git config core.hooksPath scripts/githooks
+   ```
+4. **版本纪律**:插件有实质变更 → bump `<plugin>/.claude-plugin/plugin.json` 的 `version`,并同步根 `.claude-plugin/marketplace.json` 对应条目(两处都要改)。注意:bump 后 cache 里还没有新版本目录,`sync-to-cache.sh` 会跳过该插件——本机立即生效需 push 后走 `/plugin` 更新,或手动把源码 rsync 进当前钉死的版本目录。
+5. Codex 相关改动落在 `targets/codex/build-your-system-assistant/`;Claude 与 Codex 尚未共享同一套内部实现,共享 core/脚本/MCP 层是下一阶段。
 
 ## 许可证
 

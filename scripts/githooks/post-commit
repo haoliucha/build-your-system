@@ -1,0 +1,6 @@
+#!/bin/bash
+# post-commit: 提交后自动把插件源码同步进 Claude Code 运行时 cache。
+# 只同步本机已安装且版本目录匹配的插件(sync-to-cache.sh 自带跳过逻辑);失败不影响提交。
+# 启用(每个 clone 一次):git config core.hooksPath scripts/githooks
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+bash "$REPO_ROOT/scripts/sync-to-cache.sh" || echo "[post-commit] sync-to-cache 失败(不影响提交,可手动重跑 scripts/sync-to-cache.sh)"
