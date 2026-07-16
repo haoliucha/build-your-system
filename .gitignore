@@ -6,6 +6,9 @@
 *.swo
 *~
 
+# Local Git worktrees
+.worktrees/
+
 # Logs
 *.log
 
