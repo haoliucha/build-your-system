@@ -70,7 +70,7 @@ Rules:
 - Illustration requests default to one strongest cognitive anchor when count is omitted.
 - Explicit image counts are honored. Each image consumes one ImageGen call.
 - The Claude command does not read the article, plan the image, or call ImageGen itself.
-- It invokes the `codex:codex-rescue` agent with a fresh foreground task and returns Codex output verbatim.
+- It invokes `codex:codex-rescue` once with `--fresh --wait`, remains synchronously blocked until completion, and returns Codex output verbatim. Foreground execution is preferred; when the Claude runtime still launches the Agent task in the background, the bridge performs one silent blocking wait on that same task.
 
 ### 4.2 Codex
 
@@ -93,9 +93,11 @@ flowchart TB
     subgraph CLAUDE["Claude Code x plugin"]
         CMD["/x:image command"]
         BRIDGE["Claude x-image bridge skill"]
-        RESCUE["Agent: codex:codex-rescue<br/>fresh + foreground"]
+        RESCUE["Agent: codex:codex-rescue<br/>fresh + synchronous wait"]
+        WAIT["Compatibility fallback<br/>same-task blocking TaskOutput"]
         CMD --> BRIDGE
         BRIDGE --> RESCUE
+        RESCUE -. "runtime defaults to background" .-> WAIT
     end
 
     subgraph CODEX["Codex x-image plugin"]
@@ -107,6 +109,7 @@ flowchart TB
     CORE --> BRIDGE
     CORE --> NATIVE
     RESCUE --> RUNTIME
+    WAIT --> RUNTIME
     RUNTIME --> IMAGEGEN["Built-in image_gen<br/>one call per asset"]
     IMAGEGEN --> ASSET["Original raster asset"]
     ASSET --> REPORT["Codex inspection and report"]
@@ -430,7 +433,7 @@ Verify:
 - Claude command is `/x:image`.
 - `/x:cover` and `x-cover` no longer exist.
 - Claude bridge references `codex:codex-rescue`.
-- Claude bridge requests a fresh foreground Codex task.
+- Claude bridge requests a fresh blocking Codex task and defines the same-task `TaskOutput` compatibility wait used when Claude Code still defaults the Agent task to background execution.
 - Codex marketplace contains `x-image`.
 - Codex target contains a valid `.codex-plugin/plugin.json`.
 - Shared style and reference links resolve.
@@ -465,7 +468,7 @@ For every asset, acceptance evidence must show:
 Verify that `/x:image`:
 
 - Invokes `codex:codex-rescue` once.
-- Uses a fresh foreground task.
+- Uses one fresh `--wait` task and remains synchronously blocked until it finishes, either directly or through one silent same-task compatibility wait.
 - Delegates the complete workflow to Codex.
 - Returns Codex output verbatim.
 - Does not independently inspect, modify, or regenerate the image.
