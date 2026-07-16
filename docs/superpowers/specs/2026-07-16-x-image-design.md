@@ -368,6 +368,9 @@ Default article output:
 Rules:
 
 - A user-provided destination takes precedence.
+- When the source is a file, default to an `images/` directory beside that file.
+- When the source is a directory, default to `<source-directory>/images/`.
+- When the source is direct text, data, or an image brief without a backing file or directory, default to `<current-working-directory>/images/`.
 - Existing files are never overwritten.
 - Name collisions use `-v2`, `-v3`, and so on.
 - The project contains only final original ImageGen outputs.
@@ -482,4 +485,3 @@ The design is complete when:
 - Ratio and size recommendations work without exact-pixel promises.
 - Style selection is explainable, repeatable, and consistent across a set.
 - Codex live acceptance results are recorded for all required scenarios.
-
