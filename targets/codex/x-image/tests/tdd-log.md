@@ -24,3 +24,34 @@ PENDING.
 
 Commit:
 `test(x-image): define failing behavior contracts`
+
+## 2026-07-16 — Shared routing, size, style, prompt, and QA source
+
+Behavior:
+The canonical shared source defines every approved input route, destination rule, ratio, style preset, layout, single-call prompt constraint, and QA severity.
+
+RED command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_shared_source.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_prompt_contract.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_style_contract.py' -v`
+
+Expected failure:
+All three suites fail because `x/shared/x-image/` does not exist.
+
+Observed failure:
+`test_shared_source.py`: 2 tests, 9 failures. `test_prompt_contract.py`: 9 tests, 49 failures. `test_style_contract.py`: 6 tests, 50 failures. All failures were missing-file or missing-contract assertions; there were zero errors.
+
+GREEN command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_shared_source.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_prompt_contract.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_style_contract.py' -v`
+
+Observed result:
+All focused suites passed: 2 shared-source tests, 9 prompt-contract tests, and 6 style-contract tests. Zero failures and zero errors.
+
+Commit:
+`feat(x-image): add shared image generation contracts`
