@@ -215,3 +215,53 @@ All 7 style tests passed, including the terminal-glyph regression. The full suit
 
 Commit:
 `fix(x-image): prevent extra glyphs in terminal motifs`
+
+## 2026-07-16 — AC-05 duplicate data label regression
+
+Behavior:
+When exact data strings combine category, value, and unit, each category must use that single complete label and must not be repeated as a separate axis or row label.
+
+RED command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_style_contract.py' -v`
+
+Expected failure:
+The new assertion fails because `data-editorial` requires exact labels but does not explicitly choose one nonduplicated labeling method.
+
+Observed failure:
+`Ran 8 tests in 0.002s` followed by `FAILED (failures=4)`. All four failures were the missing single-label-method rules. There were zero errors.
+
+GREEN command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_style_contract.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_*.py' -v`
+
+Observed result:
+All 8 style tests passed, including the nonduplicated data-label rule. After correcting the acceptance-status test lifecycle, the full suite passed all 38 tests with zero failures and zero errors.
+
+Commit:
+`fix(x-image): prevent duplicate data labels`
+
+## 2026-07-16 — Acceptance status lifecycle test correction
+
+Behavior:
+Structure tests validate that every acceptance record has exactly one legal status, while release checks separately reject unfinished or failed statuses.
+
+RED command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_*.py' -v`
+
+Expected failure:
+After completed cases change from `NOT RUN` to `PASS`, the old template-only assertion fails even though the acceptance record is valid.
+
+Observed failure:
+The full suite ran 38 tests and failed four subtests, one for each completed acceptance record, solely because they no longer contained `Status: NOT RUN`.
+
+GREEN command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_structure.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_*.py' -v`
+
+Observed result:
+All 7 structure tests and all 38 full-suite tests passed. The structure test now accepts exactly one legal status, while the release gate remains responsible for rejecting unfinished or failed records.
+
+Commit:
+`fix(x-image): prevent duplicate data labels`

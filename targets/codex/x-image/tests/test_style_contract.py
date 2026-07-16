@@ -95,6 +95,17 @@ class StyleContractTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, terminal)
 
+    def test_data_labels_use_one_nonduplicated_labeling_method(self):
+        data_style = self.styles["data-editorial.md"]
+        for phrase in (
+            "Use exactly one label per category.",
+            "Never split a required combined label",
+            "standalone category name",
+            "Do not repeat category names on an axis",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, data_style)
+
 
 if __name__ == "__main__":
     unittest.main()

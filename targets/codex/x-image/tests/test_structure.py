@@ -121,7 +121,14 @@ class StructureTests(unittest.TestCase):
                 with self.subTest(name=name, field=field):
                     self.assertIn(field, text)
             with self.subTest(name=name, field="status"):
-                self.assertIn("Status: NOT RUN", text)
+                status_lines = [
+                    line for line in text.splitlines() if line.startswith("Status: ")
+                ]
+                self.assertEqual(len(status_lines), 1)
+                self.assertRegex(
+                    status_lines[0],
+                    r"^Status: (NOT RUN|PASS|FAIL|BLOCKED)$",
+                )
 
     def test_acceptance_output_is_ignored(self):
         ignore = read_optional(
