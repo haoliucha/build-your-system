@@ -1,13 +1,15 @@
 # AC-08 — Claude Rescue Bridge
 
-Status: FAIL
+Status: PASS
 
-Claude session: `09c1615a-06f1-40aa-9dd8-ad1941dff368`
+Claude session: `68e1c7a9-6496-4f7f-9f09-bab4ebd1fbf4`
+
+Native Codex task thread: `019f6bc0-bea6-7b33-8bf8-f2f20b40db18`
 
 Exact `/x:image` invocation:
 
 ```text
-/x:image targets/codex/x-image/tests/fixtures/tech-article.md illustration 3:2 editorial-material；生成且只生成一张文章插图，表现一位独立开发者正在构建开源研究工具，不显示任何文字；将原始图片保存到 targets/codex/x-image/tests/acceptance/output/ac-08-claude-bridge-v2.png。每张图片只允许调用一次 ImageGen，不得重试、编辑或后处理。返回完整的 Codex x-image 原生报告。
+/x:image targets/codex/x-image/tests/fixtures/tech-article.md illustration 3:2 editorial-material；生成且只生成一张文章插图，表现一位独立开发者正在构建开源研究工具，不显示任何文字；将原始图片保存到 targets/codex/x-image/tests/acceptance/output/ac-08-claude-bridge-v3.png。每张图片只允许调用一次 ImageGen，不得重试、编辑或后处理。返回完整的 Codex x-image 原生报告。
 ```
 
 Local Claude plugin: PASS — the source `x` plugin exposed `/x:image` and loaded the bridge instructions.
@@ -16,19 +18,19 @@ Expected `codex:codex-rescue` agent call count: 1
 
 Actual `codex:codex-rescue` agent call count: 1
 
-Agent tool-use ID: `toolu_0177hqY6Jng7j1H2divvJsrg`
+Agent tool-use ID: `toolu_01SZf4mnY6sMrhcN1yzz6aRF`
 
-Fresh task: PASS — the delegated prompt begins with `--fresh --wait`, includes the actual worktree path, and tells Codex to use the native `x-image` skill.
+Fresh task: PASS — the delegated prompt begins with `--fresh --wait`, includes the actual worktree path, tells Codex to use the native `x-image` skill, and includes the exact marker `Invocation origin: Claude through Codex Rescue`.
 
 Synchronous foreground behavior: PASS — Claude Code 2.1.207 launched the Agent task in its default background mode despite the requested foreground parameter, then used one blocking `TaskOutput` call with `block: true` on the same Rescue task. Claude did not return early, launch another Agent, or poll repeatedly.
 
 Native Codex `x-image` execution: PASS
 
-Host reporting: FAIL — the bridge-originated report begins `Host: native Codex` instead of `Host: Claude through Codex Rescue`.
+Host reporting: PASS — the bridge-originated report begins exactly `Host: Claude through Codex Rescue`.
 
-Codex report returned verbatim: PASS — the blocking `TaskOutput` report and Claude's final assistant message have the same SHA-256, `774c2c353bf69f547047826504a5fd8e6c9652b642a37b0ee1f52753ba379619`.
+Codex report returned verbatim: PASS — the blocking `TaskOutput` report and Claude's final assistant message are byte-identical and have the same SHA-256, `e12923d12ca4e573cd4fddb5f51ccab78bd2c22f34b241df4af5593570f58fcd`.
 
-Silent transport: PASS — the Claude session contains exactly one user-visible assistant text block, beginning `Host: native Codex`; all earlier assistant events are tool calls with no user-visible text.
+Silent transport: PASS — the Claude session contains exactly one user-visible assistant text block, beginning `Host: Claude through Codex Rescue`; all earlier assistant events are tool calls with no user-visible text.
 
 Claude-side file inspection count: 0
 
@@ -38,7 +40,7 @@ Claude-side retry count: 0
 
 Claude-side image modification or post-processing count: 0
 
-Saved output path: `targets/codex/x-image/tests/acceptance/output/ac-08-claude-bridge-v2.png`
+Saved output path: `targets/codex/x-image/tests/acceptance/output/ac-08-claude-bridge-v3.png`
 
 Actual dimensions: `1536 × 1024`, exact `3:2`
 
@@ -50,17 +52,17 @@ Native edit call count: 0
 
 Native image modification command count: 0
 
-Output SHA-256: `358a2b3a7d5c2ad466be89f6b31633a1be0d65658480b6155a398c4ce0135998`
+Output SHA-256: `945bfc2145bb0933e148befde99d33b913ef2c8b23a667261beeafadbdabbbf3`
 
-Content QA: PASS — exactly one developer assembles a modular research/archive tool; scattered material fragments flow into an organized archive and search metaphor; no readable text, numbers, logo, watermark, additional person, or invented data.
+Content QA: PASS — exactly one independent developer assembles three blank research fragments into one open local archive device; the magnifier conveys search; no visible text, numerals, code, logos, watermarks, fake interfaces, or extra people.
 
-Style QA: PASS — exact 3:2 composition, warm off-white background, charcoal and neutral tactile materials, IKB-blue accents, soft studio lighting, safe margins, and one asymmetric focal cluster.
+Style QA: PASS — exact 3:2 composition, warm off-white background, charcoal and neutral tactile paper/clay materials, IKB-blue accent, soft studio lighting, and one asymmetric focal scene.
 
 P0 checklist: PASS — one native generation, zero edits, zero modification commands, original file preserved, correct path and hash, no extra Claude-side image work.
 
-P1 checklist: FAIL — transport behavior passes, but the final report misidentifies the Claude-through-Rescue origin as native Codex.
+P1 checklist: PASS — one Rescue call, a fresh task, the exact invocation-origin marker, a single blocking same-task compatibility wait, silent transport, correct host reporting, native execution, and a byte-for-byte verbatim final report.
 
-P2 checklist: Some abstract marks on the incoming material tiles resemble interface icons, but none form readable or pseudo-readable text and they do not affect the requested concept.
+P2 checklist: Nonessential notebook and book props touch or cross the lower and right frame edges, so the requested clear outer margin is not fully maintained; the focal subject, meaning, ratio, and legibility remain intact.
 
 ## Attempt history
 
@@ -72,3 +74,4 @@ P2 checklist: Some abstract marks on the incoming material tiles resemble interf
 - Compatibility regression: `test_requires_synchronous_blocking_transport` documents the blocking fallback required when Claude Code still defaults the Agent task to background execution.
 - Independent review reclassified Attempt 3 as FAIL because its first line misreported the invocation origin.
 - Origin regression: `test_marks_claude_rescue_origin` and `test_native_skill_reports_actual_invocation_origin`.
+- Attempt 4: PASS in a fresh Claude Code session; the exact invocation-origin marker reached native Codex, the final report correctly identified `Claude through Codex Rescue`, and all transport, generation, original-file, content, and style checks passed.
