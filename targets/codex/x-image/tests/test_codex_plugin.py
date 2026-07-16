@@ -64,9 +64,12 @@ class CodexPluginTests(unittest.TestCase):
             'PLUGIN_NAME="x-image"',
             'MARKETPLACE_NAME="local-build-your-system"',
             'PLUGIN_VERSION="local"',
+            "REGISTERED_VERSION=",
+            "REGISTERED_CACHE_ROOT=",
             'rsync -aL',
             '"name": "x-image"',
             '"path": "./plugins/x-image"',
+            '"${REGISTERED_CACHE_ROOT}/"',
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, installer)
@@ -97,7 +100,15 @@ class CodexPluginTests(unittest.TestCase):
         if installer.is_file():
             self.assertTrue(os.access(installer, os.X_OK))
 
+    def test_installer_registers_the_plugin_with_codex(self):
+        installer = read_optional(
+            CODEX_X_IMAGE / "scripts" / "install-local-plugin.sh"
+        )
+        self.assertIn(
+            'codex plugin add "${PLUGIN_NAME}@${MARKETPLACE_NAME}"',
+            installer,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
-

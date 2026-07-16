@@ -8,9 +8,10 @@ Native Codex plugin for generating complete X article covers and article illustr
 zsh scripts/install-local-plugin.sh
 ```
 
-The installer links the source under `~/plugins/x-image`, updates the personal Codex marketplace entry, and builds a self-contained cache at:
+The installer links the source under `~/plugins/x-image`, updates the personal Codex marketplace entry, registers and enables the plugin with Codex, and builds self-contained caches at:
 
 ```text
+~/.codex/plugins/cache/local-build-your-system/x-image/0.1.0
 ~/.codex/plugins/cache/local-build-your-system/x-image/local
 ```
 

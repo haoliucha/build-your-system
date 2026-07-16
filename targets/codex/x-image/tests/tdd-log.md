@@ -161,3 +161,32 @@ All 7 structure tests passed. The complete suite passed all 35 tests with zero f
 
 Commit:
 `test(x-image): add fixtures and acceptance contracts`
+
+## 2026-07-16 — Codex installed-state registration
+
+Behavior:
+The local installer must leave `x-image@local-build-your-system` installed and enabled in Codex, not merely available in the personal marketplace with an unregistered cache directory.
+
+RED command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_codex_plugin.py' -v`
+
+Expected failure:
+The new assertion fails because the installer updates the marketplace and writes a cache but never invokes Codex's plugin installation command.
+
+Observed failure:
+`Ran 7 tests in 0.001s` followed by `FAILED (failures=1)`. The only failure was the missing `codex plugin add "${PLUGIN_NAME}@${MARKETPLACE_NAME}"` registration step. There were zero errors.
+
+GREEN command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_codex_plugin.py' -v`
+
+`zsh targets/codex/x-image/scripts/install-local-plugin.sh`
+
+`codex plugin list --marketplace local-build-your-system --available --json`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_*.py' -v`
+
+Observed result:
+All 7 installer/plugin tests passed. The installer registered `x-image@local-build-your-system`, and Codex reported it installed and enabled. Both the selected `local` cache and manifest-version `0.1.0` cache contained real `references` and `styles` directories matching the shared source. The full suite passed all 36 tests with zero failures and zero errors.
+
+Commit:
+`fix(x-image): harden local plugin installation`
