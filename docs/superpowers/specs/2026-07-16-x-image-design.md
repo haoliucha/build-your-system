@@ -471,6 +471,106 @@ Verify that `/x:image`:
 
 Live visual generation is accepted primarily in Codex. Claude acceptance verifies only the bridge and end-to-end delegation path.
 
+### 15.4 Development Quality Gates
+
+Implementation follows strict test-driven development:
+
+1. Write a failing test for one required behavior.
+2. Run it and confirm it fails because the behavior is missing.
+3. Write the minimum implementation needed to pass.
+4. Run the focused test and the full regression suite.
+5. Refactor only while all tests remain green.
+
+The release gates are:
+
+| Gate | Evidence | Release behavior |
+|---|---|---|
+| G1 Requirement traceability | Every requirement maps to at least one test case | Block if any requirement is uncovered |
+| G2 TDD evidence | Each production behavior has a recorded RED then GREEN result | Block if a test was added only after implementation |
+| G3 Static contracts | Commands, manifests, shared source, forbidden tools, and output rules pass | Block on any failure |
+| G4 Host integration | Claude bridge and Codex plugin installation/discovery pass | Block on any failure |
+| G5 Live Codex acceptance | Required scenarios use real built-in ImageGen | Block on any P0 or P1 issue |
+| G6 Regression and review | Full suite, diff review, and spec mapping pass | Block until clean |
+
+### 15.5 Planned Automated Test Layout
+
+```text
+targets/codex/x-image/tests/
+├── test_structure.py
+├── test_claude_bridge.py
+├── test_codex_plugin.py
+├── test_shared_source.py
+├── test_prompt_contract.py
+├── test_style_contract.py
+├── fixtures/
+│   ├── tech-article.md
+│   ├── data-article.md
+│   ├── explainer-article.md
+│   └── humanities-article.md
+└── acceptance/
+    ├── cover-2_5x1.md
+    ├── hero-16x9.md
+    ├── explainer-3x2.md
+    ├── vertical-3x4.md
+    ├── custom-style.md
+    └── multi-image.md
+```
+
+Automated coverage includes:
+
+- Path-only input defaults to one cover.
+- Illustration input without a count defaults to one cognitive anchor.
+- Explicit multi-image counts create one plan item per asset.
+- File, directory, and direct-text inputs select the correct output directory.
+- Existing filenames create versioned siblings instead of overwriting.
+- Ratios over 3:1 are rejected with a valid recommendation.
+- Claude invokes Codex Rescue once and does not use raw `codex exec`.
+- Codex plugin metadata and cache installation are valid.
+- Shared style and reference links resolve and install as self-contained files.
+- User style overrides automatic routing.
+- Batch assets lock style ID, accent, material, lighting, and label treatment.
+- Prompt contracts contain exact text, style, ratio, one-call, and no-post-processing requirements.
+- Production files contain no ImageMagick, `sips`, SVG, HTML renderer, ImageGen edit, automatic retry, or CLI fallback path.
+- A failed asset stops remaining multi-image calls and preserves completed outputs.
+
+### 15.6 Live Acceptance Evidence
+
+Each live acceptance record includes:
+
+```text
+Codex task or thread
+Input fixture
+Final prompt
+Style ID
+image_gen call count
+ImageGen edit call count
+Image modification command count
+Saved output path
+Actual dimensions
+Content QA
+Style QA
+Final PASS or FAIL
+```
+
+The live scenarios are:
+
+| Case | Scenario | Primary evidence |
+|---|---|---|
+| AC-01 | 2.5:1 technology cover | `terminal-tech`, Chinese title, single focal point |
+| AC-02 | 16:9 article hero | Clear composition and intended ratio |
+| AC-03 | 3:2 labeled explainer | Short correct labels and relationships |
+| AC-04 | 3:4 vertical illustration | `editorial-material` adherence |
+| AC-05 | Data-led article image | Exact values, units, order, and `data-editorial` |
+| AC-06 | Two-illustration request | Two calls total, one per asset, locked style |
+
+Visual issue severity:
+
+- **P0, release blocking:** more than one ImageGen call per asset, any image post-processing, wrong visible text or data, invented data, watermark, prompt leakage, severe crop, or a non-original final asset.
+- **P1, release blocking:** clear style mismatch, unreadable intended display size, missing focal point, misleading data presentation, or inconsistent batch style.
+- **P2, advisory:** minor spacing or decorative differences that do not affect understanding.
+
+If a live case fails, development may revise the prompt or style contract and run a new acceptance task. The production behavior still forbids automatic retry within one user task.
+
 ## 16. Acceptance Criteria
 
 The design is complete when:
