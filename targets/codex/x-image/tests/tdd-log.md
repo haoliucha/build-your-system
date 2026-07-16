@@ -136,3 +136,28 @@ All 4 structure tests passed. The full pre-fixture suite passed all 32 tests wit
 
 Commit:
 `refactor(x): replace x-cover with x-image`
+
+## 2026-07-16 — Fixtures and acceptance record contracts
+
+Behavior:
+Four deterministic article fixtures and seven live-acceptance records exist with executable prompts, call budgets, output destinations, and complete QA evidence fields.
+
+RED command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_structure.py' -v`
+
+Expected failure:
+The existing four structure tests pass, while new fixture, acceptance-record, and ignored-output assertions fail because those artifacts do not exist.
+
+Observed failure:
+`Ran 7 tests in 0.008s` followed by `FAILED (failures=152)`. Failures covered four missing fixtures, seven missing records and their required fields, and the missing output ignore file. There were zero errors.
+
+GREEN command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_structure.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_*.py' -v`
+
+Observed result:
+All 7 structure tests passed. The complete suite passed all 35 tests with zero failures and zero errors. Four fixtures, seven acceptance records, every required evidence field, and the ignored output directory were present.
+
+Commit:
+`test(x-image): add fixtures and acceptance contracts`

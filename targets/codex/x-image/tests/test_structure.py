@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import unittest
 
-from helpers import CLAUDE_X, CODEX_X_IMAGE, REPO, read_json_optional
+from helpers import (
+    CLAUDE_X,
+    CODEX_X_IMAGE,
+    REPO,
+    read_json_optional,
+    read_optional,
+)
 
 
 class StructureTests(unittest.TestCase):
@@ -64,7 +70,69 @@ class StructureTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, text)
 
+    def test_acceptance_fixtures_exist(self):
+        fixture_dir = CODEX_X_IMAGE / "tests" / "fixtures"
+        for name in (
+            "tech-article.md",
+            "data-article.md",
+            "explainer-article.md",
+            "humanities-article.md",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue((fixture_dir / name).is_file())
+
+    def test_acceptance_records_have_required_fields(self):
+        acceptance_dir = CODEX_X_IMAGE / "tests" / "acceptance"
+        required_fields = (
+            "Status:",
+            "Codex task or thread:",
+            "Input fixture:",
+            "Exact Codex prompt:",
+            "Expected style:",
+            "Expected ratio:",
+            "Maximum permitted tool calls:",
+            "Final prompt:",
+            "Style ID:",
+            "image_gen call count:",
+            "ImageGen edit call count:",
+            "Image modification command count:",
+            "Saved output path:",
+            "Actual dimensions:",
+            "Content QA:",
+            "Style QA:",
+            "P0 checklist:",
+            "P1 checklist:",
+            "P2 checklist:",
+        )
+        for name in (
+            "cover-2_5x1.md",
+            "hero-16x9.md",
+            "explainer-3x2.md",
+            "vertical-3x4.md",
+            "data-editorial.md",
+            "custom-style.md",
+            "multi-image.md",
+        ):
+            path = acceptance_dir / name
+            text = read_optional(path)
+            with self.subTest(name=name, field="exists"):
+                self.assertTrue(path.is_file())
+            for field in required_fields:
+                with self.subTest(name=name, field=field):
+                    self.assertIn(field, text)
+            with self.subTest(name=name, field="status"):
+                self.assertIn("Status: NOT RUN", text)
+
+    def test_acceptance_output_is_ignored(self):
+        ignore = read_optional(
+            CODEX_X_IMAGE
+            / "tests"
+            / "acceptance"
+            / "output"
+            / ".gitignore"
+        )
+        self.assertEqual(ignore, "*\n!.gitignore\n")
+
 
 if __name__ == "__main__":
     unittest.main()
-
