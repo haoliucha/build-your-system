@@ -55,3 +55,34 @@ All focused suites passed: 2 shared-source tests, 9 prompt-contract tests, and 6
 
 Commit:
 `feat(x-image): add shared image generation contracts`
+
+## 2026-07-16 — Native Codex plugin
+
+Behavior:
+Codex discovers an independent `x-image` plugin whose native skill owns the complete workflow and whose installer creates a self-contained local cache.
+
+RED command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_codex_plugin.py' -v`
+
+Expected failure:
+The suite fails because the Codex manifest, native skill, repository marketplace entry, shared-source links, and installer do not exist.
+
+Observed failure:
+`Ran 6 tests in 0.002s` followed by `FAILED (failures=17)`. There were zero errors. Failures covered all expected missing plugin and installer contracts.
+
+GREEN command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_codex_plugin.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_shared_source.py' -v`
+
+`python3 /Users/jliu/.codex/skills/.system/skill-creator/scripts/quick_validate.py targets/codex/x-image/skills/x-image`
+
+`python3 /Users/jliu/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py targets/codex/x-image`
+
+`zsh targets/codex/x-image/scripts/install-local-plugin.sh`
+
+Observed result:
+All 6 Codex plugin tests and both shared-source tests passed. Skill validation and plugin validation passed. The installer created `~/.codex/plugins/cache/local-build-your-system/x-image/local`; cached `references` and `styles` were verified as real directories containing the shared files.
+
+Commit:
+`feat(x-image): add native Codex plugin`

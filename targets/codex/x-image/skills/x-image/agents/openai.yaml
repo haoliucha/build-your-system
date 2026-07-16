@@ -1,0 +1,4 @@
+interface:
+  display_name: "X Image"
+  short_description: "Generate covers and article illustrations"
+  default_prompt: "Generate a complete article image with one built-in ImageGen call."
