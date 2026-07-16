@@ -111,3 +111,28 @@ All 5 Claude bridge tests passed with zero failures and zero errors. The Claude 
 
 Commit:
 `feat(x-image): add Claude Codex Rescue bridge`
+
+## 2026-07-16 — Remove x-cover and migrate Claude metadata
+
+Behavior:
+The Claude `x` plugin removes the old cover command and skill, publishes `/x:image` as the only image entry point, and reports version `2.0.0` with the new Codex Rescue boundary.
+
+RED command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_structure.py' -v`
+
+Expected failure:
+The new entry points pass, while old cover removal and the Claude manifest/marketplace version and descriptions fail.
+
+Observed failure:
+`Ran 4 tests in 0.001s` followed by `FAILED (failures=7)`. The new-entry-point test passed. Failures covered the existing old command/skill, version `1.0.2`, and all missing `x-image` metadata phrases. There were zero errors.
+
+GREEN command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_structure.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_*.py' -v`
+
+Observed result:
+All 4 structure tests passed. The full pre-fixture suite passed all 32 tests with zero failures and zero errors. The old command and skill directory were absent, both Claude metadata sources reported `2.0.0`, and current user documentation contained no legacy workflow claims.
+
+Commit:
+`refactor(x): replace x-cover with x-image`

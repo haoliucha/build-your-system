@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.0.0 (2026-07-16)
+
+### Breaking changes
+
+- 移除 `/x:cover` 与 `x-cover` skill,不保留兼容入口。
+- 新增 `/x:image` 与 `x-image`,同时支持 X 文章封面和正文插图。
+
+### Image workflow
+
+- Claude 通过 `codex:codex-rescue` 把完整任务交给原生 Codex `x-image`。
+- 每个图片资产只调用一次内置 ImageGen,不自动重试。
+- 禁止图片后处理;只允许把原始输出复制到目标位置并做只读 QA。
+- 支持 2.5:1、16:9、3:2、3:4、1:1 建议比例和不宽于 3:1 的自定义比例。
+- 新增 `terminal-tech`、`editorial-material`、`data-editorial` 三个受控风格预设。
+- 支持文件、目录、直接文本、数据和 brief 输入,以及 `-v2`、`-v3` 防覆盖命名。
+
 ## 1.0.1 (2026-05-29)
 
 ### Bug fixes
