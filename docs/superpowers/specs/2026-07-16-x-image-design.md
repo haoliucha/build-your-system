@@ -446,8 +446,9 @@ Run from Codex:
 2. 16:9 article hero.
 3. 3:2 labeled explainer.
 4. 3:4 vertical article illustration.
-5. Explicit custom style.
-6. Two-illustration request.
+5. Data-led article image.
+6. Explicit custom style.
+7. Two-illustration request.
 
 For every asset, acceptance evidence must show:
 
@@ -512,6 +513,7 @@ targets/codex/x-image/tests/
     ├── hero-16x9.md
     ├── explainer-3x2.md
     ├── vertical-3x4.md
+    ├── data-editorial.md
     ├── custom-style.md
     └── multi-image.md
 ```
@@ -561,7 +563,8 @@ The live scenarios are:
 | AC-03 | 3:2 labeled explainer | Short correct labels and relationships |
 | AC-04 | 3:4 vertical illustration | `editorial-material` adherence |
 | AC-05 | Data-led article image | Exact values, units, order, and `data-editorial` |
-| AC-06 | Two-illustration request | Two calls total, one per asset, locked style |
+| AC-06 | Explicit custom style | User style overrides automatic routing without changing presets |
+| AC-07 | Two-illustration request | Two calls total, one per asset, locked style |
 
 Visual issue severity:
 
