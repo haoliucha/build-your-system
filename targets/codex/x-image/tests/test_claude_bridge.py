@@ -49,6 +49,14 @@ class ClaudeBridgeTests(unittest.TestCase):
         self.assertIn("current working directory", self.text.lower())
         self.assertIn("native `x-image` skill", self.text)
 
+    def test_marks_claude_rescue_origin(self):
+        for phrase in (
+            "Invocation origin: Claude through Codex Rescue",
+            "Host: Claude through Codex Rescue",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.text)
+
     def test_requires_codex_to_own_the_complete_workflow(self):
         for phrase in (
             "source analysis",

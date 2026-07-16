@@ -1,6 +1,6 @@
 # AC-03 — 3:2 Labeled Explainer
 
-Status: PASS
+Status: FAIL
 
 Codex task or thread: `/root/ac03_explainer`
 
@@ -53,12 +53,17 @@ Saved output path: `targets/codex/x-image/tests/acceptance/output/ac-03-explaine
 
 Actual dimensions: `1536 × 1024`
 
-Content QA: PASS — four exact labels appear in the required order and three clear right-pointing arrows encode the relationships; no fifth stage or extra text appears.
+Content QA: FAIL — the four required labels and arrows are correct, but the image also contains a large question mark, ruled/grid fragments, and paragraph-like lines that violate the exhaustive visible-text allowlist.
 
 Style QA: PASS — warm off-white background, tactile paper/clay materials, charcoal typography, IKB-blue arrows, generous whitespace, and one horizontal focal flow.
 
 P0 checklist: PASS — one generation, zero edits, zero modification commands, byte-identical original, exact labels/order, no watermark or prompt leakage.
 
-P1 checklist: PASS — labels are readable, directions unambiguous, ratio correct, and editorial-material style consistent.
+P1 checklist: FAIL — forbidden extra glyphs and pseudo-writing appear on material surfaces.
 
-P2 checklist: PASS — no advisory findings.
+P2 checklist: None; the finding is P1.
+
+## Attempt history
+
+- Attempt 1: initially recorded PASS, then changed to FAIL during independent code review after visual inspection found a question mark, ruled/grid paper, and paragraph-like lines.
+- Regression: `test_editorial_material_cannot_imply_extra_writing` and expanded exact-text prompt assertions.

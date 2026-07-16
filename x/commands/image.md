@@ -22,11 +22,14 @@ Invoke the `codex:codex-rescue` subagent through the Agent tool exactly once wit
 Work from the current working directory: <insert the current working directory>.
 Use the native `x-image` skill to complete this request:
 
+Invocation origin: Claude through Codex Rescue
+
 $ARGUMENTS
 
 Codex owns the complete workflow: source analysis, asset planning, prompt compilation, one built-in ImageGen call per asset, collision-safe file placement, read-only inspection, and QA. Save the requested file before reporting. Follow the x-image no-retry and no-post-processing contracts.
 
-Return the complete native x-image report.
+Return the complete native x-image report. Its first line must be exactly:
+Host: Claude through Codex Rescue
 ```
 
 Forward `$ARGUMENTS` without rewriting the user's intent. Include the actual current working directory in the prompt.

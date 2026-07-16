@@ -27,7 +27,8 @@ Inspect the original generated asset without editing it. QA is a release decisio
 - Required layout or ratio composition is materially wrong.
 - Style ID is visibly violated.
 - Data marks are blocked or distorted.
-- A forbidden logo, watermark, fake interface, or extra text appears.
+- A forbidden logo, watermark, fake interface, extra text, extra glyph, or pseudo-writing appears.
+- A blank material surface contains ruled lines, grids, body-copy bars, placeholder blocks, question marks, or another text-like mark not in the exact visible text allowlist.
 
 ### P2 — Advisory issue
 

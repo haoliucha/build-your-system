@@ -11,6 +11,12 @@ Generate a complete final raster asset through the installed `imagegen` skill an
 
 For each asset, allow exactly one call per planned asset. Use no edit, retry, post-processing, alternate image execution mode, or intermediate image.
 
+## Invocation origin
+
+Default to `native Codex`.
+
+Only when the incoming task contains the exact line `Invocation origin: Claude through Codex Rescue`, set the report host to `Claude through Codex Rescue`. Preserve that host for every asset in the request. Do not infer or invent another host value.
+
 ## Load the canonical contracts
 
 Before planning an image, read these files completely:
@@ -41,7 +47,7 @@ Before the first image call, determine:
 
 - Intent: cover or illustration.
 - Count: default or explicit.
-- Destination directory and filename.
+- Destination directory and requested base filename.
 - Ratio and prompt target dimensions.
 - Style ID and full Style Spec.
 - Layout pattern.
@@ -49,7 +55,7 @@ Before the first image call, determine:
 
 For multiple assets, plan every asset's distinct cognitive job and lock the shared style fields before generation.
 
-Resolve a collision-safe destination before each call. Preserve existing files and choose `-v2`, `-v3`, or the first later unused sibling. Never overwrite.
+Record the requested base destination before each call. Do not assume a filename remains unused during generation; final collision resolution happens atomically at placement time.
 
 ### 3. Compile the final prompt
 
@@ -70,9 +76,15 @@ For the current asset:
 
 ### 5. Place the original file
 
-Use the output path returned by the built-in tool. Create only the resolved final output directory, then copy the original generated file to the collision-safe destination.
+Use the output path returned by the built-in tool. Place the original with:
 
-Do not transform the file while moving it. Reading file metadata or calculating a checksum is allowed; changing image bytes is not.
+```text
+python3 "$HOME/plugins/x-image/scripts/place-original.py" <generated-source> <requested-base-destination>
+```
+
+This helper re-resolves the requested base destination immediately before placement and uses an exclusive atomic claim. If the base or a versioned sibling already exists, it advances to `-v2`, `-v3`, or the first later unused sibling without overwriting. Use the helper's returned path as the saved path.
+
+Do not replace this step with ordinary `cp`, `mv`, or a pre-generation existence check. The helper copies bytes only for atomic placement and removes its temporary file; it does not decode, transform, repair, or re-encode the image. Reading file metadata or calculating a checksum is allowed; changing image bytes is not.
 
 ### 6. Inspect and decide QA
 
@@ -91,6 +103,8 @@ For every attempted asset, report:
 
 ```text
 Host: native Codex
+or
+Host: Claude through Codex Rescue
 Status: PASS or FAIL
 Saved path:
 Actual dimensions:

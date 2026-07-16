@@ -22,7 +22,7 @@ class PromptContractTests(unittest.TestCase):
             "no retry",
             "no edit",
             "no post-processing",
-            "copy or move the original",
+            "place the byte-identical original",
             "actual dimensions",
         )
 
@@ -46,6 +46,9 @@ class PromptContractTests(unittest.TestCase):
             "`-v2`",
             "`-v3`",
             "first unused filename",
+            "placement time",
+            "exclusive atomic claim",
+            "place-original.py",
         )
 
     def test_ratio_advice_and_override(self):
@@ -75,6 +78,10 @@ class PromptContractTests(unittest.TestCase):
         self.assert_contract_contains(
             "Exact visible text",
             "quoted verbatim",
+            "exhaustive allowlist",
+            "text-like marks",
+            "ruled lines",
+            "body-copy bars",
             "values",
             "units",
             "category order",

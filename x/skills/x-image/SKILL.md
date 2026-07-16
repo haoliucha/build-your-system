@@ -14,9 +14,10 @@ Invoke `codex:codex-rescue` through the Agent tool exactly once:
 - Set `run_in_background: false` on the Agent call.
 - Use a fresh run with `--fresh --wait`.
 - Forward the user's request and the actual current working directory.
+- Include the exact marker `Invocation origin: Claude through Codex Rescue`.
 - Tell Codex to use the native `x-image` skill.
 - Require Codex to own source analysis, asset planning, prompt compilation, one built-in ImageGen call per asset, collision-safe file placement, read-only inspection, and QA.
-- Require Codex to save the output file and return the complete native report.
+- Require Codex to save the output file and return the complete native report beginning exactly with `Host: Claude through Codex Rescue`.
 
 If the Agent tool still launches the subagent in the background, do not announce that state and do not return early. Call `TaskOutput` once for the same Rescue task with `block: true`, the returned task ID, and a timeout long enough for generation to finish. Do not invoke another Agent, start another Codex task, poll repeatedly, or expose task metadata.
 

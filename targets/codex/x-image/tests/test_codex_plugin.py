@@ -96,8 +96,8 @@ class CodexPluginTests(unittest.TestCase):
             "installed `imagegen` skill",
             "built-in `image_gen`",
             "exactly one call per planned asset",
-            "collision-safe",
-            "copy the original",
+            "exclusive atomic claim",
+            "Place the original",
             "inspect without editing",
             "stop remaining",
         ):
@@ -106,6 +106,19 @@ class CodexPluginTests(unittest.TestCase):
         for forbidden in ("codex:codex-rescue", "nested Codex", "codex exec"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, skill)
+
+    def test_native_skill_reports_actual_invocation_origin(self):
+        skill = read_optional(
+            CODEX_X_IMAGE / "skills" / "x-image" / "SKILL.md"
+        )
+        for phrase in (
+            "Default to `native Codex`",
+            "Invocation origin: Claude through Codex Rescue",
+            "Host: native Codex",
+            "Host: Claude through Codex Rescue",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, skill)
 
     def test_installer_is_executable(self):
         installer = CODEX_X_IMAGE / "scripts" / "install-local-plugin.sh"

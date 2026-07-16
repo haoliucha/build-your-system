@@ -23,7 +23,9 @@ Single-call instruction: <complete final raster in one call>
 
 ## Text and factual accuracy
 
-Exact visible text must be quoted verbatim. Repeat tricky names character-by-character when useful. Do not add extra text.
+Exact visible text must be quoted verbatim and treated as an exhaustive allowlist. Repeat tricky names character-by-character when useful. Do not add extra text.
+
+Anything not listed is forbidden, including readable text and text-like marks. When a paper, card, page, screen-like slab, or document-shaped object does not carry an allowed string, require its surface to stay completely blank. Explicitly avoid question marks, ruled lines, grids, body-copy bars, placeholder blocks, pseudo-writing, and abstract glyphs that imply text.
 
 Never place long article paragraphs inside the image. A cover uses one short title or hook and, only when useful, one short supporting line.
 
@@ -41,6 +43,14 @@ Do not crop, resize, pad, overlay, composite, repair, or re-encode the result.
 Render all requested text and visual elements inside this single generation.
 ```
 
-After the call, copy or move the original generated file to the resolved collision-safe destination. Reading metadata and visually inspecting the original are allowed. Do not alter image bytes.
+After the call, place the byte-identical original with:
+
+```text
+python3 "$HOME/plugins/x-image/scripts/place-original.py" <generated-source> <requested-base-destination>
+```
+
+The helper re-resolves collisions at placement time, uses an exclusive atomic claim, advances through `-v2`, `-v3`, and later siblings when needed, and returns the actual path plus SHA-256. Its temporary byte copy is placement-only, is removed before return, and does not decode, transform, repair, or re-encode the image.
+
+Reading metadata and visually inspecting the original are allowed. Do not alter image bytes.
 
 If the built-in tool is unavailable, stop and report the failure. Do not switch execution modes.

@@ -351,3 +351,99 @@ All 8 focused installer/plugin tests and all 41 full-suite tests passed. Fresh `
 
 Commit:
 `fix(x-image): exclude local cache artifacts`
+
+## 2026-07-16 — Invocation-origin reporting regression
+
+Behavior:
+Native Codex runs report `Host: native Codex`. Claude bridge runs carry an explicit origin marker and report `Host: Claude through Codex Rescue`.
+
+Review finding:
+The native skill hardcoded `Host: native Codex`, so successful Claude bridge acceptance misreported its actual invocation origin.
+
+RED commands:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_claude_bridge.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_codex_plugin.py' -v`
+
+Expected failure:
+The bridge does not forward an origin marker, and the native skill has no origin-selection rule or Claude-origin report value.
+
+Observed failure:
+The bridge suite failed two origin-marker subtests. The plugin suite failed three origin-selection/reporting subtests. There were zero errors.
+
+GREEN command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_claude_bridge.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_codex_plugin.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_*.py' -v`
+
+Observed result:
+All 8 bridge tests, all 9 plugin tests, and all 43 full-suite tests passed. The bridge now forwards the explicit Claude origin marker, while the native skill defaults direct runs to `native Codex` and reports Claude-originated runs as `Claude through Codex Rescue`.
+
+Commit:
+`fix(x-image): report invocation origin`
+
+## 2026-07-16 — Editorial pseudo-writing regression
+
+Behavior:
+Exact visible text is exhaustive. In editorial-material assets, every other paper or material surface remains blank, with no question marks, ruled lines, grids, body-copy bars, placeholder blocks, or pseudo-writing.
+
+Review finding:
+AC-03 contained a question mark, ruled/grid fragments, and paragraph-like lines. AC-07 Asset 1 contained body-copy layout bars. Both had been incorrectly recorded as PASS despite explicit no-extra-text constraints.
+
+RED commands:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_style_contract.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_prompt_contract.py' -v`
+
+Expected failure:
+The editorial preset and shared prompt contract forbid paragraphs and extra text but do not explicitly reject common pseudo-writing motifs.
+
+Observed failure:
+The style suite failed eight missing-rule subtests. The prompt-contract suite failed four exhaustive-text and pseudo-writing subtests. There were zero errors.
+
+GREEN command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_style_contract.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_prompt_contract.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_*.py' -v`
+
+Observed result:
+All 9 style tests, all 9 prompt-contract tests, and all 44 full-suite tests passed. Editorial prompts now treat exact text as exhaustive and explicitly reject question marks, ruled lines, grids, body-copy bars, placeholder blocks, abstract glyphs, and pseudo-writing on otherwise blank surfaces.
+
+Commit:
+`fix(x-image): forbid editorial pseudo-writing`
+
+## 2026-07-16 — Atomic collision-safe placement regression
+
+Behavior:
+The final destination is re-resolved at placement time, and concurrent placements use an exclusive atomic claim so an existing asset is never overwritten.
+
+Review finding:
+The skill selected a filename before a potentially long ImageGen call and later used an ordinary copy, leaving a time-of-check/time-of-use overwrite race.
+
+RED command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_atomic_placement.py' -v`
+
+Expected failure:
+No atomic placement helper exists.
+
+Observed failure:
+Both placement tests failed because `scripts/place-original.py` was missing. One test models a destination appearing after planning; the other starts two concurrent placements for the same requested path.
+
+GREEN command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_atomic_placement.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_prompt_contract.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_codex_plugin.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_*.py' -v`
+
+Observed result:
+Both atomic placement tests, all 9 prompt-contract tests, all 9 plugin tests, and all 46 full-suite tests passed. The helper preserves the first writer, advances the loser to a versioned sibling, returns the actual path and hash, and leaves no temporary placement files.
+
+Commit:
+`fix(x-image): place originals atomically`

@@ -1,6 +1,6 @@
 # AC-07 — Two Consistent Illustrations
 
-Status: PASS
+Status: FAIL
 
 Codex task or thread: `/root/ac07_multi`
 
@@ -81,12 +81,18 @@ Saved output path:
 
 Actual dimensions: `1536 × 1024` for both, exact `3:2`
 
-Content QA: PASS — Asset 1 contains exactly the legible ordered labels `捕获 → 澄清 → 连接 → 表达` with a clear left-to-right transformation; Asset 2 clearly shows loose fragments becoming grouped cards, a connected argument, and one coherent article without visible text.
+Content QA: FAIL — Asset 1 has the correct ordered labels and flow but contains conspicuous gray/blue body-copy bars on its final article sheet. Asset 2 passes its text-free content requirements.
 
 Style QA: PASS — both share the same warm off-white field, neutral tactile paper/clay materials, IKB-blue accent, soft studio light, short shadows, editorial grid language, and restrained density.
 
 P0 checklist: PASS — two generations total, zero edits, zero modification commands, byte-identical originals, exact labels where required, and no watermark or prompt leakage.
 
-P1 checklist: PASS — both are readable and exact 3:2; the first explains a sequence and the second explains dependency layers while remaining visibly one batch.
+P1 checklist: FAIL — Asset 1 violates the exhaustive visible-text allowlist through forbidden body-copy bars, so the batch cannot pass.
 
-P2 checklist: Abstract gray and blue blocks on Asset 1's final article suggest page structure but contain no readable or invented text.
+P2 checklist: None; Asset 1's body-copy bars are a P1 finding.
+
+## Attempt history
+
+- Attempt 1: initially recorded PASS, then changed to FAIL during independent code review because Asset 1 uses body-copy bars to imply writing.
+- The retrospective Asset 1 failure also means the batch should have stopped before Asset 2 under the stop-after-first-failure contract.
+- Regression: `test_editorial_material_cannot_imply_extra_writing` and expanded exact-text prompt assertions.

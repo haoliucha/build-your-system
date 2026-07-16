@@ -36,7 +36,7 @@ Default filenames:
 - Illustration: `illustration-01-<short-slug>.png`
 - Further illustrations: increment the two-digit index.
 
-Never overwrite an existing asset. Probe the full destination path before copying. If the name exists, try `-v2`, then `-v3`, and continue until the first unused filename is found.
+Never overwrite an existing asset. Record the requested base path during planning, but resolve the final collision-safe sibling again at placement time. Use `place-original.py` to make an exclusive atomic claim on the requested path; if it already exists or another task wins the race, try `-v2`, then `-v3`, and continue until the first unused filename is atomically claimed.
 
 Only create the selected final output directory. Do not create raw, thumbnail, crop, intermediate, or repair directories.
 

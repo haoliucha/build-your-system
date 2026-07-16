@@ -106,6 +106,21 @@ class StyleContractTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, data_style)
 
+    def test_editorial_material_cannot_imply_extra_writing(self):
+        editorial = self.styles["editorial-material.md"]
+        for phrase in (
+            "Exact visible text is an exhaustive allowlist.",
+            "all other material surfaces completely blank",
+            "question marks",
+            "ruled lines",
+            "grids",
+            "body-copy bars",
+            "placeholder blocks",
+            "pseudo-writing",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, editorial)
+
 
 if __name__ == "__main__":
     unittest.main()
