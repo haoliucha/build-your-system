@@ -13,7 +13,7 @@ Delegate the complete request to Codex. Claude is only the transport layer.
 Invoke the `codex:codex-rescue` subagent through the Agent tool exactly once with:
 
 - `subagent_type: "codex:codex-rescue"`
-- foreground execution
+- `run_in_background: false`
 - this prompt:
 
 ```text
@@ -33,7 +33,11 @@ Forward `$ARGUMENTS` without rewriting the user's intent. Include the actual cur
 
 ## Response contract
 
-Return the Codex output verbatim. Do not summarize, inspect files, add commentary, call an image tool, retry, or perform follow-up work in Claude.
+Do not announce delegation before the Agent call.
+
+Do not emit progress or status messages while the Agent call is running.
+
+On success, the only user-visible assistant message must be the complete Codex output verbatim, with no text before or after it. Do not summarize, inspect files, add commentary, call an image tool, retry, or perform follow-up work in Claude.
 
 If `codex:codex-rescue` is unavailable or Codex is unauthenticated, stop and tell the user to run `/codex:setup`.
 

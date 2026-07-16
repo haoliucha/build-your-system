@@ -20,6 +20,23 @@ class ClaudeBridgeTests(unittest.TestCase):
         self.assertIn("--wait", self.text)
         self.assertIn("verbatim", self.text.lower())
 
+    def test_forces_foreground_agent_invocation(self):
+        for name, source in (
+            ("command", self.command),
+            ("skill", self.skill),
+        ):
+            with self.subTest(name=name):
+                self.assertIn("run_in_background: false", source)
+
+    def test_forbids_intermediate_user_visible_messages(self):
+        for phrase in (
+            "Do not announce delegation",
+            "Do not emit progress or status messages",
+            "only user-visible assistant message",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.text)
+
     def test_forwards_arguments_and_working_directory(self):
         self.assertIn("$ARGUMENTS", self.command)
         self.assertIn("current working directory", self.text.lower())
@@ -55,4 +72,3 @@ class ClaudeBridgeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

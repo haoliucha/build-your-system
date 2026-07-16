@@ -1,32 +1,32 @@
 # AC-08 — Claude Rescue Bridge
 
-Status: BLOCKED
+Status: FAIL
 
-Claude session: `3c74bf8e-8cb2-4423-9d4c-0659a8521129`
-
-Claude launch command:
-
-```text
-claude --plugin-dir "$PWD/x" --permission-mode bypassPermissions --debug-file /tmp/x-image-claude-bridge-debug.log
-```
+Claude session: `fb62d830-5641-44ce-aef5-2b6b730e110e`
 
 Exact `/x:image` invocation:
 
 ```text
-/x:image targets/codex/x-image/tests/fixtures/tech-article.md illustration 3:2 editorial-material; generate exactly one image showing one independent maker building an open-source research tool, with no visible text; save to targets/codex/x-image/tests/acceptance/output/ac-08-claude-bridge.png
+/x:image targets/codex/x-image/tests/fixtures/tech-article.md illustration 3:2 editorial-material；生成且只生成一张文章插图，表现一位独立开发者正在构建开源研究工具，不显示任何文字；将原始图片保存到 targets/codex/x-image/tests/acceptance/output/ac-08-claude-bridge.png。每张图片只允许调用一次 ImageGen，不得重试、编辑或后处理。返回完整的 Codex x-image 原生报告。
 ```
 
-Local Claude plugin: PASS — debug evidence confirms the source plugin loaded from `x/`, exposed three commands, and resolved `x:x-image` from version `2.0.0`.
+Local Claude plugin: PASS — the source `x` plugin exposed `/x:image` and loaded the bridge instructions.
 
 Expected `codex:codex-rescue` agent call count: 1
 
-Actual `codex:codex-rescue` agent call count: 0
+Actual `codex:codex-rescue` agent call count: 1
 
-Fresh foreground task: NOT STARTED
+Agent tool-use ID: `toolu_01LPqGFygGSnF9gJgoLKgbZe`
 
-Native Codex `x-image` execution: NOT STARTED
+Fresh task: PASS — the delegated prompt begins with `--fresh --wait`, includes the actual worktree path, and tells Codex to use the native `x-image` skill.
 
-Codex output returned verbatim: NOT AVAILABLE
+Foreground task: FAIL — the Agent call omitted `run_in_background: false`; Claude Code 2.1.207 launched the task asynchronously and returned a task notification later.
+
+Native Codex `x-image` execution: PASS
+
+Codex report returned verbatim: PASS — the task-notification `<result>` and Claude's final assistant message have the same SHA-256, `203db1f0eca763967be58f9868986860ece573997ce0847e501fb42dfadb1965`.
+
+Silent transport: FAIL — Claude emitted a delegation announcement and a progress/status message before returning the final native report.
 
 Claude-side file inspection count: 0
 
@@ -36,37 +36,33 @@ Claude-side retry count: 0
 
 Claude-side image modification or post-processing count: 0
 
-Expected output path: `targets/codex/x-image/tests/acceptance/output/ac-08-claude-bridge.png`
+Saved output path: `targets/codex/x-image/tests/acceptance/output/ac-08-claude-bridge.png`
 
-Saved output path: NOT CREATED
+Actual dimensions: `1536 × 1024`, exact `3:2`
 
-Environmental blocker:
+Style ID: `editorial-material`
 
-```text
-API Error: invalid_grant
-```
+Native generation call count: 1
 
-Claude Code was configured for Google Vertex AI and failed before its first model response. The debug log records eleven failed API attempts, all with `invalid_grant`, followed by termination of the turn. No Agent tool call was emitted, so the Rescue bridge and Codex generation stages were never entered.
+Native edit call count: 0
 
-Credential health evidence:
+Native image modification command count: 0
 
-```text
-$ claude auth status
-{
-  "loggedIn": true,
-  "authMethod": "third_party",
-  "apiProvider": "vertex"
-}
+Output SHA-256: `3c4d389619da4c7adae9d6ff3c11eeac696ebc247b6996d182d0e82843abf67a`
 
-$ gcloud auth application-default print-access-token
-ERROR: (gcloud.auth.application-default.print-access-token) There was a problem refreshing your current auth tokens: ('invalid_grant: Bad Request', ...)
-Please run:
+Content QA: PASS — exactly one developer visibly assembles a modular research/archive tool; research fragments converge into one local archive; no readable text, numbers, code, logo, watermark, additional person, or invented data.
 
-  $ gcloud auth application-default login
+Style QA: PASS — warm off-white background, charcoal and neutral tactile materials, IKB-blue accents, soft studio lighting, and one asymmetric focal cluster.
 
-to obtain new credentials.
-```
+P0 checklist: PASS — one native generation, zero edits, zero modification commands, original file preserved, correct path and hash, no extra Claude-side image work.
 
-The regular `gcloud auth print-access-token` check succeeds, but Claude's Vertex path uses Application Default Credentials, whose refresh grant is invalid. Re-authenticating ADC changes external credential state and requires user authorization, so the smoke test was not retried.
+P1 checklist: FAIL — the bridge did not force a foreground Agent call and did not remain silent before the verbatim final report.
 
-Release decision: BLOCKED — do not claim the Claude bridge verified and do not substitute a Codex-native acceptance run.
+P2 checklist: The developer's hair sits closer to the upper edge than the requested 8% safe margin, but remains fully visible and does not impair meaning or composition.
+
+## Attempt history
+
+- Attempt 1: `BLOCKED` in Claude session `3c74bf8e-8cb2-4423-9d4c-0659a8521129` because Vertex Application Default Credentials returned `invalid_grant` before the first model response.
+- Attempt 2: Native Codex generation and final verbatim report passed, but foreground and silent-transport bridge requirements failed.
+- Regression added: `test_forces_foreground_agent_invocation` and `test_forbids_intermediate_user_visible_messages`.
+- Contract correction: the bridge now requires `run_in_background: false`, forbids delegation announcements and progress messages, and allows only the native Codex report as the successful user-visible response.

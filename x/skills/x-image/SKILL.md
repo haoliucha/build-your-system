@@ -11,13 +11,18 @@ Delegate the entire request to the native Codex `x-image` skill. Claude does not
 
 Invoke `codex:codex-rescue` through the Agent tool exactly once:
 
-- Use a fresh foreground run with `--fresh --wait`.
+- Set `run_in_background: false` on the Agent call.
+- Use a fresh run with `--fresh --wait`.
 - Forward the user's request and the actual current working directory.
 - Tell Codex to use the native `x-image` skill.
 - Require Codex to own source analysis, asset planning, prompt compilation, one built-in ImageGen call per asset, collision-safe file placement, read-only inspection, and QA.
 - Require Codex to save the output file and return the complete native report.
 
-Return the Codex output verbatim with no text before or after it.
+Do not announce delegation before the Agent call.
+
+Do not emit progress or status messages while the Agent call is running.
+
+On success, the only user-visible assistant message must be the complete Codex output verbatim, with no text before or after it.
 
 ## Claude boundary
 

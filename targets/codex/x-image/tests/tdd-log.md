@@ -265,3 +265,31 @@ All 7 structure tests and all 38 full-suite tests passed. The structure test now
 
 Commit:
 `fix(x-image): prevent duplicate data labels`
+
+## 2026-07-16 — Claude bridge foreground and silent transport regression
+
+Behavior:
+The Claude bridge must force the `codex:codex-rescue` Agent call into the foreground and emit no delegation announcement, progress update, or status message. The only successful user-visible assistant message is the native Codex report returned verbatim.
+
+Live failure evidence:
+Claude session `fb62d830-5641-44ce-aef5-2b6b730e110e` invoked `codex:codex-rescue` exactly once and completed native generation, but the Agent tool reported an asynchronous launch. The parent conversation also emitted a delegation announcement and a progress message before the final Codex report.
+
+RED command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_claude_bridge.py' -v`
+
+Expected failure:
+The bridge command and skill do not explicitly require `run_in_background: false` and do not contain strong no-intermediate-message instructions.
+
+Observed failure:
+`Ran 7 tests in 0.001s` followed by `FAILED (failures=5)`. Two failures covered the missing foreground Agent parameter and three covered the missing silent-transport phrases. There were zero errors.
+
+GREEN command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_claude_bridge.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_*.py' -v`
+
+Observed result:
+All 7 focused bridge tests passed, including the explicit foreground parameter and silent-transport regressions. The full suite passed all 40 tests with zero failures and zero errors.
+
+Commit:
+`fix(x-image): enforce silent foreground rescue`
