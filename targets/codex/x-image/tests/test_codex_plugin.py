@@ -75,6 +75,19 @@ class CodexPluginTests(unittest.TestCase):
                 self.assertIn(phrase, installer)
         self.assertNotIn('rsync -aL "${SOURCE_ROOT}/"', installer)
 
+    def test_installer_excludes_local_test_artifacts(self):
+        installer = read_optional(
+            CODEX_X_IMAGE / "scripts" / "install-local-plugin.sh"
+        )
+        for phrase in (
+            "--exclude '.DS_Store'",
+            "--exclude '__pycache__'",
+            "--exclude '*.pyc'",
+            "--exclude 'tests/acceptance/output'",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, installer)
+
     def test_native_skill_owns_generation_without_nesting(self):
         skill = read_optional(
             CODEX_X_IMAGE / "skills" / "x-image" / "SKILL.md"

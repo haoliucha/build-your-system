@@ -12,6 +12,13 @@ MARKETPLACE_FILE="${HOME}/.agents/plugins/marketplace.json"
 CACHE_ROOT="${HOME}/.codex/plugins/cache/${MARKETPLACE_NAME}/${PLUGIN_NAME}/${PLUGIN_VERSION}"
 REGISTERED_VERSION="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' "${TARGET_ROOT}/.codex-plugin/plugin.json")"
 REGISTERED_CACHE_ROOT="${HOME}/.codex/plugins/cache/${MARKETPLACE_NAME}/${PLUGIN_NAME}/${REGISTERED_VERSION}"
+RSYNC_EXCLUDES=(
+  --exclude '.git'
+  --exclude '.DS_Store'
+  --exclude '__pycache__'
+  --exclude '*.pyc'
+  --exclude 'tests/acceptance/output'
+)
 
 mkdir -p "${HOME}/plugins" "${HOME}/.agents/plugins"
 ln -sfn "${TARGET_ROOT}" "${SOURCE_ROOT}"
@@ -57,11 +64,11 @@ codex plugin add "${PLUGIN_NAME}@${MARKETPLACE_NAME}"
 mkdir -p "$(dirname "${CACHE_ROOT}")"
 rm -rf "${CACHE_ROOT}"
 mkdir -p "${CACHE_ROOT}"
-rsync -aL --delete --exclude '.git' "${TARGET_ROOT}/" "${CACHE_ROOT}/"
+rsync -aL --delete "${RSYNC_EXCLUDES[@]}" "${TARGET_ROOT}/" "${CACHE_ROOT}/"
 
 rm -rf "${REGISTERED_CACHE_ROOT}"
 mkdir -p "${REGISTERED_CACHE_ROOT}"
-rsync -aL --delete --exclude '.git' "${TARGET_ROOT}/" "${REGISTERED_CACHE_ROOT}/"
+rsync -aL --delete "${RSYNC_EXCLUDES[@]}" "${TARGET_ROOT}/" "${REGISTERED_CACHE_ROOT}/"
 
 echo "Linked ${PLUGIN_NAME} to ${SOURCE_ROOT}"
 echo "Updated personal marketplace: ${MARKETPLACE_FILE}"

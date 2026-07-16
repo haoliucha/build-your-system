@@ -321,3 +321,33 @@ All 7 focused bridge tests passed, including the same-task blocking compatibilit
 
 Commit:
 `fix(x-image): support blocking rescue fallback`
+
+## 2026-07-16 — Installer artifact exclusion regression
+
+Behavior:
+The Codex local installer must dereference shared source links into a self-contained cache without copying ignored live acceptance PNGs, macOS metadata, or Python bytecode caches.
+
+Observed installation defect:
+A real local install produced 22 MB caches, including 21 MB under `tests/acceptance/output`, plus `.DS_Store`, `__pycache__`, and `.pyc` files.
+
+RED command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_codex_plugin.py' -v`
+
+Expected failure:
+The installer has no exclusions for local test artifacts beyond `.git`.
+
+Observed failure:
+`Ran 8 tests in 0.001s` followed by `FAILED (failures=4)`. The four failures covered missing exclusions for `.DS_Store`, `__pycache__`, `*.pyc`, and `tests/acceptance/output`. There were zero errors.
+
+GREEN command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_codex_plugin.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_*.py' -v`
+
+`zsh targets/codex/x-image/scripts/install-local-plugin.sh`
+
+Observed result:
+All 8 focused installer/plugin tests and all 41 full-suite tests passed. Fresh `0.1.0` and `local` caches were self-contained, validator-clean, free of excluded artifacts, byte-equivalent to the filtered source, and reduced from 22 MB to 204 KB each.
+
+Commit:
+`fix(x-image): exclude local cache artifacts`
