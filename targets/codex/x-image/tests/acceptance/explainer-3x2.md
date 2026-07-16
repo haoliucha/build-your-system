@@ -1,8 +1,8 @@
 # AC-03 — 3:2 Labeled Explainer
 
-Status: FAIL
+Status: PASS
 
-Codex task or thread: `/root/ac03_explainer`
+Codex task or thread: `/root/ac03_explainer_v2`
 
 Input fixture: `targets/codex/x-image/tests/fixtures/explainer-article.md`
 
@@ -23,17 +23,17 @@ Final prompt:
 ```text
 Use case: infographic-diagram
 Asset type: inline explainer
-Primary request: Create one polished editorial explainer showing a single four-step article-making pipeline from fragmented ideas to a finished article, with an unmistakable left-to-right reading direction.
-Source-derived content: The process has exactly four consecutive steps. Step 1 captures raw fragments without classifying them; step 2 clarifies the question each fragment answers; step 3 connects related fragments into an argument; step 4 expresses the argument as a complete article for readers. Visually distinguish the four stages with restrained tactile objects: loose paper fragments entering the first stage, a focused question-card motif at the second, visibly linked paper pieces at the third, and one clean finished article sheet at the fourth.
-Exact visible text: "捕获" "澄清" "连接" "表达". Render these four Chinese labels verbatim, clearly legible, and in exactly this left-to-right order. Do not add any other text, letters, numbers, punctuation, captions, headings, or symbols that resemble text.
-Aspect ratio and target dimensions: exact 3:2 landscape composition; target 1536 × 1024 pixels.
+Primary request: Create one polished 3:2 editorial-material inline explainer showing a single four-step pipeline moving clearly from left to right in this exact order: 捕获, 澄清, 连接, 表达.
+Source-derived content: The source describes turning scattered ideas into an article through four consecutive stages. Represent only the ordered progression from capturing fragments, to clarifying them, to connecting them, to expressing them. Use four restrained tactile soft-3D stage objects arranged on one horizontal baseline: first, a small open matte clay catch-bowl holding three completely plain pebble-like fragments; second, a simple clear glass lens examining one completely plain clay fragment; third, three completely plain matte clay nodes physically joined by short solid rods; fourth, a small matte clay speaking-horn form projecting only a clean soft blue material shape with no marks. These objects are visual metaphors only and must carry no markings or text-like detail.
+Exact visible text: "捕获" "澄清" "连接" "表达". This is an exhaustive allowlist. Render each label exactly once, character-for-character, in the stated left-to-right order. No quotation marks are visible. No other visible or implied text is permitted.
+Aspect ratio and target dimensions: 3:2 landscape composition, prompt target 1536 × 1024.
 Style ID: editorial-material
-Full Style Spec: background warm off-white #F5F2EA; palette neutral gray and charcoal with one saturated accent; accent IKB blue #2447FF; medium restrained soft 3D material objects using tactile paper, clay, and matte surfaces; lighting soft studio light with short soft shadows and no dramatic bloom; composition asymmetric Swiss editorial grid organized around one focal flow; text rules exact high-contrast Chinese labels, 2 characters each, attached directly to their stage, four labels total; avoid glow, gradient blobs, watermark, fake interface chrome, paragraph text, multiple focal points.
-Layout pattern: Pipeline, strictly left-to-right.
-Composition and safe margins: Place four clearly separated stage modules across one horizontal band, evenly progressing from left to right. Use one continuous cognitive flow. Connect stage 1 to stage 2, stage 2 to stage 3, and stage 3 to stage 4 using three bold, clean IKB-blue right-pointing arrows with unmistakable arrowheads. No bidirectional arrows, curved-back arrows, cycles, branches, crossings, or ambiguous connectors. Keep every label, object, and arrow comfortably inside generous safe margins; preserve whitespace; make the four-step pipeline the single primary focal point.
-Data and reference accuracy: Preserve exactly four stages and only four stages. Preserve exact order: 捕获 → 澄清 → 连接 → 表达. The arrows must explicitly encode this order and direction. The final sheet belongs only to 表达; linked fragments belong only to 连接; do not swap, merge, add, or omit stages.
-Global constraints: Exact requested text and relationships are non-overridable. Maintain legibility, factual accuracy, ratio safety, one primary focal point, and no extra logos or watermarks. Complete the entire asset as a coherent final raster in one generation.
-Avoid: extra text of any kind; misspelled, altered, duplicated, or reordered labels; extra steps; missing arrowheads; ambiguous arrow direction; circular layout; vertical sequence; decorative dashboard; UI panels; dense detail; edge clipping; logos; signatures; watermarks; photographic people; neon glow; gradients; dramatic shadows.
+Full Style Spec: warm off-white background #F5F2EA; neutral gray and charcoal palette with one saturated IKB blue accent #2447FF; restrained soft 3D material objects with tactile matte clay and limited clear glass; soft studio lighting with short soft shadows and no dramatic bloom; asymmetric Swiss editorial composition organized as one dominant horizontal flow; exact high-contrast Chinese labels, 2 characters each, in a clean bold sans-serif; no more than these four labels; exact visible text is exhaustive. Avoid glow, gradient blobs, watermark, fake interface chrome, paragraph text, pseudo-writing, question marks, punctuation, ruled lines, grids, body-copy bars, placeholder blocks, multiple focal points.
+Layout pattern: Pipeline, strictly left-to-right. Four evenly paced stages on one horizontal line. Place the corresponding freestanding label directly beneath each stage object: 捕获 beneath stage one, 澄清 beneath stage two, 连接 beneath stage three, 表达 beneath stage four. Connect stage one to stage two, stage two to stage three, and stage three to stage four using exactly three large, simple, unambiguous solid IKB-blue arrows pointing right. Arrowheads must be unmistakable and all point only right.
+Composition and safe margins: One primary focal flow centered across the canvas with generous warm off-white whitespace. Keep all objects, labels, and arrowheads comfortably inside at least 10% safe margins. Maintain strong scan order and separation. Do not add a title, subtitle, legend, caption, border, header, footer, badge, numbering, or decorative annotation.
+Data and reference accuracy: Preserve exactly four stages and exactly this order: 捕获, 澄清, 连接, 表达. Do not exchange, omit, duplicate, add, or rewrite any stage. The only relationships are the three consecutive rightward transitions.
+Global constraints: Generate a complete final raster asset. The four Chinese labels are the only text or text-like marks anywhere. Every object surface must be clean and plain except for no text at all; the allowed labels must be freestanding directly beneath objects, not printed on any object. Do not include paper, cards, pages, documents, books, notebooks, screens, signs, label plaques, panels, interfaces, sticky notes, or writing surfaces. If any paper/card/page-like surface is nevertheless introduced, its surface must be completely blank. Forbid question marks, all punctuation, ruled lines, grids, body-copy bars, placeholder blocks, abstract glyphs, pseudo-writing, scribbles, symbols resembling text, letters, numbers, logos, signatures, and watermarks. No icons containing interior marks. No additional arrow beyond the three specified rightward arrows.
+Avoid: any extra visible or implied text; quotation marks; punctuation; stage numbers; thin ambiguous connectors; leftward, upward, downward, curved, circular, branching, or bidirectional arrows; card UI; diagram boxes; page shapes; text-like texture; random strokes; decorative glyphs; illegible Chinese; repeated labels; clutter; gradients; glow; multiple focal points.
 Single-call instruction: Generate the entire final raster asset in exactly one built-in image_gen call.
 Do not generate intermediate assets.
 Use no retry, no edit, and no post-processing.
@@ -49,21 +49,28 @@ ImageGen edit call count: 0
 
 Image modification command count: 0
 
-Saved output path: `targets/codex/x-image/tests/acceptance/output/ac-03-explainer.png`
+Atomic placement helper call count: 1
 
-Actual dimensions: `1536 × 1024`
+Saved output path: `targets/codex/x-image/tests/acceptance/output/ac-03-explainer-v2.png`
 
-Content QA: FAIL — the four required labels and arrows are correct, but the image also contains a large question mark, ruled/grid fragments, and paragraph-like lines that violate the exhaustive visible-text allowlist.
+Requested base preserved: `targets/codex/x-image/tests/acceptance/output/ac-03-explainer.png`
 
-Style QA: PASS — warm off-white background, tactile paper/clay materials, charcoal typography, IKB-blue arrows, generous whitespace, and one horizontal focal flow.
+Actual dimensions: `1536 × 1024`, exact `3:2`
 
-P0 checklist: PASS — one generation, zero edits, zero modification commands, byte-identical original, exact labels/order, no watermark or prompt leakage.
+Output SHA-256: `a444f9a2a70c04fe44da6128dcc455b787d540ba12b2fd0136c4c6c214241041`
 
-P1 checklist: FAIL — forbidden extra glyphs and pseudo-writing appear on material surfaces.
+Content QA: PASS — exactly four visible labels appear once each in the required order, with exactly three right-pointing arrows; no extra text, punctuation, question marks, lines, grids, pseudo-writing, placeholder blocks, glyphs, or text-like symbols appear.
 
-P2 checklist: None; the finding is P1.
+Style QA: PASS — warm off-white background, tactile matte clay and limited glass, charcoal neutrals, IKB-blue accent, soft studio lighting, generous margins, and one clear horizontal editorial flow.
+
+P0 checklist: PASS — one generation, zero edits, zero modification commands, atomic byte-identical placement, original base preserved, correct labels/order, no watermark or prompt leakage.
+
+P1 checklist: PASS — exhaustive visible-text allowlist, blank object surfaces, unambiguous direction, exact ratio, and editorial-material adherence.
+
+P2 checklist: None.
 
 ## Attempt history
 
 - Attempt 1: initially recorded PASS, then changed to FAIL during independent code review after visual inspection found a question mark, ruled/grid paper, and paragraph-like lines.
 - Regression: `test_editorial_material_cannot_imply_extra_writing` and expanded exact-text prompt assertions.
+- Attempt 2: PASS in a fresh task; atomic placement preserved the first output and selected `ac-03-explainer-v2.png`.

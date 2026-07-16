@@ -1,6 +1,6 @@
 # AC-08 — Claude Rescue Bridge
 
-Status: PASS
+Status: FAIL
 
 Claude session: `09c1615a-06f1-40aa-9dd8-ad1941dff368`
 
@@ -23,6 +23,8 @@ Fresh task: PASS — the delegated prompt begins with `--fresh --wait`, includes
 Synchronous foreground behavior: PASS — Claude Code 2.1.207 launched the Agent task in its default background mode despite the requested foreground parameter, then used one blocking `TaskOutput` call with `block: true` on the same Rescue task. Claude did not return early, launch another Agent, or poll repeatedly.
 
 Native Codex `x-image` execution: PASS
+
+Host reporting: FAIL — the bridge-originated report begins `Host: native Codex` instead of `Host: Claude through Codex Rescue`.
 
 Codex report returned verbatim: PASS — the blocking `TaskOutput` report and Claude's final assistant message have the same SHA-256, `774c2c353bf69f547047826504a5fd8e6c9652b642a37b0ee1f52753ba379619`.
 
@@ -56,7 +58,7 @@ Style QA: PASS — exact 3:2 composition, warm off-white background, charcoal an
 
 P0 checklist: PASS — one native generation, zero edits, zero modification commands, original file preserved, correct path and hash, no extra Claude-side image work.
 
-P1 checklist: PASS — one Rescue call, a fresh `--wait` task, synchronous same-task blocking fallback, silent transport, native execution, and byte-for-byte verbatim final report.
+P1 checklist: FAIL — transport behavior passes, but the final report misidentifies the Claude-through-Rescue origin as native Codex.
 
 P2 checklist: Some abstract marks on the incoming material tiles resemble interface icons, but none form readable or pseudo-readable text and they do not affect the requested concept.
 
@@ -68,3 +70,5 @@ P2 checklist: Some abstract marks on the incoming material tiles resemble interf
 - Contract correction: the bridge now requires `run_in_background: false`, forbids delegation announcements and progress messages, and allows only the native Codex report as the successful user-visible response.
 - Attempt 3: `PASS`; Claude Code used one Agent call, one blocking same-task `TaskOutput` compatibility wait, no intermediate assistant text, and one verbatim final report.
 - Compatibility regression: `test_requires_synchronous_blocking_transport` documents the blocking fallback required when Claude Code still defaults the Agent task to background execution.
+- Independent review reclassified Attempt 3 as FAIL because its first line misreported the invocation origin.
+- Origin regression: `test_marks_claude_rescue_origin` and `test_native_skill_reports_actual_invocation_origin`.
