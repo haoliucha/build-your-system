@@ -20,13 +20,20 @@ class ClaudeBridgeTests(unittest.TestCase):
         self.assertIn("--wait", self.text)
         self.assertIn("verbatim", self.text.lower())
 
-    def test_forces_foreground_agent_invocation(self):
+    def test_requires_synchronous_blocking_transport(self):
         for name, source in (
             ("command", self.command),
             ("skill", self.skill),
         ):
             with self.subTest(name=name):
                 self.assertIn("run_in_background: false", source)
+                self.assertIn(
+                    "If the Agent tool still launches the subagent in the background",
+                    source,
+                )
+                self.assertIn("TaskOutput", source)
+                self.assertIn("block: true", source)
+                self.assertIn("same Rescue task", source)
 
     def test_forbids_intermediate_user_visible_messages(self):
         for phrase in (

@@ -293,3 +293,31 @@ All 7 focused bridge tests passed, including the explicit foreground parameter a
 
 Commit:
 `fix(x-image): enforce silent foreground rescue`
+
+## 2026-07-16 — Claude Code background-agent compatibility fallback
+
+Behavior:
+The bridge must remain synchronously blocking even when Claude Code's Agent runtime ignores the requested foreground parameter and launches the Rescue subagent in the background. In that compatibility path, Claude waits on the same task with blocking `TaskOutput`, emits no intermediate user-visible text, and still returns only the native Codex report.
+
+Live evidence:
+Claude session `09c1615a-06f1-40aa-9dd8-ad1941dff368` invoked `codex:codex-rescue` once. Claude Code 2.1.207 omitted `run_in_background` from the Agent tool input and returned asynchronous task metadata. Claude then called `TaskOutput` once with `block: true` for the same task, emitted no intermediate text, and returned a final report byte-for-byte equal to the retrieved task output.
+
+RED command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_claude_bridge.py' -v`
+
+Expected failure:
+The command and skill request foreground execution but do not define the required blocking fallback when the runtime still launches the Agent task in the background.
+
+Observed failure:
+`Ran 7 tests in 0.001s` followed by `FAILED (failures=2)`. The command and skill each lacked the same-task blocking `TaskOutput` fallback contract. There were zero errors.
+
+GREEN command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_claude_bridge.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_*.py' -v`
+
+Observed result:
+All 7 focused bridge tests passed, including the same-task blocking compatibility fallback. The full suite passed all 40 tests with zero failures and zero errors.
+
+Commit:
+`fix(x-image): support blocking rescue fallback`

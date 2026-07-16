@@ -1,7 +1,7 @@
 ---
 description: "Generate a complete X article cover or article illustration through Codex x-image, using one ImageGen call per asset and no post-processing."
 argument-hint: "<source> [cover|illustration] [count] [ratio/style/destination notes]"
-allowed-tools: Agent
+allowed-tools: Agent, TaskOutput
 ---
 
 # /x:image
@@ -30,6 +30,16 @@ Return the complete native x-image report.
 ```
 
 Forward `$ARGUMENTS` without rewriting the user's intent. Include the actual current working directory in the prompt.
+
+## Blocking compatibility
+
+If the Agent tool still launches the subagent in the background, do not announce that state and do not return early. Call `TaskOutput` for the same Rescue task with:
+
+- `block: true`
+- the task ID returned by the Agent call
+- a timeout long enough for the image workflow to finish
+
+Use this compatibility wait only once. Do not invoke another Agent, start another Codex task, poll repeatedly, or expose task metadata to the user.
 
 ## Response contract
 

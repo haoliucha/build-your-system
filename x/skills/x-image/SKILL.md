@@ -18,6 +18,8 @@ Invoke `codex:codex-rescue` through the Agent tool exactly once:
 - Require Codex to own source analysis, asset planning, prompt compilation, one built-in ImageGen call per asset, collision-safe file placement, read-only inspection, and QA.
 - Require Codex to save the output file and return the complete native report.
 
+If the Agent tool still launches the subagent in the background, do not announce that state and do not return early. Call `TaskOutput` once for the same Rescue task with `block: true`, the returned task ID, and a timeout long enough for generation to finish. Do not invoke another Agent, start another Codex task, poll repeatedly, or expose task metadata.
+
 Do not announce delegation before the Agent call.
 
 Do not emit progress or status messages while the Agent call is running.
