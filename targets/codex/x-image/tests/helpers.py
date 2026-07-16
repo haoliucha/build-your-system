@@ -53,4 +53,3 @@ def shared_style_text() -> str:
     return "\n".join(
         read_optional(SHARED / "styles" / name) for name in STYLE_NAMES
     )
-
