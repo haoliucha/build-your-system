@@ -80,6 +80,21 @@ class StyleContractTests(unittest.TestCase):
         self.assertIn("task-local Style Spec", self.policy)
         self.assertIn("does not modify the built-in presets", self.policy)
 
+    def test_terminal_motifs_cannot_create_extra_glyphs(self):
+        terminal = self.styles["terminal-tech.md"]
+        self.assertIn(
+            "Terminal motifs must use abstract geometry only.",
+            terminal,
+        )
+        for phrase in (
+            "cursor glyphs",
+            "prompt symbols",
+            "code characters",
+            "pseudo-text",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, terminal)
+
 
 if __name__ == "__main__":
     unittest.main()

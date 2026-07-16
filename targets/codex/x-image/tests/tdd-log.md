@@ -190,3 +190,28 @@ All 7 installer/plugin tests passed. The installer registered `x-image@local-bui
 
 Commit:
 `fix(x-image): harden local plugin installation`
+
+## 2026-07-16 — AC-01 extra terminal glyph regression
+
+Behavior:
+`terminal-tech` supporting motifs must never introduce glyph-like marks beyond the exact visible text list.
+
+RED command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_style_contract.py' -v`
+
+Expected failure:
+The new assertion fails because the preset forbids decorative code walls and fake interface chrome but does not explicitly forbid cursor glyphs, prompt symbols, code characters, or pseudo-text inside a motif.
+
+Observed failure:
+`Ran 7 tests in 0.002s` followed by `FAILED (failures=1)`. The only failure was the missing abstract-geometry and no-glyph rule in `terminal-tech`. There were zero errors.
+
+GREEN command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_style_contract.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_*.py' -v`
+
+Observed result:
+All 7 style tests passed, including the terminal-glyph regression. The full suite passed all 37 tests with zero failures and zero errors.
+
+Commit:
+`fix(x-image): prevent extra glyphs in terminal motifs`
