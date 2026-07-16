@@ -86,3 +86,28 @@ All 6 Codex plugin tests and both shared-source tests passed. Skill validation a
 
 Commit:
 `feat(x-image): add native Codex plugin`
+
+## 2026-07-16 — Claude Codex Rescue bridge
+
+Behavior:
+Claude `/x:image` and natural-language image requests delegate the complete task once to the `codex:codex-rescue` subagent in a fresh foreground run and return its output verbatim.
+
+RED command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_claude_bridge.py' -v`
+
+Expected failure:
+The suite fails because the new Claude command and bridge skill do not exist.
+
+Observed failure:
+`Ran 5 tests in 0.001s` followed by `FAILED (failures=7)`. The no-owned-pipeline assertion already passed against empty files; all required delegation, forwarding, complete-workflow, and setup-failure assertions failed. There were zero errors.
+
+GREEN command:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_claude_bridge.py' -v`
+
+`python3 /Users/jliu/.codex/skills/.system/skill-creator/scripts/quick_validate.py x/skills/x-image`
+
+Observed result:
+All 5 Claude bridge tests passed with zero failures and zero errors. The Claude bridge skill also passed structural validation, and the adapter contained none of the forbidden owned-pipeline commands.
+
+Commit:
+`feat(x-image): add Claude Codex Rescue bridge`
