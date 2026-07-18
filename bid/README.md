@@ -27,7 +27,7 @@ cd "$REPO_ROOT/bid"
 zsh scripts/install-codex-local.sh
 ```
 
-安装脚本会在 marketplace 同目录的稳定文件 `.marketplace.json.lock` 上取得非阻塞独占锁，并持锁完成预检、Codex CLI、写入和回滚；若另一安装或卸载仍持有该锁，本次操作会在任何本地修改前退出。随后脚本完整预检 `~/.agents/plugins/marketplace.json`：文件必须是普通文件、JSON 结构有效、`name` 必须精确等于 `local-build-your-system`，已有 `bid` 条目也必须与本插件定义完全一致。预检通过后才会建立 `~/plugins/bid` 到当前 `"$REPO_ROOT/bid"` 的符号链接、登记 marketplace，并运行 `codex plugin add bid@local-build-your-system`。Codex CLI 返回非零时，脚本不会假定 add 尚未落盘，而会在精确本地合同下查询实际状态、恢复操作前状态，再回滚本次创建的链接和 marketplace 改动；既有 marketplace 会恢复原始字节和权限，其他条目不受影响。若 add 执行中收到 SIGINT 或 SIGTERM，脚本会先终止并回收独立的 CLI 子进程，在 marketplace 条目和源码链接仍保持精确可信时核对中断前后的安装状态；若 add 已落盘，会先用幂等 remove 恢复 Codex 状态，再回滚本地登记。安装完成后请新建一个 Codex 任务，让技能索引从新安装版本加载。
+安装脚本会在 marketplace 同目录的稳定文件 `.marketplace.json.lock` 上取得非阻塞独占锁，并持锁完成预检、Codex CLI、写入和回滚；若另一安装或卸载仍持有该锁，本次操作会在任何本地修改前退出。随后脚本完整预检 `~/.agents/plugins/marketplace.json`：文件必须是普通文件、JSON 结构有效、`name` 必须精确等于 `local-build-your-system`，已有 `bid` 条目也必须与本插件定义完全一致。预检通过后才会建立 `~/plugins/bid` 到当前 `"$REPO_ROOT/bid"` 的符号链接、登记 marketplace，并运行 `codex plugin add bid@local-build-your-system`。源码合同不只验证符号链接：脚本还会对插件树生成有界、确定性的内容指纹，覆盖 manifests、skills、scripts、docs 和测试源码，并包含文件身份、mtime 与字节；`.git`、`__pycache__`、`.pytest_cache` 等临时缓存被排除。源码树内部的符号链接会失败关闭，不跟随到可能越界、循环或绕过大小上限的目标。快照上限为 4096 个条目和 64 MiB，超限会带诊断地失败关闭。Codex CLI 返回非零或返回零但未达到请求的安装后状态时，脚本不会猜测，而会在 marketplace、链接和源码内容指纹仍精确一致时查询、收敛或恢复操作前状态。若 add 执行中收到 SIGINT 或 SIGTERM，脚本会先终止并回收独立的 CLI 子进程；只有恢复成功才回滚本地登记。安装完成后请新建一个 Codex 任务，让技能索引从新安装版本加载。
 
 ## 六个共享工作流
 
@@ -158,7 +158,7 @@ zsh scripts/install-codex-local.sh --uninstall
 
 remove 命令会删除 Codex 自己管理的已安装配置与缓存；这是卸载的预期行为。它不会删除源码 checkout、Claude 状态、项目内 `.claude/memory/`，也不会改动无关的 marketplace 条目。如果 Codex CLI 移除失败，marketplace 与链接保持原样；成功后脚本才原子移除单个 `bid` 条目并 unlink 这个精确链接，保留其他 marketplace key、插件及顺序。marketplace 的存在性、文件类型、设备与 inode、权限、mtime、大小和字节必须与预检快照一致；即使只是 chmod 或用相同字节替换了文件，脚本也会停止而不覆盖并发修改。
 
-add/remove CLI 子进程各自在独立进程组中运行。父进程收到 SIGINT 或 SIGTERM 时，脚本会向它拥有的子进程组发送 SIGTERM、限时等待并回收；超时则升级为 SIGKILL，避免持锁无限挂起。回收完成前本地 marketplace 和源码链接保持不动。若 remove 尚未生效，脚本不做多余 add；若 remove 已生效，只有在 marketplace 仍包含完全一致的 `BID_ENTRY`、文件快照未再变化，且 `~/plugins/bid` 仍是预检时同一 inode 并精确指向当前 checkout 时，才自动 add 恢复中断前状态。CLI 返回非零也不被当作“肯定未生效”：脚本会在同一精确合同下比较操作前后实际状态，必要时补偿 add/remove，确认恢复后才返回原始非零状态。
+add/remove CLI 子进程各自在独立进程组中运行。父进程收到 SIGINT 或 SIGTERM 时，脚本会向它拥有的子进程组发送 SIGTERM、限时等待并回收；超时则升级为 SIGKILL，避免持锁无限挂起。子进程构造期间会暂缓父进程终止信号，直到子进程句柄已归本事务所有；子进程自身恢复原信号掩码。SIGINT 与 SIGTERM 分别以 130 和 143 退出。本地 marketplace 写入、链接建立或移除期间的终止也会先按 CAS 所有权回滚，再保留终止语义。若 remove 尚未生效，脚本不做多余 add；若 remove 已生效，只有在 marketplace、链接身份和插件树内容指纹仍与预检快照完全一致时，才自动 add 恢复中断前状态。CLI 返回非零也不被当作确定结果；零退出后的实际状态不符同样会被拒绝。脚本会比较操作前后实际状态，必要时补偿 add/remove，确认收敛后才继续本地清理。
 
 若后续 marketplace 写入或 unlink 失败，脚本会尽力恢复本次拥有的本地改动。任何补偿 add 之前都会重新解析并验证完整 marketplace 合同、对其存在性/类型/设备/inode/权限/mtime/大小/字节做最后一次 CAS 检查，并再次验证源码链接身份。若并发编辑者删除、替换或把 `bid` 条目改指其他来源，或者源码链接被替换、改指或删除，补偿安装不会执行；错误信息会说明 Codex 仍处于已移除状态，并给出人工恢复路径。若补偿安装本身失败，也会给出精确恢复命令以及 marketplace、源码链接和源码 checkout 路径，不会宣称卸载成功。遇到残缺状态、并发修改或错误目标时，脚本同样停止，不做猜测性清理或覆盖。
 

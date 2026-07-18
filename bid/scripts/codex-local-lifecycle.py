@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import hashlib
 import json
 import os
 import signal
@@ -33,6 +34,12 @@ class ConcurrentModificationError(ConflictError):
     pass
 
 
+class CodexStateRecoveryError(RuntimeError):
+    def __init__(self, message: str, interruption_exit_code: int | None) -> None:
+        super().__init__(message)
+        self.interruption_exit_code = interruption_exit_code
+
+
 class ParentTermination(KeyboardInterrupt):
     pass
 
@@ -58,6 +65,13 @@ class MarketplaceSnapshot:
 
 
 @dataclass(frozen=True)
+class SourceTreeSnapshot:
+    digest: str
+    entry_count: int
+    total_file_bytes: int
+
+
+@dataclass(frozen=True)
 class SourceSnapshot:
     exists: bool
     file_type: int | None
@@ -66,16 +80,18 @@ class SourceSnapshot:
     mtime_ns: int | None
     raw_target: str | None
     resolved_target: Path | None
+    tree: SourceTreeSnapshot | None
 
     @classmethod
     def absent(cls) -> SourceSnapshot:
-        return cls(False, None, None, None, None, None, None)
+        return cls(False, None, None, None, None, None, None, None)
 
 
 @dataclass(frozen=True)
 class CodexCommandResult:
     returncode: int
     interrupted: bool
+    interruption_exit_code: int | None = None
 
 
 @dataclass
@@ -88,8 +104,41 @@ class MarketplaceState:
     original_snapshot: MarketplaceSnapshot
 
 
+TERMINATION_SIGNALS = {signal.SIGINT, signal.SIGTERM}
+
+
+@contextmanager
+def defer_termination_signals():
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
+    try:
+        yield previous_mask
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+
+@contextmanager
+def parent_termination_handler():
+    previous_handler = signal.getsignal(signal.SIGTERM)
+
+    def raise_parent_termination(_signum: int, _frame: object) -> None:
+        raise ParentTermination
+
+    signal.signal(signal.SIGTERM, raise_parent_termination)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
+
+
 class LocalLifecycle:
     CODEX_INTERRUPT_GRACE_SECONDS = 5.0
+    SOURCE_TREE_MAX_ENTRIES = 4096
+    SOURCE_TREE_MAX_BYTES = 64 * 1024 * 1024
+    SOURCE_TREE_IGNORED_DIRS = frozenset(
+        {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+    )
+    SOURCE_TREE_IGNORED_FILES = frozenset({".DS_Store"})
+    SOURCE_TREE_IGNORED_SUFFIXES = (".pyc", ".pyo", ".swp", "~")
 
     def __init__(self, bid_root: Path) -> None:
         self.bid_root = bid_root.resolve(strict=True)
@@ -187,6 +236,138 @@ class LocalLifecycle:
             file_stat.st_mtime_ns,
         )
 
+    @classmethod
+    def source_tree_path_is_ignored(cls, path: Path, is_directory: bool) -> bool:
+        if is_directory:
+            return path.name in cls.SOURCE_TREE_IGNORED_DIRS
+        return path.name in cls.SOURCE_TREE_IGNORED_FILES or path.name.endswith(
+            cls.SOURCE_TREE_IGNORED_SUFFIXES
+        )
+
+    def scan_source_tree(self) -> SourceTreeSnapshot:
+        paths = [self.bid_root]
+
+        def include_path(path: Path) -> None:
+            paths.append(path)
+            if len(paths) > self.SOURCE_TREE_MAX_ENTRIES:
+                raise ConflictError(
+                    "plugin source content exceeds the bounded snapshot entry "
+                    f"limit ({len(paths)} > {self.SOURCE_TREE_MAX_ENTRIES})"
+                )
+
+        try:
+            pending_directories = [self.bid_root]
+            while pending_directories:
+                directory_path = pending_directories.pop()
+                child_directories: list[Path] = []
+                with os.scandir(directory_path) as entries:
+                    for entry in entries:
+                        path = Path(entry.path)
+                        is_directory = entry.is_dir(follow_symlinks=False)
+                        if self.source_tree_path_is_ignored(path, is_directory):
+                            continue
+                        include_path(path)
+                        if is_directory:
+                            child_directories.append(path)
+                pending_directories.extend(
+                    sorted(child_directories, reverse=True)
+                )
+        except OSError as error:
+            raise ConcurrentModificationError(
+                f"cannot enumerate plugin source content at {self.bid_root}: {error}"
+            ) from error
+
+        paths = sorted(
+            paths,
+            key=lambda path: path.relative_to(self.bid_root).as_posix(),
+        )
+        digest = hashlib.sha256()
+        total_file_bytes = 0
+        for path in paths:
+            relative_path = "."
+            if path != self.bid_root:
+                relative_path = path.relative_to(self.bid_root).as_posix()
+            try:
+                before_stat = path.lstat()
+            except OSError as error:
+                raise ConcurrentModificationError(
+                    f"plugin source content changed while snapshotting {path}: {error}"
+                ) from error
+            file_type = stat.S_IFMT(before_stat.st_mode)
+            mode = stat.S_IMODE(before_stat.st_mode)
+            digest.update(relative_path.encode("utf-8", "surrogateescape"))
+            digest.update(b"\0")
+            digest.update(f"{file_type}:{mode}".encode("ascii"))
+            digest.update(b"\0")
+
+            if stat.S_ISDIR(before_stat.st_mode):
+                digest.update(
+                    f"{before_stat.st_dev}:{before_stat.st_ino}".encode("ascii")
+                )
+                digest.update(b"\0")
+                continue
+            if stat.S_ISLNK(before_stat.st_mode):
+                raise ConflictError(
+                    "plugin source tree contains an unsupported symlink; "
+                    f"refusing to follow content outside the bounded tree: {path}"
+                )
+            if not stat.S_ISREG(before_stat.st_mode):
+                raise ConflictError(
+                    f"plugin source contains unsupported file type: {path}"
+                )
+
+            total_file_bytes += before_stat.st_size
+            if total_file_bytes > self.SOURCE_TREE_MAX_BYTES:
+                raise ConflictError(
+                    "plugin source content exceeds the bounded snapshot byte limit "
+                    f"({total_file_bytes} > {self.SOURCE_TREE_MAX_BYTES})"
+                )
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                file_fd = os.open(path, flags)
+            except OSError as error:
+                raise ConcurrentModificationError(
+                    f"cannot read stable plugin source file {path}: {error}"
+                ) from error
+            with os.fdopen(file_fd, "rb") as source_file:
+                opened_stat = os.fstat(source_file.fileno())
+                data = source_file.read(before_stat.st_size + 1)
+                after_stat = os.fstat(source_file.fileno())
+            try:
+                final_path_stat = path.lstat()
+            except OSError as error:
+                raise ConcurrentModificationError(
+                    f"plugin source file changed while snapshotting {path}: {error}"
+                ) from error
+            expected_fields = self.marketplace_stat_fields(before_stat)
+            if (
+                expected_fields != self.marketplace_stat_fields(opened_stat)
+                or expected_fields != self.marketplace_stat_fields(after_stat)
+                or expected_fields != self.marketplace_stat_fields(final_path_stat)
+                or len(data) != before_stat.st_size
+            ):
+                raise ConcurrentModificationError(
+                    f"plugin source file changed while snapshotting {path}"
+                )
+            digest.update(
+                f"{before_stat.st_dev}:{before_stat.st_ino}:"
+                f"{before_stat.st_mtime_ns}:{before_stat.st_size}".encode("ascii")
+            )
+            digest.update(b"\0")
+            digest.update(data)
+            digest.update(b"\0")
+
+        return SourceTreeSnapshot(digest.hexdigest(), len(paths), total_file_bytes)
+
+    def capture_source_tree_snapshot(self) -> SourceTreeSnapshot:
+        first = self.scan_source_tree()
+        second = self.scan_source_tree()
+        if first != second:
+            raise ConcurrentModificationError(
+                f"plugin source content changed while snapshotting {self.bid_root}"
+            )
+        return second
+
     def capture_source_snapshot(self) -> SourceSnapshot:
         try:
             before_stat = self.source_root.lstat()
@@ -223,14 +404,42 @@ class LocalLifecycle:
                     f"source path changed while inspecting {self.source_root}"
                 ) from error
 
+        tree_snapshot = (
+            self.capture_source_tree_snapshot()
+            if resolved_target == self.bid_root
+            else None
+        )
+        try:
+            final_stat = self.source_root.lstat()
+        except FileNotFoundError as error:
+            raise ConcurrentModificationError(
+                f"source path changed while inspecting {self.source_root}"
+            ) from error
+        if self.source_stat_fields(after_stat) != self.source_stat_fields(final_stat):
+            raise ConcurrentModificationError(
+                f"source path changed while inspecting {self.source_root}"
+            )
+        if stat.S_ISLNK(final_stat.st_mode):
+            try:
+                final_target = os.readlink(self.source_root)
+            except FileNotFoundError as error:
+                raise ConcurrentModificationError(
+                    f"source path changed while inspecting {self.source_root}"
+                ) from error
+            if final_target != raw_target:
+                raise ConcurrentModificationError(
+                    f"source link target changed while inspecting {self.source_root}"
+                )
+
         return SourceSnapshot(
             True,
-            stat.S_IFMT(after_stat.st_mode),
-            after_stat.st_dev,
-            after_stat.st_ino,
-            after_stat.st_mtime_ns,
+            stat.S_IFMT(final_stat.st_mode),
+            final_stat.st_dev,
+            final_stat.st_ino,
+            final_stat.st_mtime_ns,
             raw_target,
             resolved_target,
+            tree_snapshot,
         )
 
     @contextmanager
@@ -456,15 +665,35 @@ class LocalLifecycle:
             or current_snapshot.resolved_target != self.bid_root
         ):
             raise ConcurrentModificationError(
-                f"source symlink changed concurrently: {self.source_root}; "
-                f"expected the original link to {self.bid_root}"
+                "source symlink identity, target, or plugin content changed "
+                f"concurrently: {self.source_root}; expected the original link "
+                f"and content snapshot for {self.bid_root}"
             )
+
+    def restore_removed_source(
+        self, expected_snapshot: SourceSnapshot
+    ) -> SourceSnapshot:
+        current_snapshot = self.capture_source_snapshot()
+        if current_snapshot.exists:
+            self.require_source_snapshot(expected_snapshot)
+            return current_snapshot
+        self.source_root.symlink_to(self.bid_root)
+        restored_snapshot = self.validate_source()
+        if restored_snapshot is None:
+            raise RuntimeError("restored source symlink disappeared")
+        if restored_snapshot.tree != expected_snapshot.tree:
+            raise ConcurrentModificationError(
+                "plugin source content changed before the removed source symlink "
+                "could be restored"
+            )
+        return restored_snapshot
 
     @staticmethod
     def run_codex(action: str) -> CodexCommandResult:
         process: subprocess.Popen[bytes] | None = None
         parent_termination_requested = False
         interrupted = False
+        interruption_exit_code: int | None = None
         returncode = 1
         previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
 
@@ -477,25 +706,35 @@ class LocalLifecycle:
         signal.signal(signal.SIGTERM, handle_parent_sigterm)
         try:
             try:
-                process = subprocess.Popen(
-                    ["codex", "plugin", action, PLUGIN_REF],
-                    start_new_session=True,
-                )
+                with defer_termination_signals() as child_signal_mask:
+                    process = subprocess.Popen(
+                        ["codex", "plugin", action, PLUGIN_REF],
+                        start_new_session=True,
+                        preexec_fn=lambda: signal.pthread_sigmask(
+                            signal.SIG_SETMASK, child_signal_mask
+                        ),
+                    )
+                if parent_termination_requested:
+                    raise ParentTermination
+                returncode = process.wait()
             except OSError as error:
                 print(f"codex plugin {action} failed: {error}", file=sys.stderr)
-            else:
-                try:
-                    if parent_termination_requested:
-                        raise ParentTermination
-                    returncode = process.wait()
-                except KeyboardInterrupt:
-                    interrupted = True
-                    print(
-                        f"codex plugin {action} interrupted; terminating and "
-                        "reaping the isolated CLI child before reconciling "
-                        "transaction state.",
-                        file=sys.stderr,
-                    )
+            except KeyboardInterrupt as error:
+                if process is None:
+                    raise
+                interrupted = True
+                interruption_exit_code = (
+                    143 if isinstance(error, ParentTermination) else 130
+                )
+                print(
+                    f"codex plugin {action} interrupted; terminating and "
+                    "reaping the isolated CLI child before reconciling "
+                    "transaction state.",
+                    file=sys.stderr,
+                )
+                if process.returncode is not None:
+                    returncode = process.returncode
+                else:
                     try:
                         os.killpg(process.pid, signal.SIGTERM)
                     except ProcessLookupError:
@@ -511,8 +750,14 @@ class LocalLifecycle:
                                 raise subprocess.TimeoutExpired(process.args, 0)
                             returncode = process.wait(timeout=remaining)
                             break
-                        except KeyboardInterrupt:
+                        except KeyboardInterrupt as repeated_error:
                             interrupted = True
+                            if interruption_exit_code is None:
+                                interruption_exit_code = (
+                                    143
+                                    if isinstance(repeated_error, ParentTermination)
+                                    else 130
+                                )
                             continue
                         except subprocess.TimeoutExpired:
                             print(
@@ -529,15 +774,27 @@ class LocalLifecycle:
                                 try:
                                     returncode = process.wait()
                                     break
-                                except KeyboardInterrupt:
+                                except KeyboardInterrupt as repeated_error:
                                     interrupted = True
+                                    if interruption_exit_code is None:
+                                        interruption_exit_code = (
+                                            143
+                                            if isinstance(
+                                                repeated_error, ParentTermination
+                                            )
+                                            else 130
+                                        )
                                     continue
                             break
             normalized_returncode = returncode if returncode >= 0 else 1
         finally:
             signal.signal(signal.SIGTERM, previous_sigterm_handler)
-            interrupted = interrupted or parent_termination_requested
-        return CodexCommandResult(normalized_returncode, interrupted)
+            if parent_termination_requested:
+                interrupted = True
+                interruption_exit_code = 143
+        return CodexCommandResult(
+            normalized_returncode, interrupted, interruption_exit_code
+        )
 
     @staticmethod
     def codex_plugin_installed() -> bool:
@@ -638,31 +895,53 @@ class LocalLifecycle:
         self.require_source_snapshot(source_snapshot)
         return installed
 
+    @staticmethod
+    def recovery_interruption_exit_code(error: BaseException) -> int | None:
+        if isinstance(error, CodexStateRecoveryError):
+            return error.interruption_exit_code
+        return None
+
     def restore_codex_state_with_contract(
         self,
         installed_before: bool,
         marketplace_snapshot: MarketplaceSnapshot,
         source_snapshot: SourceSnapshot,
-    ) -> None:
+    ) -> int | None:
         installed_now = self.codex_plugin_installed_with_contract(
             marketplace_snapshot, source_snapshot
         )
         if installed_now == installed_before:
-            return
+            return None
 
         action = "add" if installed_before else "remove"
         self.require_marketplace_snapshot(marketplace_snapshot)
         self.require_source_snapshot(source_snapshot)
         command_result = self.run_codex(action)
-        installed_after = self.codex_plugin_installed_with_contract(
-            marketplace_snapshot, source_snapshot
+        interruption_exit_code = (
+            command_result.interruption_exit_code or 130
+            if command_result.interrupted
+            else None
         )
+        try:
+            installed_after = self.codex_plugin_installed_with_contract(
+                marketplace_snapshot, source_snapshot
+            )
+        except Exception as error:
+            if interruption_exit_code is not None:
+                raise CodexStateRecoveryError(
+                    f"codex plugin {action} poststate could not be verified after "
+                    f"an interruption: {error}",
+                    interruption_exit_code,
+                ) from error
+            raise
         if installed_after != installed_before:
-            raise RuntimeError(
+            raise CodexStateRecoveryError(
                 f"codex plugin {action} did not restore the pre-operation state "
                 f"(return code {command_result.returncode}, "
-                f"interrupted={command_result.interrupted})"
+                f"interrupted={command_result.interrupted})",
+                interruption_exit_code,
             )
+        return interruption_exit_code
 
     def rollback_install(
         self,
@@ -694,11 +973,12 @@ class LocalLifecycle:
         source_created_snapshot: SourceSnapshot | None = None
         try:
             if source_preexisting_snapshot is None:
-                self.source_root.parent.mkdir(parents=True, exist_ok=True)
-                self.source_root.symlink_to(self.bid_root)
-                source_created_snapshot = self.validate_source()
-                if source_created_snapshot is None:
-                    raise RuntimeError("created source symlink disappeared")
+                with defer_termination_signals():
+                    self.source_root.parent.mkdir(parents=True, exist_ok=True)
+                    self.source_root.symlink_to(self.bid_root)
+                    source_created_snapshot = self.validate_source()
+                    if source_created_snapshot is None:
+                        raise RuntimeError("created source symlink disappeared")
 
             if marketplace_changed:
                 marketplace = (
@@ -710,13 +990,25 @@ class LocalLifecycle:
                 if not isinstance(plugins, list):
                     raise RuntimeError("validated plugins list changed unexpectedly")
                 plugins.append(BID_ENTRY)
-                marketplace_written_snapshot = self.write_marketplace(
-                    marketplace, state.original_mode, state.original_snapshot
+                with defer_termination_signals():
+                    marketplace_written_snapshot = self.write_marketplace(
+                        marketplace, state.original_mode, state.original_snapshot
+                    )
+        except BaseException as original_error:
+            try:
+                with defer_termination_signals():
+                    self.rollback_install(
+                        state,
+                        marketplace_written_snapshot,
+                        source_created_snapshot,
+                    )
+            except BaseException as rollback_error:
+                print(
+                    "Partial state recovery required: install preparation was "
+                    f"interrupted or failed ({original_error}); rollback also "
+                    f"failed: {rollback_error}",
+                    file=sys.stderr,
                 )
-        except Exception:
-            self.rollback_install(
-                state, marketplace_written_snapshot, source_created_snapshot
-            )
             raise
 
         active_source_snapshot = (
@@ -736,29 +1028,95 @@ class LocalLifecycle:
                 active_marketplace_snapshot, active_source_snapshot
             )
         except BaseException:
-            self.rollback_install(
-                state, marketplace_written_snapshot, source_created_snapshot
-            )
+            with defer_termination_signals():
+                self.rollback_install(
+                    state, marketplace_written_snapshot, source_created_snapshot
+                )
             raise
-        codex_result = self.run_codex("add")
-        if codex_result.interrupted:
-            return self.reconcile_interrupted_install(
+        try:
+            codex_result = self.run_codex("add")
+            if codex_result.interrupted:
+                return self.reconcile_interrupted_install(
+                    codex_result.interruption_exit_code or 130,
+                    codex_installed_before,
+                    state,
+                    marketplace_written_snapshot,
+                    source_created_snapshot,
+                    source_preexisting_snapshot,
+                )
+            if codex_result.returncode != 0:
+                return self.reconcile_nonzero_install(
+                    codex_result.returncode,
+                    codex_installed_before,
+                    active_marketplace_snapshot,
+                    active_source_snapshot,
+                    state,
+                    marketplace_written_snapshot,
+                    source_created_snapshot,
+                )
+            try:
+                nested_interruption = self.restore_codex_state_with_contract(
+                    True, active_marketplace_snapshot, active_source_snapshot
+                )
+            except Exception as error:  # noqa: BLE001 - exact postcondition required.
+                recovery_interruption_code = (
+                    self.recovery_interruption_exit_code(error)
+                )
+                if recovery_interruption_code is not None:
+                    return self.reconcile_interrupted_install(
+                        recovery_interruption_code,
+                        codex_installed_before,
+                        state,
+                        marketplace_written_snapshot,
+                        source_created_snapshot,
+                        source_preexisting_snapshot,
+                    )
+                try:
+                    self.require_marketplace_snapshot(active_marketplace_snapshot)
+                    self.require_source_snapshot(active_source_snapshot)
+                except Exception as contract_error:  # noqa: BLE001 - preserve evidence.
+                    print(
+                        "codex plugin add returned zero, but its installed "
+                        "poststate could not be verified because the exact "
+                        "local/source content contract changed: "
+                        f"{error}; {contract_error}. Local registration was "
+                        "preserved for recovery.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                print(
+                    "codex plugin add returned zero without a verified installed "
+                    f"poststate: {error}",
+                    file=sys.stderr,
+                )
+                return self.reconcile_nonzero_install(
+                    1,
+                    codex_installed_before,
+                    active_marketplace_snapshot,
+                    active_source_snapshot,
+                    state,
+                    marketplace_written_snapshot,
+                    source_created_snapshot,
+                )
+            if nested_interruption is not None:
+                return self.reconcile_interrupted_install(
+                    nested_interruption,
+                    codex_installed_before,
+                    state,
+                    marketplace_written_snapshot,
+                    source_created_snapshot,
+                    source_preexisting_snapshot,
+                )
+        except KeyboardInterrupt as error:
+            self.reconcile_interrupted_install(
+                143 if isinstance(error, ParentTermination) else 130,
                 codex_installed_before,
                 state,
                 marketplace_written_snapshot,
                 source_created_snapshot,
                 source_preexisting_snapshot,
             )
-        if codex_result.returncode != 0:
-            return self.reconcile_nonzero_install(
-                codex_result.returncode,
-                codex_installed_before,
-                active_marketplace_snapshot,
-                active_source_snapshot,
-                state,
-                marketplace_written_snapshot,
-                source_created_snapshot,
-            )
+            raise
 
         print(f"Source: {self.source_root} -> {self.bid_root}")
         print(f"Marketplace: {self.marketplace_file}")
@@ -767,6 +1125,7 @@ class LocalLifecycle:
 
     def reconcile_interrupted_install(
         self,
+        interruption_exit_code: int,
         installed_before: bool,
         state: MarketplaceState,
         marketplace_written_snapshot: MarketplaceSnapshot | None,
@@ -780,14 +1139,41 @@ class LocalLifecycle:
         )
         if active_source_snapshot is None:
             raise RuntimeError("installed source snapshot disappeared")
+        active_marketplace_snapshot = (
+            marketplace_written_snapshot
+            if marketplace_written_snapshot is not None
+            else state.original_snapshot
+        )
+        recovery_interruption_code: int | None = None
         try:
             if not installed_before:
                 reconcile_result = self.run_codex("remove")
-                if reconcile_result.interrupted or reconcile_result.returncode != 0:
-                    raise RuntimeError(
-                        "codex plugin remove could not restore the "
-                        f"pre-operation state ({reconcile_result.returncode})"
+                if reconcile_result.interrupted:
+                    recovery_interruption_code = (
+                        reconcile_result.interruption_exit_code or 130
                     )
+                try:
+                    nested_interruption = self.restore_codex_state_with_contract(
+                        False,
+                        active_marketplace_snapshot,
+                        active_source_snapshot,
+                    )
+                    recovery_interruption_code = (
+                        nested_interruption or recovery_interruption_code
+                    )
+                except ConcurrentModificationError:
+                    installed_now = self.codex_plugin_installed()
+                    if installed_now:
+                        retry_result = self.run_codex("remove")
+                        if self.codex_plugin_installed():
+                            raise RuntimeError(
+                                "codex plugin remove could not verify the exact "
+                                "plugin as absent after the local contract changed"
+                            )
+                        if retry_result.interrupted:
+                            recovery_interruption_code = (
+                                retry_result.interruption_exit_code or 130
+                            )
             else:
                 marketplace_snapshot = self.require_compensation_add_contract(
                     active_source_snapshot
@@ -799,15 +1185,21 @@ class LocalLifecycle:
                     self.require_marketplace_snapshot(marketplace_snapshot)
                     self.require_source_snapshot(active_source_snapshot)
                     reconcile_result = self.run_codex("add")
-                    if (
-                        reconcile_result.interrupted
-                        or reconcile_result.returncode != 0
-                    ):
-                        raise RuntimeError(
-                            "codex plugin add could not restore the pre-operation "
-                            f"state ({reconcile_result.returncode})"
+                    if reconcile_result.interrupted:
+                        recovery_interruption_code = (
+                            reconcile_result.interruption_exit_code or 130
                         )
+                    nested_interruption = self.restore_codex_state_with_contract(
+                        True, marketplace_snapshot, active_source_snapshot
+                    )
+                    recovery_interruption_code = (
+                        nested_interruption or recovery_interruption_code
+                    )
         except Exception as error:  # noqa: BLE001 - report incomplete recovery.
+            recovery_interruption_code = (
+                self.recovery_interruption_exit_code(error)
+                or recovery_interruption_code
+            )
             print(
                 "Partial state recovery required: interrupted codex plugin add "
                 f"could not restore the pre-operation installed state: {error}",
@@ -815,7 +1207,7 @@ class LocalLifecycle:
             )
             print(f"Marketplace: {self.marketplace_file}", file=sys.stderr)
             print(f"Source symlink: {self.source_root}", file=sys.stderr)
-            return 130
+            return recovery_interruption_code or interruption_exit_code
 
         try:
             self.rollback_install(
@@ -827,13 +1219,13 @@ class LocalLifecycle:
                 f"restored Codex state, but local rollback failed: {error}",
                 file=sys.stderr,
             )
-            return 130
+            return recovery_interruption_code or interruption_exit_code
         print(
             "Interrupted codex plugin add restored the pre-operation installed "
             "state; local changes rolled back.",
             file=sys.stderr,
         )
-        return 130
+        return recovery_interruption_code or interruption_exit_code
 
     def reconcile_nonzero_install(
         self,
@@ -845,13 +1237,15 @@ class LocalLifecycle:
         marketplace_written_snapshot: MarketplaceSnapshot | None,
         source_created_snapshot: SourceSnapshot | None,
     ) -> int:
+        recovery_interruption_code: int | None = None
         try:
-            self.restore_codex_state_with_contract(
+            recovery_interruption_code = self.restore_codex_state_with_contract(
                 installed_before,
                 active_marketplace_snapshot,
                 active_source_snapshot,
             )
         except Exception as error:  # noqa: BLE001 - preserve recovery contract.
+            recovery_interruption_code = self.recovery_interruption_exit_code(error)
             try:
                 self.require_marketplace_snapshot(active_marketplace_snapshot)
                 self.require_source_snapshot(active_source_snapshot)
@@ -870,7 +1264,7 @@ class LocalLifecycle:
                         f"owned-state rollback was incomplete: {rollback_error}",
                         file=sys.stderr,
                     )
-                    return 1
+                    return recovery_interruption_code or 1
                 print(
                     f"codex plugin add failed ({returncode}). Partial state "
                     "recovery required: Codex state reconciliation failed: "
@@ -878,7 +1272,7 @@ class LocalLifecycle:
                     "unchanged owned local state rolled back.",
                     file=sys.stderr,
                 )
-                return 1
+                return recovery_interruption_code or 1
             print(
                 f"codex plugin add failed ({returncode}). Partial state recovery "
                 "required: Codex state reconciliation failed: "
@@ -888,7 +1282,7 @@ class LocalLifecycle:
             )
             print(f"Marketplace: {self.marketplace_file}", file=sys.stderr)
             print(f"Source symlink: {self.source_root}", file=sys.stderr)
-            return 1
+            return recovery_interruption_code or 1
 
         rollback_error: Exception | None = None
         try:
@@ -904,14 +1298,14 @@ class LocalLifecycle:
                 f"required: local rollback failed: {rollback_error}",
                 file=sys.stderr,
             )
-            return 1
+            return recovery_interruption_code or 1
 
         print(
             f"codex plugin add failed ({returncode}); Codex state reconciled and "
             "local changes rolled back.",
             file=sys.stderr,
         )
-        return returncode
+        return recovery_interruption_code or returncode
 
     def report_failed_compensation(
         self,
@@ -942,10 +1336,11 @@ class LocalLifecycle:
 
     def compensate_failed_uninstall(
         self,
-        original_error: Exception,
+        original_error: BaseException,
         state: MarketplaceState,
         marketplace_written_snapshot: MarketplaceSnapshot | None,
         source_preflight_snapshot: SourceSnapshot,
+        source_unlinked: bool,
     ) -> int:
         rollback_errors: list[str] = []
         if marketplace_written_snapshot is not None:
@@ -954,9 +1349,20 @@ class LocalLifecycle:
             except Exception as error:  # noqa: BLE001 - continue to Codex compensation.
                 rollback_errors.append(str(error))
 
+        compensation_source_snapshot = source_preflight_snapshot
+        if source_unlinked:
+            try:
+                compensation_source_snapshot = self.restore_removed_source(
+                    source_preflight_snapshot
+                )
+            except Exception as error:  # noqa: BLE001 - report incomplete rollback.
+                rollback_errors.append(str(error))
+
         try:
             compensation_marketplace_snapshot = (
-                self.require_compensation_add_contract(source_preflight_snapshot)
+                self.require_compensation_add_contract(
+                    compensation_source_snapshot
+                )
             )
         except Exception as contract_error:  # noqa: BLE001 - trust gates add.
             print(
@@ -987,7 +1393,7 @@ class LocalLifecycle:
 
         try:
             self.require_marketplace_snapshot(compensation_marketplace_snapshot)
-            self.require_source_snapshot(source_preflight_snapshot)
+            self.require_source_snapshot(compensation_source_snapshot)
         except Exception as contract_error:  # noqa: BLE001 - last-moment CAS gate.
             print(
                 "Partial state recovery required: compensation add was not run "
@@ -998,11 +1404,35 @@ class LocalLifecycle:
             return 1
 
         compensation_result = self.run_codex("add")
-        if compensation_result.interrupted or compensation_result.returncode != 0:
+        recovery_interruption_code = (
+            compensation_result.interruption_exit_code or 130
+            if compensation_result.interrupted
+            else None
+        )
+        try:
+            nested_interruption = self.restore_codex_state_with_contract(
+                True,
+                compensation_marketplace_snapshot,
+                compensation_source_snapshot,
+            )
+            recovery_interruption_code = (
+                nested_interruption or recovery_interruption_code
+            )
+        except Exception as error:  # noqa: BLE001 - do not claim compensation.
+            recovery_interruption_code = (
+                self.recovery_interruption_exit_code(error)
+                or recovery_interruption_code
+            )
+            print(
+                "Partial state recovery required: compensation add completed "
+                "without a verified installed/source-content poststate: "
+                f"{error}",
+                file=sys.stderr,
+            )
             self.report_failed_compensation(
                 original_error, rollback_errors, compensation_result
             )
-            return 1
+            return recovery_interruption_code or 1
 
         print(
             f"Local uninstall failed after codex plugin remove: {original_error}",
@@ -1024,10 +1454,11 @@ class LocalLifecycle:
             "Codex-owned installed configuration and cache.",
             file=sys.stderr,
         )
-        return 1
+        return recovery_interruption_code or 1
 
     def reconcile_interrupted_remove(
         self,
+        interruption_exit_code: int,
         installed_before: bool,
         source_preflight_snapshot: SourceSnapshot,
     ) -> int:
@@ -1053,7 +1484,7 @@ class LocalLifecycle:
             print(f"Expected source target: {self.bid_root}", file=sys.stderr)
             print(f"Then run: codex plugin add {PLUGIN_REF}", file=sys.stderr)
             print(f"Marketplace: {self.marketplace_file}", file=sys.stderr)
-            return 130
+            return interruption_exit_code
 
         if installed_now == installed_before:
             print(
@@ -1061,7 +1492,7 @@ class LocalLifecycle:
                 "state intact; local state remained unchanged.",
                 file=sys.stderr,
             )
-            return 130
+            return interruption_exit_code
 
         action = "add" if installed_before else "remove"
         try:
@@ -1074,38 +1505,108 @@ class LocalLifecycle:
                 f"validation: {error}",
                 file=sys.stderr,
             )
-            return 130
+            return interruption_exit_code
 
         reconcile_result = self.run_codex(action)
-        if not reconcile_result.interrupted and reconcile_result.returncode == 0:
+        recovery_interruption_code = (
+            reconcile_result.interruption_exit_code or 130
+            if reconcile_result.interrupted
+            else None
+        )
+        try:
+            nested_interruption = self.restore_codex_state_with_contract(
+                installed_before,
+                marketplace_snapshot,
+                source_preflight_snapshot,
+            )
+            recovery_interruption_code = (
+                nested_interruption or recovery_interruption_code
+            )
+        except Exception as error:  # noqa: BLE001 - verify recovery boundary.
+            recovery_interruption_code = (
+                self.recovery_interruption_exit_code(error)
+                or recovery_interruption_code
+            )
             print(
-                "Interrupted codex plugin remove was compensated: the installed "
-                "state was restored and local state remained unchanged.",
+                "Partial state recovery required: interrupted codex plugin "
+                f"remove compensation lacked a verified poststate: {error}",
                 file=sys.stderr,
             )
-            return 130
+            return recovery_interruption_code or interruption_exit_code
         print(
-            "Partial state recovery required: interrupted codex plugin remove "
-            f"could not restore installed state ({action} returned "
-            f"{reconcile_result.returncode}).",
+            "Interrupted codex plugin remove was compensated: the installed "
+            "state was restored and local state remained unchanged.",
             file=sys.stderr,
         )
-        desired_action = "add" if installed_before else "remove"
-        print(f"Run: codex plugin {desired_action} {PLUGIN_REF}", file=sys.stderr)
-        print(f"Marketplace: {self.marketplace_file}", file=sys.stderr)
-        print(f"Source symlink: {self.source_root}", file=sys.stderr)
-        return 130
+        return recovery_interruption_code or interruption_exit_code
+
+    def reconcile_unverified_zero_remove(
+        self,
+        installed_before: bool,
+        source_preflight_snapshot: SourceSnapshot,
+        postcondition_error: Exception,
+    ) -> int:
+        postcondition_interruption_code = self.recovery_interruption_exit_code(
+            postcondition_error
+        )
+        if not installed_before:
+            print(
+                "Partial state recovery required: codex plugin remove returned "
+                "zero, but the exact local/source content contract changed before "
+                f"its absent poststate could be verified: {postcondition_error}",
+                file=sys.stderr,
+            )
+            return postcondition_interruption_code or 1
+        try:
+            current_marketplace_snapshot = self.require_compensation_add_contract(
+                source_preflight_snapshot
+            )
+            recovery_interruption_code = self.restore_codex_state_with_contract(
+                True,
+                current_marketplace_snapshot,
+                source_preflight_snapshot,
+            )
+        except Exception as error:  # noqa: BLE001 - report unsafe/incomplete repair.
+            recovery_interruption_code = (
+                self.recovery_interruption_exit_code(error)
+                or postcondition_interruption_code
+            )
+            print(
+                "Partial state recovery required: codex plugin remove returned "
+                "zero without a verifiable absent poststate; compensation add "
+                "was not run or safely completed: "
+                f"{postcondition_error}; {error}",
+                file=sys.stderr,
+            )
+            print(f"Run: codex plugin add {PLUGIN_REF}", file=sys.stderr)
+            print(f"Marketplace: {self.marketplace_file}", file=sys.stderr)
+            print(f"Source symlink: {self.source_root}", file=sys.stderr)
+            return recovery_interruption_code or 1
+        print(
+            "codex plugin remove returned zero after the local contract changed; "
+            "the pre-operation installed state was restored and concurrent local "
+            "state was preserved.",
+            file=sys.stderr,
+        )
+        return recovery_interruption_code or postcondition_interruption_code or 1
 
     def rollback_local_only_uninstall(
         self,
-        original_error: Exception,
+        original_error: BaseException,
         state: MarketplaceState,
         marketplace_written_snapshot: MarketplaceSnapshot | None,
+        source_preflight_snapshot: SourceSnapshot,
+        source_unlinked: bool,
     ) -> int:
         rollback_errors: list[str] = []
         if marketplace_written_snapshot is not None:
             try:
                 self.restore_marketplace(state, marketplace_written_snapshot)
+            except Exception as error:  # noqa: BLE001 - report rollback failure.
+                rollback_errors.append(str(error))
+        if source_unlinked:
+            try:
+                self.restore_removed_source(source_preflight_snapshot)
             except Exception as error:  # noqa: BLE001 - report rollback failure.
                 rollback_errors.append(str(error))
         print(
@@ -1138,30 +1639,54 @@ class LocalLifecycle:
             )
 
         if not local_entry_present:
-            codex_result = self.run_codex("remove")
-            if codex_result.interrupted:
-                retry_result = self.run_codex("remove")
-                if retry_result.interrupted or retry_result.returncode != 0:
+            try:
+                codex_result = self.run_codex("remove")
+                if codex_result.interrupted or codex_result.returncode != 0:
+                    original_exit_code = (
+                        codex_result.interruption_exit_code
+                        if codex_result.interrupted
+                        else codex_result.returncode
+                    )
+                    retry_result = self.run_codex("remove")
+                    if retry_result.interrupted or retry_result.returncode != 0:
+                        print(
+                            "Partial state recovery required: abnormal direct "
+                            "remove could not converge the orphan/absent local "
+                            f"state ({retry_result.returncode}).",
+                            file=sys.stderr,
+                        )
+                        return (
+                            retry_result.interruption_exit_code
+                            if retry_result.interrupted
+                            else original_exit_code
+                        ) or 1
                     print(
-                        "Partial state recovery required: interrupted direct "
-                        "remove could not converge the orphan/absent local "
-                        f"state ({retry_result.returncode}).",
+                        "Retried abnormal direct remove and converged Codex-owned "
+                        "state to absent; local registration and source were "
+                        "already absent.",
                         file=sys.stderr,
                     )
-                    return 130
-                print(
-                    "Interrupted direct remove converged Codex-owned state to "
-                    "absent; local registration and source were already absent.",
-                    file=sys.stderr,
-                )
-                return 130
-            if codex_result.returncode != 0:
-                print(
-                    f"codex plugin remove failed ({codex_result.returncode}); "
-                    "local state was already absent.",
-                    file=sys.stderr,
-                )
-                return codex_result.returncode
+                    return original_exit_code or 1
+            except KeyboardInterrupt:
+                convergence_result = self.run_codex("remove")
+                if (
+                    convergence_result.interrupted
+                    or convergence_result.returncode != 0
+                ):
+                    print(
+                        "Partial state recovery required: termination during "
+                        "direct-remove result dispatch was followed by an "
+                        "abnormal convergence retry "
+                        f"({convergence_result.returncode}).",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        "Termination during direct-remove result dispatch was "
+                        "followed by an idempotent convergence retry.",
+                        file=sys.stderr,
+                    )
+                raise
             print(
                 "Ensured Codex-owned installed configuration and cache are "
                 "absent with "
@@ -1185,52 +1710,93 @@ class LocalLifecycle:
         codex_installed_before = self.codex_plugin_installed_with_contract(
             state.original_snapshot, source_preflight_snapshot
         )
-        codex_result = self.run_codex("remove")
-        if codex_result.interrupted:
-            return self.reconcile_interrupted_remove(
-                codex_installed_before, source_preflight_snapshot
-            )
-        if codex_result.returncode != 0:
-            try:
-                self.restore_codex_state_with_contract(
+        try:
+            codex_result = self.run_codex("remove")
+            if codex_result.interrupted:
+                return self.reconcile_interrupted_remove(
+                    codex_result.interruption_exit_code or 130,
                     codex_installed_before,
-                    state.original_snapshot,
                     source_preflight_snapshot,
                 )
-            except Exception as error:  # noqa: BLE001 - report incomplete recovery.
+            if codex_result.returncode != 0:
+                try:
+                    recovery_interruption_code = (
+                        self.restore_codex_state_with_contract(
+                            codex_installed_before,
+                            state.original_snapshot,
+                            source_preflight_snapshot,
+                        )
+                    )
+                except Exception as error:  # noqa: BLE001 - incomplete recovery.
+                    recovery_interruption_code = (
+                        self.recovery_interruption_exit_code(error)
+                    )
+                    print(
+                        f"codex plugin remove failed ({codex_result.returncode}); "
+                        f"Codex state reconciliation failed: {error}",
+                        file=sys.stderr,
+                    )
+                    return recovery_interruption_code or 1
                 print(
                     f"codex plugin remove failed ({codex_result.returncode}); "
-                    f"Codex state reconciliation failed: {error}",
+                    "Codex state reconciled and local state unchanged.",
                     file=sys.stderr,
                 )
-                return 1
-            print(
-                f"codex plugin remove failed ({codex_result.returncode}); "
-                "Codex state reconciled and local state unchanged.",
-                file=sys.stderr,
+                return recovery_interruption_code or codex_result.returncode
+        except KeyboardInterrupt as error:
+            self.reconcile_interrupted_remove(
+                143 if isinstance(error, ParentTermination) else 130,
+                codex_installed_before,
+                source_preflight_snapshot,
             )
-            return codex_result.returncode
+            raise
         codex_removed = codex_installed_before
-
         marketplace_written_snapshot: MarketplaceSnapshot | None = None
+        source_unlinked = False
         try:
-            self.require_source_snapshot(source_preflight_snapshot)
-            marketplace_written_snapshot = self.write_marketplace(
-                state.payload, state.original_mode, state.original_snapshot
-            )
-            self.require_source_snapshot(source_preflight_snapshot)
-            self.source_root.unlink()
-        except Exception as error:  # noqa: BLE001 - restore pre-operation state.
+            try:
+                recovery_interruption_code = self.restore_codex_state_with_contract(
+                    False, state.original_snapshot, source_preflight_snapshot
+                )
+            except Exception as error:  # noqa: BLE001 - exact contract required.
+                return self.reconcile_unverified_zero_remove(
+                    codex_installed_before, source_preflight_snapshot, error
+                )
+            if recovery_interruption_code is not None:
+                return self.reconcile_interrupted_remove(
+                    recovery_interruption_code,
+                    codex_installed_before,
+                    source_preflight_snapshot,
+                )
+            with defer_termination_signals():
+                self.require_source_snapshot(source_preflight_snapshot)
+                marketplace_written_snapshot = self.write_marketplace(
+                    state.payload, state.original_mode, state.original_snapshot
+                )
+            with defer_termination_signals():
+                self.require_source_snapshot(source_preflight_snapshot)
+                self.source_root.unlink()
+                source_unlinked = True
+        except BaseException as error:  # noqa: BLE001 - restore pre-operation state.
             if codex_removed:
-                return self.compensate_failed_uninstall(
+                recovery_result = self.compensate_failed_uninstall(
                     error,
                     state,
                     marketplace_written_snapshot,
                     source_preflight_snapshot,
+                    source_unlinked,
                 )
-            return self.rollback_local_only_uninstall(
-                error, state, marketplace_written_snapshot
-            )
+            else:
+                recovery_result = self.rollback_local_only_uninstall(
+                    error,
+                    state,
+                    marketplace_written_snapshot,
+                    source_preflight_snapshot,
+                    source_unlinked,
+                )
+            if isinstance(error, KeyboardInterrupt):
+                raise
+            return recovery_result
 
         if codex_installed_before:
             print(
@@ -1260,16 +1826,23 @@ def main() -> int:
         )
         return 2
     lifecycle = LocalLifecycle(Path(sys.argv[2]))
-    with lifecycle.lifecycle_lock():
-        return (
-            lifecycle.install()
-            if sys.argv[1] == "install"
-            else lifecycle.uninstall()
-        )
+    with parent_termination_handler():
+        with lifecycle.lifecycle_lock():
+            return (
+                lifecycle.install()
+                if sys.argv[1] == "install"
+                else lifecycle.uninstall()
+            )
 
 
 try:
     raise SystemExit(main())
+except ParentTermination as error:
+    print(
+        "Local plugin lifecycle terminated after transaction recovery.",
+        file=sys.stderr,
+    )
+    raise SystemExit(143) from error
 except KeyboardInterrupt as error:
     print(
         "Local plugin lifecycle interrupted before state could be changed safely.",
