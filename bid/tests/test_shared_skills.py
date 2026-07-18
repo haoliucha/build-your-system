@@ -42,27 +42,9 @@ CONCRETE_SCRIPT_REFERENCE = re.compile(
 )
 FORBIDDEN_HOST_PATTERNS = (
     (
-        "braced Claude plugin root",
-        re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}"),
-        "${CLAUDE_PLUGIN_ROOT}",
-        True,
-    ),
-    (
-        "unbraced Claude plugin root",
-        re.compile(r"(?<!\{)\$?CLAUDE_PLUGIN_ROOT\b(?!\})"),
-        "$CLAUDE_PLUGIN_ROOT",
-        True,
-    ),
-    (
-        "braced Codex plugin root",
-        re.compile(r"\$\{CODEX_PLUGIN_ROOT\}"),
-        "${CODEX_PLUGIN_ROOT}",
-        True,
-    ),
-    (
-        "unbraced Codex plugin root",
-        re.compile(r"(?<!\{)\$?CODEX_PLUGIN_ROOT\b(?!\})"),
-        "$CODEX_PLUGIN_ROOT",
+        "plugin root variable",
+        re.compile(r"\b(?:CLAUDE|CODEX)_PLUGIN_ROOT\b"),
+        "CLAUDE_PLUGIN_ROOT",
         True,
     ),
     ("Read tool", re.compile(r"\bRead\b"), "Read", False),
@@ -88,6 +70,15 @@ FORBIDDEN_HOST_PATTERNS = (
         False,
     ),
 )
+PLUGIN_ROOT_EXPANSION_FIXTURES = (
+    "${CLAUDE_PLUGIN_ROOT:-fallback}",
+    "${CODEX_PLUGIN_ROOT:+value}",
+    "${CLAUDE_PLUGIN_ROOT-fallback}",
+)
+PLUGIN_ROOT_NON_MATCH_FIXTURES = (
+    "MY_CLAUDE_PLUGIN_ROOT",
+    "CODEX_PLUGIN_ROOT_BACKUP",
+)
 
 
 class SharedSkillPortabilityTests(unittest.TestCase):
@@ -111,6 +102,21 @@ class SharedSkillPortabilityTests(unittest.TestCase):
         for label, pattern, fixture, _ in FORBIDDEN_HOST_PATTERNS:
             with self.subTest(label=label):
                 self.assertIsNotNone(pattern.search(fixture))
+        plugin_root_patterns = tuple(
+            pattern
+            for label, pattern, _, _ in FORBIDDEN_HOST_PATTERNS
+            if "plugin root" in label
+        )
+        for fixture in PLUGIN_ROOT_EXPANSION_FIXTURES:
+            with self.subTest(plugin_root_expansion=fixture):
+                self.assertTrue(
+                    any(pattern.search(fixture) for pattern in plugin_root_patterns)
+                )
+        for fixture in PLUGIN_ROOT_NON_MATCH_FIXTURES:
+            with self.subTest(plugin_root_non_match=fixture):
+                self.assertFalse(
+                    any(pattern.search(fixture) for pattern in plugin_root_patterns)
+                )
 
     def test_shared_markdown_has_no_forbidden_host_tokens(self):
         for path in self.skill_markdown():
