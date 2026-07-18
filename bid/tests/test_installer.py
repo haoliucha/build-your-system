@@ -1,4 +1,5 @@
 import ast
+import fcntl
 import json
 import os
 import stat
@@ -32,8 +33,10 @@ class InstallerTests(unittest.TestCase):
         fake_codex = fake_bin / "codex"
         fake_codex.write_text(
             """#!/usr/bin/env python3
+import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -51,6 +54,47 @@ elif effect == "lock-marketplace-parent":
     Path(os.environ["MARKETPLACE_FILE"]).parent.chmod(0o500)
 elif effect == "lock-source-parent":
     Path(os.environ["SOURCE_ROOT"]).parent.chmod(0o500)
+elif effect == "chmod-marketplace":
+    Path(os.environ["MARKETPLACE_FILE"]).chmod(0o600)
+elif effect == "replace-marketplace-identical":
+    marketplace = Path(os.environ["MARKETPLACE_FILE"])
+    original_mode = marketplace.stat().st_mode & 0o777
+    temp_fd, temp_name = tempfile.mkstemp(dir=marketplace.parent)
+    with os.fdopen(temp_fd, "wb") as temp_file:
+        temp_file.write(marketplace.read_bytes())
+        temp_file.flush()
+        os.fsync(temp_file.fileno())
+        os.fchmod(temp_file.fileno(), original_mode)
+    os.replace(temp_name, marketplace)
+elif effect == "swap-source":
+    source = Path(os.environ["SOURCE_ROOT"])
+    source.unlink()
+    source.symlink_to(Path(os.environ["OTHER_SOURCE"]))
+
+effect_state_file = os.environ.get("CODEX_EFFECT_STATE")
+if effect_state_file and effect:
+    marketplace = Path(os.environ["MARKETPLACE_FILE"])
+    source = Path(os.environ["SOURCE_ROOT"])
+    marketplace_stat = marketplace.lstat()
+    source_stat = source.lstat()
+    Path(effect_state_file).write_text(
+        json.dumps(
+            {
+                "marketplace": {
+                    "dev": marketplace_stat.st_dev,
+                    "ino": marketplace_stat.st_ino,
+                    "mode": marketplace_stat.st_mode & 0o777,
+                    "bytes_hex": marketplace.read_bytes().hex(),
+                },
+                "source": {
+                    "dev": source_stat.st_dev,
+                    "ino": source_stat.st_ino,
+                    "target": os.readlink(source),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
 if action == "add" and os.environ.get("CODEX_ADD_RESTORE_PERMISSIONS") == "1":
     Path(os.environ["MARKETPLACE_FILE"]).parent.chmod(0o700)
@@ -73,6 +117,8 @@ raise SystemExit(int(returncode))
             MARKETPLACE_FILE=str(self.marketplace_file),
             SOURCE_ROOT=str(self.source_root),
         )
+        self.effect_state = self.home / "codex-effect-state.json"
+        self.env["CODEX_EFFECT_STATE"] = str(self.effect_state)
 
     @property
     def source_root(self):
@@ -112,6 +158,13 @@ raise SystemExit(int(returncode))
         concurrent_file = self.home / "concurrent-marketplace.json"
         concurrent_file.write_bytes(data)
         self.env["CONCURRENT_MARKETPLACE_FILE"] = str(concurrent_file)
+
+    def read_effect_state(self):
+        return json.loads(self.effect_state.read_text(encoding="utf-8"))
+
+    @property
+    def lifecycle_lock_file(self):
+        return self.marketplace_file.with_name(f".{self.marketplace_file.name}.lock")
 
     def test_missing_paths_seed_marketplace_and_register_plugin_once(self):
         result = self.run_installer()
@@ -598,6 +651,140 @@ raise SystemExit(int(returncode))
         self.assertEqual(self.source_root.lstat().st_ino, source_inode)
         self.assertEqual(self.source_root.readlink(), BID_ROOT)
 
+    def test_uninstall_same_target_source_replacement_blocks_compensation_add(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "custom": {"preserve": True},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        self.marketplace_file.chmod(0o640)
+        original_bytes = self.marketplace_file.read_bytes()
+        original_inode = self.marketplace_file.stat().st_ino
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        self.env["OTHER_SOURCE"] = str(BID_ROOT)
+        self.env["CODEX_REMOVE_EFFECT"] = "swap-source"
+
+        result = self.run_installer("--uninstall")
+
+        effect_state = self.read_effect_state()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("partial", result.stderr.lower())
+        self.assertIn("source", result.stderr.lower())
+        self.assertIn("not run", result.stderr.lower())
+        self.assertIn(
+            "codex plugin add bid@local-build-your-system", result.stderr
+        )
+        self.assertEqual(
+            self.codex_calls(), ["plugin remove bid@local-build-your-system"]
+        )
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(stat.S_IMODE(self.marketplace_file.stat().st_mode), 0o640)
+        self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
+        self.assertTrue(self.source_root.is_symlink())
+        self.assertEqual(self.source_root.readlink(), BID_ROOT)
+        self.assertEqual(
+            self.source_root.lstat().st_ino, effect_state["source"]["ino"]
+        )
+
+    def test_uninstall_chmod_only_concurrent_edit_is_not_clobbered(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        original_bytes = self.marketplace_file.read_bytes()
+        original_inode = self.marketplace_file.stat().st_ino
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        source_inode = self.source_root.lstat().st_ino
+        self.env["CODEX_REMOVE_EFFECT"] = "chmod-marketplace"
+
+        result = self.run_installer("--uninstall")
+
+        effect_state = self.read_effect_state()["marketplace"]
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("concurrent", result.stderr.lower())
+        self.assertEqual(
+            self.codex_calls(),
+            [
+                "plugin remove bid@local-build-your-system",
+                "plugin add bid@local-build-your-system",
+            ],
+        )
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(stat.S_IMODE(self.marketplace_file.stat().st_mode), 0o600)
+        self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
+        self.assertEqual(self.marketplace_file.stat().st_ino, effect_state["ino"])
+        self.assertEqual(self.source_root.lstat().st_ino, source_inode)
+        self.assertEqual(self.source_root.readlink(), BID_ROOT)
+
+    def test_uninstall_identical_byte_replacement_is_not_clobbered(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        self.marketplace_file.chmod(0o640)
+        original_bytes = self.marketplace_file.read_bytes()
+        original_inode = self.marketplace_file.stat().st_ino
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        source_inode = self.source_root.lstat().st_ino
+        self.env["CODEX_REMOVE_EFFECT"] = "replace-marketplace-identical"
+
+        result = self.run_installer("--uninstall")
+
+        effect_state = self.read_effect_state()["marketplace"]
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("concurrent", result.stderr.lower())
+        self.assertEqual(
+            self.codex_calls(),
+            [
+                "plugin remove bid@local-build-your-system",
+                "plugin add bid@local-build-your-system",
+            ],
+        )
+        self.assertNotEqual(effect_state["ino"], original_inode)
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(stat.S_IMODE(self.marketplace_file.stat().st_mode), 0o640)
+        self.assertEqual(self.marketplace_file.stat().st_ino, effect_state["ino"])
+        self.assertEqual(self.source_root.lstat().st_ino, source_inode)
+        self.assertEqual(self.source_root.readlink(), BID_ROOT)
+
+    def test_lifecycle_lock_contention_aborts_without_local_mutation(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [],
+        }
+        self.write_marketplace(existing)
+        self.marketplace_file.chmod(0o640)
+        original_bytes = self.marketplace_file.read_bytes()
+        original_inode = self.marketplace_file.stat().st_ino
+        lock_fd = os.open(self.lifecycle_lock_file, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            result = self.run_installer()
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("lifecycle", result.stderr.lower())
+        self.assertIn("lock", result.stderr.lower())
+        self.assertIn(str(self.lifecycle_lock_file), result.stderr)
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(stat.S_IMODE(self.marketplace_file.stat().st_mode), 0o640)
+        self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
+        self.assertFalse(self.source_root.exists())
+        self.assertFalse(self.source_root.is_symlink())
+        self.assertEqual(self.codex_calls(), [])
+
     def test_uninstall_failed_compensation_reports_recovery_command_and_paths(self):
         existing = {
             "name": "local-build-your-system",
@@ -661,6 +848,8 @@ raise SystemExit(int(returncode))
         self.assertIn("Codex 自己管理的已安装配置与缓存", text)
         self.assertIn("Claude 状态", text)
         self.assertIn("项目内 `.claude/memory/`", text)
+        self.assertIn("`.marketplace.json.lock`", text)
+        self.assertIn("补偿安装不会执行", text)
         stale_claim = "Codex/Claude cache 和项目内 `.claude/memory/` 永不删除"
         self.assertNotIn(stale_claim, text)
 

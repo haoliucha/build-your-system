@@ -27,7 +27,7 @@ cd "$REPO_ROOT/bid"
 zsh scripts/install-codex-local.sh
 ```
 
-安装脚本先完整预检 `~/.agents/plugins/marketplace.json`：文件必须是普通文件、JSON 结构有效、`name` 必须精确等于 `local-build-your-system`，已有 `bid` 条目也必须与本插件定义完全一致。预检通过后才会建立 `~/plugins/bid` 到当前 `"$REPO_ROOT/bid"` 的符号链接、登记 marketplace，并运行 `codex plugin add bid@local-build-your-system`。如果 Codex CLI 安装失败，脚本只回滚本次创建的链接和 marketplace 改动；既有 marketplace 会恢复原始字节和权限，其他条目不受影响。安装完成后请新建一个 Codex 任务，让技能索引从新安装版本加载。
+安装脚本会在 marketplace 同目录的稳定文件 `.marketplace.json.lock` 上取得非阻塞独占锁，并持锁完成预检、Codex CLI、写入和回滚；若另一安装或卸载仍持有该锁，本次操作会在任何本地修改前退出。随后脚本完整预检 `~/.agents/plugins/marketplace.json`：文件必须是普通文件、JSON 结构有效、`name` 必须精确等于 `local-build-your-system`，已有 `bid` 条目也必须与本插件定义完全一致。预检通过后才会建立 `~/plugins/bid` 到当前 `"$REPO_ROOT/bid"` 的符号链接、登记 marketplace，并运行 `codex plugin add bid@local-build-your-system`。如果 Codex CLI 安装失败，脚本只回滚本次创建的链接和 marketplace 改动；既有 marketplace 会恢复原始字节和权限，其他条目不受影响。安装完成后请新建一个 Codex 任务，让技能索引从新安装版本加载。
 
 ## 六个共享工作流
 
@@ -156,7 +156,9 @@ zsh scripts/install-codex-local.sh --uninstall
 
 脚本会先验证 marketplace 名称、精确 `bid` 条目和 `~/plugins/bid` 的实际目标，再调用底层 `codex plugin remove bid@local-build-your-system`。这条 Codex 命令会删除 Codex 自己管理的已安装配置与缓存；这是卸载的预期行为。它不会删除源码 checkout、Claude 状态、项目内 `.claude/memory/`，也不会改动无关的 marketplace 条目。
 
-如果 Codex CLI 移除失败，marketplace 与链接保持原样；成功后脚本才原子移除单个 `bid` 条目并 unlink 这个精确链接，保留其他 marketplace key、插件及顺序。若后续 marketplace 写入或 unlink 失败，脚本会尽力恢复本地字节、权限和链接，并执行 `codex plugin add bid@local-build-your-system` 恢复 Codex 已安装状态；该次卸载仍以非零状态退出。若补偿安装也失败，错误信息会给出精确恢复命令以及 marketplace、源码链接和源码 checkout 路径，不会宣称卸载成功。若本地条目和链接都已不存在，脚本给出明确的 already absent 消息并幂等退出；遇到残缺状态、并发修改或错误目标则停止，不做猜测性清理或覆盖。
+如果 Codex CLI 移除失败，marketplace 与链接保持原样；成功后脚本才原子移除单个 `bid` 条目并 unlink 这个精确链接，保留其他 marketplace key、插件及顺序。marketplace 的存在性、文件类型、设备与 inode、权限、mtime、大小和字节必须与预检快照一致；即使只是 chmod 或用相同字节替换了文件，脚本也会停止而不覆盖并发修改。
+
+若后续 marketplace 写入或 unlink 失败，脚本会尽力恢复本次拥有的本地改动，并在补偿前再次确认 `~/plugins/bid` 仍是预检时同一个 inode、仍精确指向当前源码 checkout。验证通过才执行 `codex plugin add bid@local-build-your-system` 恢复 Codex 已安装状态；该次卸载仍以非零状态退出。若源码链接已被并发替换、改指或删除，补偿安装不会执行，错误信息会说明 Codex 仍处于已移除状态，并要求先检查或修复精确链接，再运行同一条 add 命令。若补偿安装本身失败，错误信息也会给出精确恢复命令以及 marketplace、源码链接和源码 checkout 路径，不会宣称卸载成功。若本地条目和链接都已不存在，脚本给出明确的 already absent 消息并幂等退出；遇到残缺状态、并发修改或错误目标则停止，不做猜测性清理或覆盖。
 
 ## 安全边界
 
