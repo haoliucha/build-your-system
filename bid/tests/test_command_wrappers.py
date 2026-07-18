@@ -1,5 +1,7 @@
 import re
+import tempfile
 import unittest
+from pathlib import Path
 
 from helpers import BID_ROOT
 
@@ -39,6 +41,69 @@ description: "一键口径与红线速查:读 memory+生成器源,出锁定口�
 argument-hint: ""
 ---""",
 }
+
+SHARED_CLAUDE_ROUTE = re.compile(
+    r"/bid:(?P<command>init|meeting|sync|handoff|review|status)"
+    r"(?![\w-])"
+)
+CLAUDE_CODE_ONLY_EXAMPLE_LABEL = re.compile(
+    r"(?:"
+    r"Claude Code(?:[- ]only)\s+(?:example|示例)"
+    r"|Claude Code\s*(?:专用|独有|限定)\s*(?:example|示例)"
+    r"|仅(?:限|供)?\s*Claude Code(?:\s*的)?\s*(?:example|示例)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def contains_exact_route(line, route):
+    return re.search(
+        rf"{re.escape(route)}(?![\w-])",
+        line,
+    ) is not None
+
+
+def is_adjacent_host_entry_pair(lines, line_index, command, skill):
+    claude_entry = re.fullmatch(
+        rf"[ \t]*-[ \t]+Claude(?: Code)?[：:][ \t]*"
+        rf"`/bid:{re.escape(command)}(?P<arguments>[^`]*)`[ \t]*",
+        lines[line_index],
+    )
+    if claude_entry is None or line_index + 1 >= len(lines):
+        return False
+    codex_entry = re.fullmatch(
+        rf"[ \t]*-[ \t]+Codex[：:][ \t]*"
+        rf"`\$bid:{re.escape(skill)}(?P<arguments>[^`]*)`[ \t]*",
+        lines[line_index + 1],
+    )
+    return (
+        codex_entry is not None
+        and claude_entry.group("arguments") == codex_entry.group("arguments")
+    )
+
+
+def assert_shared_routes_are_safe(markdown_files):
+    violations = []
+    for path in markdown_files:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line_index, line in enumerate(lines):
+            for match in SHARED_CLAUDE_ROUTE.finditer(line):
+                command = match.group("command")
+                skill = COMMAND_TO_SKILL[command]
+                claude_route = f"/bid:{command}"
+                codex_route = f"$bid:{skill}"
+                if contains_exact_route(line, codex_route):
+                    continue
+                if is_adjacent_host_entry_pair(lines, line_index, command, skill):
+                    continue
+                if CLAUDE_CODE_ONLY_EXAMPLE_LABEL.search(line) is not None:
+                    continue
+                violations.append(
+                    f"{path}:{line_index + 1}: unpaired shared workflow route "
+                    f"{claude_route}"
+                )
+    if violations:
+        raise AssertionError("\n".join(violations))
 
 
 class ClaudeCommandWrapperTests(unittest.TestCase):
@@ -89,22 +154,60 @@ class ClaudeCommandWrapperTests(unittest.TestCase):
 
 
 class SharedWorkflowRouteTests(unittest.TestCase):
-    def test_first_route_in_each_shared_document_is_dual_host(self):
+    def test_every_route_in_shared_markdown_is_host_safe(self):
         markdown_files = sorted((BID_ROOT / "skills").glob("**/*.md"))
-        for path in markdown_files:
-            lines = path.read_text(encoding="utf-8").splitlines()
-            for command, skill in COMMAND_TO_SKILL.items():
-                claude_route = f"/bid:{command}"
-                codex_route = f"$bid:{skill}"
-                first_route_line = next(
-                    (line for line in lines if claude_route in line), None
-                )
-                if first_route_line is None:
-                    continue
-                with self.subTest(
-                    path=path.relative_to(BID_ROOT), command=command
-                ):
-                    self.assertIn(codex_route, first_route_line)
+        assert_shared_routes_are_safe(markdown_files)
+
+    def test_later_unpaired_route_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fixture.md"
+            path.write_text(
+                "---\n"
+                "description: Use when `/bid:sync` / `$bid:bid-sync`\n"
+                "---\n"
+                "\n"
+                "Later route: `/bid:sync`\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                AssertionError, r"fixture\.md:5.*unpaired.*\/bid:sync"
+            ):
+                assert_shared_routes_are_safe([path])
+
+    def test_later_route_with_wrong_codex_pair_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fixture.md"
+            path.write_text(
+                "---\n"
+                "description: Use when `/bid:sync` / `$bid:bid-sync`\n"
+                "---\n"
+                "\n"
+                "Later route: `/bid:sync` / `$bid:bid-review`\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                AssertionError, r"fixture\.md:5.*unpaired.*\/bid:sync"
+            ):
+                assert_shared_routes_are_safe([path])
+
+    def test_adjacent_host_entry_pair_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fixture.md"
+            path.write_text(
+                "- Claude：`/bid:sync [口径变更描述]`\n"
+                "- Codex：`$bid:bid-sync [口径变更描述]`\n",
+                encoding="utf-8",
+            )
+            assert_shared_routes_are_safe([path])
+
+    def test_explicit_claude_code_only_example_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fixture.md"
+            path.write_text(
+                "Claude Code-only example: `/bid:sync 示例值`\n",
+                encoding="utf-8",
+            )
+            assert_shared_routes_are_safe([path])
 
     def test_codex_is_never_sent_to_a_claude_slash_command(self):
         codex_slash_route = re.compile(r"Codex\s*[：:]?\s*`?/bid:")
