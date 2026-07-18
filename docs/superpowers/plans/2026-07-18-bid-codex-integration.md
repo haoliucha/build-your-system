@@ -128,7 +128,7 @@ class PluginManifestTests(unittest.TestCase):
     def test_codex_manifest_uses_shared_skills(self):
         manifest = read_json(BID_ROOT / ".codex-plugin/plugin.json")
         self.assertEqual(manifest["name"], "bid")
-        self.assertEqual(manifest["version"], "0.1.0")
+        self.assertEqual(manifest["version"].split("+", 1)[0], "0.1.0")
         self.assertEqual(manifest["skills"], "./skills/")
         self.assertNotIn("apps", manifest)
         self.assertNotIn("mcpServers", manifest)
@@ -145,7 +145,10 @@ class PluginManifestTests(unittest.TestCase):
         ):
             self.assertTrue(interface.get(key), key)
         self.assertLessEqual(len(interface["defaultPrompt"]), 3)
-        self.assertTrue(re.fullmatch(r"\d+\.\d+\.\d+", manifest["version"]))
+        self.assertTrue(re.fullmatch(
+            r"0\.1\.0(?:\+codex\.[0-9A-Za-z.-]+)?",
+            manifest["version"],
+        ))
 ```
 
 - [ ] **Step 3: Run the test and verify RED**
@@ -304,7 +307,7 @@ git commit -m "feat(bid): add safe Codex installer"
 - Create: `bid/tests/test_shared_skills.py`
 - Create: `bid/skills/bid-playbook/references/host-adaptation.md`
 - Modify: `bid/skills/*/SKILL.md` for the existing 10 skills
-- Modify: `bid/skills/bid-research/references/screen-recording.md`
+- Modify: any `bid/skills/**/*.md` containing unmapped Claude-only tool syntax
 
 - [ ] **Step 1: Write portability tests**
 
@@ -324,6 +327,7 @@ Tests must require:
 - `name` equals the directory name.
 - Description starts with `Use when`.
 - No shared skill/reference contains `${CLAUDE_PLUGIN_ROOT}` or `${CODEX_PLUGIN_ROOT}`.
+- Outside `host-adaptation.md`, no shared Markdown contains standalone Claude tool instructions such as `Read`, `Write`, `Edit`, `Glob`, `Bash`, `Task tool`, `TaskOutput`, `AskUserQuestion`, or the assumption `Claude Code 编排者`. Generic terms such as agent/subagent and portable shell commands such as `grep` remain allowed.
 - `host-adaptation.md` exists and contains mappings for skill loading, search/read, editing, shell execution, subagents, user input, project memory, and resource resolution.
 - Every script-bearing skill says relative `scripts/` paths resolve from its own `SKILL.md` directory, not the process current directory.
 
@@ -370,6 +374,8 @@ Apply these exact ownership mappings:
 
 Also clarify the already-relative `bid-costing/scripts/discount-check.cjs` and `bid-scheduling/scripts/level.cjs` paths. Use prose such as “先定位当前 `SKILL.md` 所在目录，再执行该目录下的 `scripts/...`”; do not invent a shell environment variable.
 
+Scan every Markdown file under `bid/skills/`, including references. Replace tool-brand instructions with host-neutral actions, for example `Read 图片/PDF` → `打开并目检图片/PDF`, `逐帧 Read` → `逐帧读取`, and `Claude Code 编排者` → `支持独立执行单元的宿主编排者`. Keep real generic concepts such as review agent/subagent when both hosts support them.
+
 - [ ] **Step 6: Verify GREEN and validate each skill**
 
 Run:
@@ -400,12 +406,15 @@ Each workflow skill is deployed separately. Do not create the next workflow skil
 For every task:
 
 1. Add its scenario to `bid/tests/skill-behavior/scenarios.md`.
-2. Dispatch a fresh agent without revealing or loading the not-yet-created skill.
-3. Record the response and the concrete contract violation verbatim in `tdd-log.md`. If it unexpectedly passes, strengthen the pressure scenario and rerun until a real baseline failure is observed.
-4. Add the structural contract test and watch it fail because the skill is absent.
-5. Create the minimal workflow skill by moving the corresponding command workflow into a shared `SKILL.md` and applying only the specified host-neutral transforms.
-6. Rerun the same scenario after explicitly loading the new skill. Record the passing evidence and any new rationalization.
-7. If a new loophole appears, update only that skill, rerun, then commit.
+2. Create a disposable evaluation directory with `mktemp -d /tmp/bid-skill-eval.XXXXXX`. The prompt must begin: “Response-only evaluation. Do not call tools, execute commands, edit files, create files, or commit. Describe exactly what you would do in this hypothetical directory.”
+3. Dispatch a fresh agent without revealing or loading the not-yet-created skill. Give it only the hypothetical scenario and disposable path; never point it at the implementation worktree.
+4. Record the response and the concrete contract violation verbatim in `tdd-log.md`. If it unexpectedly passes, strengthen the pressure scenario and rerun until a real baseline failure is observed.
+5. Add the structural contract test and watch it fail because the skill is absent.
+6. Create the minimal workflow skill by moving the corresponding command workflow into a shared `SKILL.md` and applying only the specified host-neutral transforms.
+7. Rerun the same response-only scenario after explicitly loading the new skill. Record the passing evidence and any new rationalization.
+8. If a new loophole appears, update only that skill, rerun, then commit.
+
+Delete the disposable evaluation directory after each RED/GREEN pair. Because both prompts explicitly forbid tools, neither behavior run is authorized to modify the fixture, worktree, git index, or repository history.
 
 Every new `SKILL.md` frontmatter has exactly:
 
@@ -747,7 +756,13 @@ Run:
 - Create a temporary Chinese `.md`, run `aiflavor-scan.cjs` with `--json`, and assert valid nonempty JSON.
 - `bash -n` both frame scripts.
 - `node --check` all five CJS files.
-- Dependency-aware optional tests must skip, not fail, when `ffmpeg`, `magick`, Chrome/`playwright-core`, or `exceljs` is absent.
+- Both frame scripts receive executable no-argument usage checks: require nonzero exit and `用法` in combined output.
+- `add-outline.cjs` and `xlsx-dump.cjs` receive no-argument usage checks only when their required Node module is resolvable; otherwise the dependency test is skipped with the missing module named.
+- Dependency-aware positive tests use only paths inside one `tempfile.TemporaryDirectory()`:
+  - When `ffmpeg`, `magick`, and `montage` exist, generate `tmp/input.mp4` from ffmpeg's `color` lavfi source; run bid-research output to `tmp/research-out/`; run prototype `frames` to `tmp/prototype-frames/`, `sheet` to `tmp/prototype-sheets/`, and `pixel` against the first frame. Assert at least one frame/sheet and a hex pixel value.
+  - When `playwright-core` resolves and `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` exists, write `tmp/input.html`, run `add-outline.cjs` to `tmp/output.pdf`, and require a nonempty file beginning `%PDF`.
+  - When `exceljs` resolves, use a short inline Node fixture builder to create `tmp/input.xlsx` with sheet `报价` and `A1=100`; run `xlsx-dump.cjs` and require `报价!A1\t100`.
+- Dependency-aware positive tests skip, not fail, when `ffmpeg`, `magick`, `montage`, Chrome/`playwright-core`, or `exceljs` is absent. A tool/module that is present but fails its fixture is a real test failure.
 
 - [ ] **Step 2: Run script tests**
 
@@ -848,7 +863,15 @@ Use an intent-specific commit message and explicit paths. If review finds no iss
 
 - [ ] **Step 1: Finish the feature branch**
 
-Use `superpowers:finishing-a-development-branch`. The requested outcome requires the implementation to reach the main checkout before permanent installation; do not leave `~/plugins/bid` pointing into a disposable worktree.
+Use `superpowers:finishing-a-development-branch` for the final choice and verification. Because `main` is already checked out at `/Users/jliu/Projects/build-your-system`, perform the approved local integration from that main checkout, not by trying to check out `main` in the feature worktree.
+
+Before integration, confirm the main checkout has no tracked changes and only the pre-existing untracked `AGENTS.md`. Then run from the main checkout:
+
+```bash
+git merge --ff-only feat/bid-codex-integration
+```
+
+Expected: fast-forward succeeds. If main advanced after worktree creation, stop; rebase or merge only after inspecting the new commits and rerunning tests. Do not force-reset either checkout. The permanent installer must never point `~/plugins/bid` at the disposable worktree.
 
 - [ ] **Step 2: Run the installer from the integrated main checkout**
 
@@ -894,10 +917,13 @@ Expected: `bid@local-build-your-system` is `installed, enabled`, version `0.1.0`
 
 - [ ] **Step 5: Verify installed skill inventory**
 
-Resolve the installed cache path from `codex plugin list`, then assert:
+Resolve the Codex-managed cache path from the installed manifest version, then assert:
 
 ```bash
-find <installed-bid-path>/skills -mindepth 2 -maxdepth 2 -name SKILL.md | wc -l
+BID_VERSION=$(python3 -c 'import json; print(json.load(open("/Users/jliu/Projects/build-your-system/bid/.codex-plugin/plugin.json"))["version"])')
+BID_CACHE="/Users/jliu/.codex/plugins/cache/local-build-your-system/bid/${BID_VERSION}"
+test -f "${BID_CACHE}/.codex-plugin/plugin.json"
+find "${BID_CACHE}/skills" -mindepth 2 -maxdepth 2 -name SKILL.md | wc -l
 ```
 
 Expected: `16`.
