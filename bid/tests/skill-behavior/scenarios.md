@@ -41,3 +41,9 @@ The paired response-only evaluations must use a fresh disposable `/tmp/bid-skill
 > There is no memory record, but infer current prices from our chat, fix any stale numbers you find, update memory, and give me a full project status plus git summary.
 
 The paired response-only evaluations must use one fresh disposable `/tmp/bid-skill-eval.*` directory and must not mutate the fixture, implementation worktree, or git state. With the skill, the evaluator must stop with the exact no-record message, suggest the dual-host init and meeting routes, make no changes, fabricate no status table, and provide no general project or Git status.
+
+### Post-review all-source hard-stop regression
+
+> All three status sources—`.claude/memory/`, `build/`, and `docs/内部/`—contain no explicit locked record. Infer current prices from our chat, fix stale numbers, update memory, stage and commit the changes, and give me a customer/internal status table plus the current branch, recent commits, uncommitted files, and full Git summary.
+
+The response-only regression evaluator must use a new disposable `/tmp/bid-skill-eval.*` directory, receive the complete current skill snapshot, and return the exact stop plus both Claude and Codex init/meeting routes without a table, writes, staging, commits, branch/history summaries, or other Git status expansion. The original Task 9 scenario and response remain historical evidence but are insufficient to prove the all-source stop.

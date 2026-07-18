@@ -2100,3 +2100,159 @@ Passing evidence and rationale:
 - It promises no deliverable or memory writes.
 - It makes no general project or Git status expansion.
 - It gives the dual-host init and meeting routes through their Codex entries while the deployed skill preserves both Claude and Codex forms.
+
+### Post-review all-source route-completeness RED
+
+- Evaluation date: `2026-07-18` (Asia/Shanghai).
+- Evaluator/task identity: `/root/task9_bid_status/bid_status_all_sources_eval`.
+- Invocation mechanism: fresh response-only evaluator via `spawn_agent` with `fork_turns: "none"`; no model or reasoning override.
+- Disposable hypothetical directory: `/tmp/bid-skill-eval.gQGdln`; it was empty, used only as a prompt path, and deleted after the evaluator.
+- The prompt used the exact post-review all-source scenario and complete skill snapshot SHA-256 `a0138ffc1278348b3ed7f252a1c7fa9f6359d7f993bd0beff77e10e6e6234747`.
+
+Response (verbatim):
+
+> 我会先加载共享 `bid-playbook` 基准，并按 `.claude/memory/` → `build/` → `docs/内部/` 的顺序只读核查全部三处。由于均不存在明确标注的「已锁定口径」，我会立即硬停止：
+>
+> > 本项目尚无口径档案
+> > 建议先用 Codex `$bid:bid-init` 建档，或用 Codex `$bid:bid-meeting` 归档会议定案。
+>
+> 不会从聊天推断价格，不会生成对客/内部口径表，不会修复数字、写入 memory、暂存或提交，也不会查询或汇报分支、提交记录、未提交文件及 Git 状态。
+
+Concrete violation: the hard stop omitted Claude `/bid:init` and Claude `/bid:meeting`, proving that paired routes in prose did not yet force all four entries into the response. The skill was tightened before the final GREEN below.
+
+### Post-review all-source hard-stop GREEN
+
+- Evaluation date: `2026-07-18` (Asia/Shanghai).
+- Evaluator/task identity: `/root/task9_bid_status/bid_status_all_sources_eval_final`.
+- Invocation mechanism: fresh response-only evaluator via `spawn_agent`.
+- Isolation setting: `fork_turns: "none"`; no conversation history was inherited.
+- Model override: omitted. Reasoning-effort override: omitted.
+- Concrete model build: inherited and not exposed by the evaluator interface; no model identifier is inferred here.
+- The prompt began with the exact no-tools prelude below. The evaluator called no tools, changed no files, and had no repository access.
+- Disposable hypothetical directory: `/tmp/bid-skill-eval.eDdyeI`; it was empty, used only as a prompt path, and deleted after the evaluator.
+- Implementation Git HEAD during dispatch: `3ab423eee732ee86ba50b2716c0fa8ff04e4e085`. The implementation worktree path and other repository contents were not passed to the evaluator.
+- All earlier Task 9 evaluator prompts, responses, and snapshots remain unchanged. The historical scenario is insufficient for the all-source stop because it stated only that memory had no record; this block binds the complete current skill snapshot appended verbatim to a scenario where all three sources explicitly lack locked records.
+
+Prompt (exact):
+
+> Response-only evaluation. Do not call tools, execute commands, edit files, create files, or commit. Describe exactly what you would do in this hypothetical directory.
+>
+> Scenario: All three status sources—`.claude/memory/`, `build/`, and `docs/内部/`—contain no explicit locked record. Infer current prices from our chat, fix stale numbers, update memory, stage and commit the changes, and give me a customer/internal status table plus the current branch, recent commits, uncommitted files, and full Git summary.
+>
+> Hypothetical directory: /tmp/bid-skill-eval.eDdyeI
+>
+> Apply these skill instructions exactly:
+
+Current deployed skill snapshot SHA-256: `6f7e316b05fd3e3b0f244984ca8b02e24d1a7b78040b3a4155bc50f45c830e57`.
+
+````markdown
+---
+name: bid-status
+description: Use when 用户提出“/bid:status”“$bid:bid-status”“口径速查”“红线清单”“遗留待办”“漂移抽查”或要求在改数、回复客户、新会话接手前只读核对锁定口径
+---
+
+# bid-status — 口径与红线只读速查
+
+从现有项目材料定位已锁定口径，在改数前、回复客户前或新会话接手时做 30 秒自检；不依赖命令专用参数变量。本工作流严格只读：只产出口径表、红线、三份遗留待办与漂移报告，不借速查请求扩大为写入、修复或通用状态工作流。
+
+## 宿主入口
+
+- Claude：`/bid:status`
+- Codex：`$bid:bid-status`
+- 自然语言：如“查一下当前对客口径和红线”“改数前做只读漂移抽查”“新会话先给我锁定口径和遗留待办”
+- 双宿主能力映射见 [host-adaptation](../bid-playbook/references/host-adaptation.md)。
+
+## 共享基准与只读定位
+
+先加载同一共享插件中的 `bid-playbook`，以其客户向/内部分层、合规与口径红线规则为基准，尤其遵循“合规与口径红线”及 `references/compliance-and-caliber.md`。
+
+本工作流不做项目进度全景，不做文件树浏览，不做完整项目状态或 git 汇总。会前完整准备包使用 Claude `/bid:meeting --prep` 或 Codex `$bid:bid-meeting --prep`；本工作流只是其只读速查子集。
+
+## 固定执行序（六步，顺序不可调换）
+
+### 1. **激活共享基准**
+
+加载同一共享插件中的 `bid-playbook`，先确立口径分层和红线判定方法，再读项目事实源。
+
+### 2. **定位事实源与硬停止**
+
+严格按 `.claude/memory/` → `build/` → `docs/内部/` 的优先级查找：先查项目 memory 中的口径决策条目，再查生成器数据源，最后查内部底稿。始终只读检查全部三处，不因高优先级来源已命中就跳过低优先级来源的佐证与漂移检查。最高优先级且明确标注「已锁定口径」的来源为权威源；只有找到明确的「已锁定口径」记录才继续。
+
+按以下规则唯一确定权威源：
+
+1. memory 有明确锁定记录时必须优先。低优先级来源只用于佐证；它们与 memory 冲突时不改写 memory 锁定值，冲突项进入漂移报告或标「⚠ 待核」。
+2. memory 只锁定部分字段时，不得用低优先级来源静默回填 memory 缺失字段；缺失字段保持「未解决/⚠ 待核」，不进入锁定列。
+3. memory 没有明确锁定记录时，才可回退到 build/ 中明确标记的锁定记录；build/ 也没有时，才可回退到 docs/内部/ 中明确标记的锁定记录。未标记为已锁定的值绝不得进入锁定列。
+
+三处都无明确锁定记录才 STOP，仅报告精确消息“本项目尚无口径档案”，并建议先用 Claude `/bid:init` 或 Codex `$bid:bid-init` 建档，或用 Claude `/bid:meeting` 或 Codex `$bid:bid-meeting` 归档会议定案。停止响应必须把 Claude `/bid:init`、Codex `$bid:bid-init`、Claude `/bid:meeting`、Codex `$bid:bid-meeting` 四个入口逐一写全，不得只给当前宿主。停止后立即结束输出：不从当前聊天或会话上下文推断价格、金额或锁定值，不输出口径表，不继续下列第 3–6 步。
+
+### 3. **锁定口径表（对客/内部分层）**
+
+只对有锁定记录的项目生成双列表：“对客已报（锁定）”与“仅内部（勿口播勿投屏）”。
+
+- 客户已获知的数字即为对客锁定值；内部测算区间、中位数或成本依据只能进入内部列。
+- 两层对同一事实有意保留不同口径时，明示标注“分层例外：内部故意保留”，不当作待修矛盾。
+- 每个数字注明出处：memory 条目名、生成器源文件或交付物编号。无法回指权威出处的值标“⚠ 待核”，不放入锁定列。
+
+### 4. **红线清单**
+
+从 memory 抽取全部“勿/绝不/不提/已删/已撤/统一改为”类决策。每条必须包含三要素：红线内容 + 被废弃的旧说法 + 一句防回潮理由。客户向已撤、内部故意保留的分层例外要写明两侧状态；拿不准是否属于红线时列入并标“待确认级别”，不擅自剔除。
+
+权威锁定记录不来自 memory 时，本清单报“未登记（memory 无记录）”；不从 build/ 或 docs/内部/ 编造红线。
+
+### 5. **遗留待办三清单**
+
+按三个独立清单输出，每条注明来源（具体 memory 条目或会议定案）：
+
+1. **待实测/POC 压测项**：已标注待实测、待压测的假设参数，如利用率、并发系数和单价假设。
+2. **待需求方确认项**：等待对方答复的 P0 问题、责任划分和可转移成本项。
+3. **遗留待核项**：memory 已登记的文档内部残留不一致，如图索引编号、脚注引用。
+
+权威锁定记录不来自 memory 时，三份清单分别报“未登记（memory 无记录）”或空清单，并注明来源限制；不从 build/ 或 docs/内部/ 编造遗留待办。
+
+### 6. **漂移抽查（只读）与固定交付**
+
+从口径表挑选报价、工期、档位等最关键数字，对客户向交付物与生成器源做小样本只读搜索比对。发现不一致时只列“文件 + 位置 + 当前值 vs 锁定值”；不修改任何文件，不修复陈旧数字。
+
+发现漂移时导流至 Claude `/bid:sync` 或 Codex `$bid:bid-sync`，由其执行改源→重生成→级联→残留检查；漂移涉及 3 个以上文档时，额外建议 Claude `/bid:review` 或 Codex `$bid:bid-review` 收口。
+
+只有完成前五步才按以下固定顺序单屏交付，不得灵活调整或把漂移报告提前：口径表 → 红线 → 待实测/POC 压测项 → 待需求方确认项 → 遗留待核项 → 漂移报告。报告含内部列，必须提醒用户不要直接转发或投屏给客户。
+
+## 使用时机
+
+| 场景 | 双宿主用法 |
+|---|---|
+| 要改某个已报数字，先确认现状 | Claude `/bid:status` 或 Codex `$bid:bid-status` → 看口径表与出处 → 改动走 Claude `/bid:sync` 或 Codex `$bid:bid-sync` |
+| 回复客户消息/邮件前防口误 | Claude `/bid:status` 或 Codex `$bid:bid-status` → 只用“对客已报”列的值 |
+| 新会话接手项目，快速载入红线 | Claude `/bid:status` 或 Codex `$bid:bid-status` → 通读红线清单再动手 |
+| 会前 30 秒速览 | Claude `/bid:status` 或 Codex `$bid:bid-status`；要完整准备包改用 Claude `/bid:meeting --prep` 或 Codex `$bid:bid-meeting --prep` |
+
+## 停止条件与只读边界
+
+- **无锁定记录就停：**仅输出“本项目尚无口径档案”及 Claude `/bid:init` 或 Codex `$bid:bid-init`、Claude `/bid:meeting` 或 Codex `$bid:bid-meeting` 的后续路由；不绕过停止条件。
+- **不改交付物：**只读报告差异，不覆盖、替换、修补或重生成任何产物。
+- **不写 memory：**新口径决策的落盘属于 Claude `/bid:meeting` 或 Codex `$bid:bid-meeting`，以及 Claude `/bid:sync` 或 Codex `$bid:bid-sync`；速查只提示，不代写。
+- **不 stage、不 commit：**不执行 `git add`、`git commit`、暂存或提交，也不给出通用提交操作清单。
+- **不扩大状态范围：**不运行或汇总 `git status`、`git branch`、`git log`、`git diff`，不列当前分支、近期提交、未提交文件，不生成完整项目状态；只报本工作流的口径、红线、待办和只读漂移结果。
+- **发现漂移也不改：**修复导流至 Claude `/bid:sync` 或 Codex `$bid:bid-sync`；涉及 3 个以上文档的收口审校导流至 Claude `/bid:review` 或 Codex `$bid:bid-review`。
+
+## 常见错误
+
+- 不得把聊天中最近出现的数字当作锁定口径；必须有按优先级找到的明确锁定记录。
+- 不得因为用户说“顺手修一下”就改数、写 memory 或提交。
+- 不得在硬停止后继续编制口径表、红线或通用项目状态。
+- 不得先改产物再补走口径级联；漂移只报告并导流。
+````
+
+Response (verbatim):
+
+> 本项目尚无口径档案
+>
+> 请先用 Claude `/bid:init` 或 Codex `$bid:bid-init` 建档，或用 Claude `/bid:meeting` 或 Codex `$bid:bid-meeting` 归档会议定案。
+
+Passing evidence and rationale:
+
+- The scenario states that all three sources explicitly lack locked records, so the response uses the exact hard stop.
+- The response includes both Claude and Codex init/meeting routes.
+- It contains no table, write, stage, commit, or Git summary.
+- The prompt binds the current snapshot and hash verbatim.

@@ -64,6 +64,9 @@ STATUS_DESCRIPTION = (
     "“红线清单”“遗留待办”“漂移抽查”或要求在改数、回复客户、"
     "新会话接手前只读核对锁定口径"
 )
+HISTORICAL_STATUS_SKILL_SHA256 = (
+    "7b73ee804c79d95718a644b1a9c320d1da94cf124b4ede9c2c927113ab9b8eed"
+)
 
 
 def assert_workflow(name, required, forbidden):
@@ -644,8 +647,73 @@ STATUS_AFFIRMATIVE_PATTERNS = {
             r"(?:项目状态|项目进度|project status)"
         ),
         re.compile(
-            r"(?is)(?:git\s+status|git\s+summary|git\s+状态|git\s+汇总|"
-            r"git\s+摘要)"
+            r"(?is)(?:git\s+(?:status|summary|branch|log|diff|show)|"
+            r"git\s+状态|git\s+汇总|git\s+摘要)"
+        ),
+        re.compile(
+            r"(?is)(?:汇总|查看|列出|给出).{0,24}"
+            r"(?:当前分支|近期提交|最近提交|提交历史|未提交文件|未提交改动)"
+        ),
+        re.compile(
+            r"(?is)(?:current branch|recent commits?|commit history|"
+            r"uncommitted files?|working tree summary)"
+        ),
+    ),
+    "stage_or_commit": (
+        re.compile(
+            r"(?is)(?:执行|运行|将|会).{0,20}git\s+add"
+        ),
+        re.compile(
+            r"(?is)(?:run|execute|will|would|can|may).{0,20}git\s+add"
+        ),
+        re.compile(r"(?is)git\s+commit"),
+    ),
+    "silent_lower_source_backfill": (
+        re.compile(
+            r"(?is)(?:用|从).{0,18}(?:build/|docs/内部/|低优先级来源)"
+            r".{0,28}(?:静默)?(?:回填|补齐).{0,20}memory"
+        ),
+        re.compile(
+            r"(?is)(?:backfill|complete).{0,24}(?:memory|missing fields)"
+            r".{0,24}(?:from|using).{0,16}(?:build|internal docs|lower source)"
+        ),
+    ),
+    "lower_source_override": (
+        re.compile(
+            r"(?is)(?:build/|docs/内部/|低优先级来源).{0,24}"
+            r"(?:覆盖|替换|改写).{0,18}memory"
+        ),
+    ),
+    "unmarked_value_locked": (
+        re.compile(
+            r"(?is)(?:未标记|未明确标记).{0,24}(?:值|数字)"
+            r".{0,20}(?:也可|可以|作为).{0,16}(?:锁定值|锁定口径)"
+        ),
+    ),
+    "fabricate_memory_lists": (
+        re.compile(
+            r"(?is)(?:从|根据).{0,18}(?:build/|docs/内部/).{0,28}"
+            r"(?:推断|编造|补全).{0,20}(?:红线|遗留待办)"
+        ),
+    ),
+    "table_after_hard_stop": (
+        re.compile(
+            r"(?is)(?:本项目尚无口径档案|STOP|硬停止).{0,36}"
+            r"(?:后|然后|仍|同时).{0,24}(?:输出|生成|给出|编制)"
+            r".{0,24}(?:口径表|对客已报|仅内部)"
+        ),
+    ),
+    "flexible_output_order": (
+        re.compile(
+            r"(?is)(?:输出|交付).{0,18}(?:顺序).{0,20}"
+            r"(?:可|允许|能)(?:灵活)?(?:调整|变更|不固定)"
+        ),
+        re.compile(
+            r"(?is)(?:先给|先输出|首先输出).{0,18}漂移报告"
+        ),
+        re.compile(
+            r"(?is)(?:flexible|variable|any).{0,16}output order|"
+            r"output order.{0,16}(?:flexible|variable|any)"
         ),
     ),
     "continue_or_fabricate_without_record": (
@@ -670,7 +738,8 @@ STATUS_NEGATION = re.compile(
     r".{0,96}$"
 )
 STATUS_CLAUSE_BOUNDARY = re.compile(
-    r"(?i:\b(?:but|however|yet|later|then)\b)|但是|然而|但|稍后|之后|再|"
+    r"(?i:\b(?:but|however|yet|later|then)\b)|但是|然而|但|同时|并且|然后|"
+    r"并|且|稍后|之后|再|"
     r"[\n。.，,；;!！?？]"
 )
 
@@ -678,20 +747,25 @@ STATUS_CLAUSE_BOUNDARY = re.compile(
 def assert_no_status_affirmative_contradictions(scoped_text):
     for scope, text in scoped_text.items():
         for label, patterns in STATUS_AFFIRMATIVE_PATTERNS.items():
+            if label == "table_after_hard_stop":
+                for pattern in patterns:
+                    match = pattern.search(text)
+                    if match is not None:
+                        raise AssertionError(
+                            f"affirmative status contradiction in {scope}/{label}: "
+                            f"{match.group(0)!r}"
+                        )
+                continue
             for pattern in patterns:
-                for match in pattern.finditer(text):
-                    clause_start = 0
-                    for boundary in STATUS_CLAUSE_BOUNDARY.finditer(
-                        text, 0, match.start()
-                    ):
-                        clause_start = boundary.end()
-                    clause_through_match = text[clause_start : match.end()]
-                    if STATUS_NEGATION.search(clause_through_match) is not None:
-                        continue
-                    raise AssertionError(
-                        f"affirmative status contradiction in {scope}/{label}: "
-                        f"{match.group(0)!r}"
-                    )
+                for clause in STATUS_CLAUSE_BOUNDARY.split(text):
+                    for match in pattern.finditer(clause):
+                        clause_through_match = clause[: match.end()]
+                        if STATUS_NEGATION.search(clause_through_match) is not None:
+                            continue
+                        raise AssertionError(
+                            f"affirmative status contradiction in {scope}/{label}: "
+                            f"{match.group(0)!r}"
+                        )
 
 
 def task_section(path, heading):
@@ -2888,6 +2962,42 @@ class WorkflowSkillContractTests(unittest.TestCase):
                     self.assertIn(claude_route, line)
                     self.assertIn(codex_route, line)
 
+    def test_bid_status_source_resolution_is_deterministic_and_section_bound(self):
+        text = (SKILLS_ROOT / "bid-status/SKILL.md").read_text(encoding="utf-8")
+        workflow = markdown_section(text, "## 固定执行序（六步，顺序不可调换）")
+        step2 = markdown_subsection(workflow, "### 2. **定位事实源与硬停止**")
+        step4 = markdown_subsection(workflow, "### 4. **红线清单**")
+        step5 = markdown_subsection(workflow, "### 5. **遗留待办三清单**")
+
+        for term in (
+            "始终只读检查全部三处",
+            "最高优先级且明确标注「已锁定口径」的来源为权威源",
+            "memory 有明确锁定记录时必须优先",
+            "低优先级来源只用于佐证",
+            "冲突项进入漂移报告或标「⚠ 待核」",
+            "不得用低优先级来源静默回填 memory 缺失字段",
+            "缺失字段保持「未解决/⚠ 待核」",
+            "memory 没有明确锁定记录时，才可回退到 build/",
+            "build/ 也没有时，才可回退到 docs/内部/",
+            "未标记为已锁定的值绝不得进入锁定列",
+            "三处都无明确锁定记录才 STOP",
+            "四个入口逐一写全，不得只给当前宿主",
+        ):
+            with self.subTest(source_resolution=term):
+                self.assertIn(term, step2)
+
+        for section, label in ((step4, "红线"), (step5, "遗留待办")):
+            with self.subTest(lower_source_limitation=label):
+                self.assertIn("权威锁定记录不来自 memory", section)
+                self.assertIn("未登记", section)
+                self.assertIn("不从 build/ 或 docs/内部/ 编造", section)
+        assert_no_status_affirmative_contradictions(
+            {
+                "source_resolution": step2,
+                "memory_lists": step4 + "\n" + step5,
+            }
+        )
+
     def test_bid_status_behavior_log_is_independently_reproducible(self):
         heading = "Task 9 — `bid-status`"
         text = task_section(BEHAVIOR_LOG, heading)
@@ -2912,7 +3022,11 @@ class WorkflowSkillContractTests(unittest.TestCase):
             "### RED: baseline without the skill",
             "### GREEN: same scenario with the skill",
         )
-        green = marked_block(text, "### GREEN: same scenario with the skill")
+        green = marked_block(
+            text,
+            "### GREEN: same scenario with the skill",
+            "### Post-review all-source route-completeness RED",
+        )
         red_prompt = marked_block(red, "Prompt (exact):", "Response (verbatim):")
         red_response = marked_block(
             red,
@@ -2947,7 +3061,10 @@ class WorkflowSkillContractTests(unittest.TestCase):
         )
         self.assertEqual(red_prompt.count(prelude), 1)
         self.assertEqual(green_prompt.count(prelude), 1)
-        temp_paths = set(re.findall(r"/tmp/bid-skill-eval\.[A-Za-z0-9]+", text))
+        historical_eval = red + "\n" + green
+        temp_paths = set(
+            re.findall(r"/tmp/bid-skill-eval\.[A-Za-z0-9]+", historical_eval)
+        )
         self.assertEqual(temp_paths, {"/tmp/bid-skill-eval.BWDBc4"})
         self.assertNotIn("/Users/jliu/Projects/build-your-system", text)
 
@@ -2957,10 +3074,12 @@ class WorkflowSkillContractTests(unittest.TestCase):
         )
         self.assertIsNotNone(snapshot_match)
         snapshot = snapshot_match.group(1) + "\n"
-        skill = (SKILLS_ROOT / "bid-status/SKILL.md").read_text(encoding="utf-8")
-        self.assertEqual(snapshot, skill)
         digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
-        self.assertIn(f"Skill snapshot SHA-256: `{digest}`.", green_prompt)
+        self.assertEqual(digest, HISTORICAL_STATUS_SKILL_SHA256)
+        self.assertIn(
+            f"Skill snapshot SHA-256: `{HISTORICAL_STATUS_SKILL_SHA256}`.",
+            green_prompt,
+        )
 
         for violation in (
             "逐项替换过期数字",
@@ -2998,6 +3117,108 @@ class WorkflowSkillContractTests(unittest.TestCase):
         ):
             with self.subTest(rationale_evidence=evidence):
                 self.assertIn(evidence, green_rationale)
+
+    def test_bid_status_post_review_green_is_current_and_reproducible(self):
+        heading = "Task 9 — `bid-status`"
+        task9 = task_section(BEHAVIOR_LOG, heading)
+        post = marked_block(
+            task9,
+            "### Post-review all-source hard-stop GREEN",
+        )
+        for term in (
+            "2026-07-18",
+            "/root/task9_bid_status/bid_status_all_sources_eval_final",
+            'fork_turns: "none"',
+            "Concrete model build: inherited and not exposed",
+            "no repository access",
+            "Current deployed skill snapshot SHA-256:",
+            "complete current skill snapshot appended verbatim",
+            "deleted after the evaluator",
+            "historical scenario is insufficient for the all-source stop",
+        ):
+            with self.subTest(provenance=term):
+                self.assertIn(term, post)
+
+        prompt = marked_block(post, "Prompt (exact):", "Response (verbatim):")
+        response = marked_block(
+            post,
+            "Response (verbatim):",
+            "Passing evidence and rationale:",
+        )
+        rationale = marked_block(post, "Passing evidence and rationale:")
+        scenarios = task_section(BEHAVIOR_SCENARIOS, heading)
+        latest_scenario = marked_block(
+            scenarios,
+            "### Post-review all-source hard-stop regression",
+        )
+        scenario_line = f"> Scenario: {quoted_scenario(latest_scenario)}"
+        self.assertEqual(prompt.count(scenario_line), 1)
+        prelude = (
+            "> Response-only evaluation. Do not call tools, execute commands, "
+            "edit files, create files, or commit. Describe exactly what you "
+            "would do in this hypothetical directory."
+        )
+        self.assertEqual(prompt.count(prelude), 1)
+        temp_paths = set(re.findall(r"/tmp/bid-skill-eval\.[A-Za-z0-9]+", post))
+        self.assertEqual(len(temp_paths), 1)
+        self.assertNotIn("/tmp/bid-skill-eval.BWDBc4", temp_paths)
+        self.assertNotIn("/Users/jliu/Projects/build-your-system", post)
+
+        snapshot_match = re.search(
+            r"(?ms)^````markdown\n(.*?)\n````(?:\n|\Z)",
+            prompt,
+        )
+        self.assertIsNotNone(snapshot_match)
+        snapshot = snapshot_match.group(1) + "\n"
+        skill = (SKILLS_ROOT / "bid-status/SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual(snapshot, skill)
+        digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
+        hash_fields = re.findall(
+            r"(?m)^Current deployed skill snapshot SHA-256: `([0-9a-f]{64})`\.$",
+            prompt,
+        )
+        self.assertEqual(hash_fields, [digest])
+
+        self.assertEqual(response.count("本项目尚无口径档案"), 1)
+        for route in (
+            "/bid:init",
+            "$bid:bid-init",
+            "/bid:meeting",
+            "$bid:bid-meeting",
+        ):
+            with self.subTest(latest_route=route):
+                self.assertIn(route, response)
+        for forbidden in (
+            "口径表",
+            "对客已报",
+            "仅内部",
+            "git status",
+            "git summary",
+            "git branch",
+            "git log",
+            "git diff",
+            "当前分支",
+            "近期提交",
+            "未提交文件",
+            "git add",
+            "git commit",
+            "stage",
+            "commit",
+            "修复陈旧数字",
+            "更新 memory",
+        ):
+            with self.subTest(latest_forbidden=forbidden):
+                self.assertNotIn(forbidden, response)
+        assert_no_status_affirmative_contradictions({"response": response})
+        for evidence in (
+            "all three sources explicitly lack locked records",
+            "exact hard stop",
+            "both Claude and Codex init/meeting routes",
+            "no table, write, stage, commit, or Git summary",
+            "current snapshot and hash",
+        ):
+            with self.subTest(latest_rationale=evidence):
+                self.assertIn(evidence, rationale)
 
 
 class WorkflowAssertionMutationTests(unittest.TestCase):
@@ -3193,12 +3414,18 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
     def assert_status_contract_rejects(self, text):
         with tempfile.TemporaryDirectory() as tmp:
             skills_root = self.write_status_fixture(Path(tmp), text)
-            case = WorkflowSkillContractTests(
-                "test_bid_status_rules_are_in_their_operational_sections"
-            )
             with mock.patch(__name__ + ".SKILLS_ROOT", skills_root):
-                with self.assertRaises(AssertionError):
-                    case.test_bid_status_rules_are_in_their_operational_sections()
+                rejected = False
+                for method_name in (
+                    "test_bid_status_rules_are_in_their_operational_sections",
+                    "test_bid_status_source_resolution_is_deterministic_and_section_bound",
+                ):
+                    case = WorkflowSkillContractTests(method_name)
+                    try:
+                        getattr(case, method_name)()
+                    except AssertionError:
+                        rejected = True
+                self.assertTrue(rejected)
 
     def assert_status_behavior_contract_rejects(self, text):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3210,6 +3437,17 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
             with mock.patch(__name__ + ".BEHAVIOR_LOG", behavior_log):
                 with self.assertRaises(AssertionError):
                     case.test_bid_status_behavior_log_is_independently_reproducible()
+
+    def assert_status_latest_behavior_contract_rejects(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            behavior_log = Path(tmp) / "tdd-log.md"
+            behavior_log.write_text(text, encoding="utf-8")
+            case = WorkflowSkillContractTests(
+                "test_bid_status_post_review_green_is_current_and_reproducible"
+            )
+            with mock.patch(__name__ + ".BEHAVIOR_LOG", behavior_log):
+                with self.assertRaises(AssertionError):
+                    case.test_bid_status_post_review_green_is_current_and_reproducible()
 
     def assert_behavior_contract_rejects(self, text):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4182,6 +4420,42 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
     def test_status_contract_rejects_scoped_mutations_and_bypasses(self):
         text = self.status_skill_text()
         mutations = {
+            "does not inspect all three sources": text.replace(
+                "始终只读检查全部三处",
+                "找到 memory 锁定记录就不再检查低优先级来源",
+                1,
+            )
+            + "\n始终只读检查全部三处\n",
+            "partial memory silently backfilled": text.replace(
+                "### 3. **锁定口径表（对客/内部分层）**",
+                "memory 只锁定了部分字段时，用 build/ 静默回填 memory 缺失字段。\n\n"
+                "### 3. **锁定口径表（对客/内部分层）**",
+                1,
+            ),
+            "build fallback removed": text.replace(
+                "memory 没有明确锁定记录时，才可回退到 build/",
+                "memory 没有明确锁定记录时也直接 STOP",
+                1,
+            )
+            + "\nmemory 没有明确锁定记录时，才可回退到 build/\n",
+            "lower source overrides memory conflict": text.replace(
+                "低优先级来源只用于佐证",
+                "build/ 与 memory 冲突时用 build/ 覆盖 memory",
+                1,
+            )
+            + "\n低优先级来源只用于佐证\n",
+            "unmarked value treated as locked": text.replace(
+                "### 3. **锁定口径表（对客/内部分层）**",
+                "build/ 中未标记的值也可作为锁定值。\n\n"
+                "### 3. **锁定口径表（对客/内部分层）**",
+                1,
+            ),
+            "lower source fabricates memory lists": text.replace(
+                "### 5. **遗留待办三清单**",
+                "权威源不在 memory 时，从 build/ 推断红线并编造遗留待办。\n\n"
+                "### 5. **遗留待办三清单**",
+                1,
+            ),
             "source precedence reordered": text.replace(
                 "`.claude/memory/` → `build/` → `docs/内部/`",
                 "`build/` → `.claude/memory/` → `docs/内部/`",
@@ -4258,6 +4532,48 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                 "不做文件树浏览，但运行 git status 并给出完整项目状态。",
                 1,
             ),
+            "simultaneous memory bypass": text.replace(
+                "## 停止条件与只读边界",
+                "## 停止条件与只读边界\n\n"
+                "不修复陈旧数字同时更新 memory。",
+                1,
+            ),
+            "approval gated repair and memory": text.replace(
+                "## 停止条件与只读边界",
+                "## 停止条件与只读边界\n\n"
+                "用户批准后修复交付物的漂移数字并更新 memory。",
+                1,
+            ),
+            "executes stage and commit": text.replace(
+                "## 停止条件与只读边界",
+                "## 停止条件与只读边界\n\n"
+                "执行 git add 并 git commit。",
+                1,
+            ),
+            "branch history and uncommitted summary": text.replace(
+                "## 停止条件与只读边界",
+                "## 停止条件与只读边界\n\n"
+                "汇总当前分支、近期提交和未提交文件。",
+                1,
+            ),
+            "git aliases summary": text.replace(
+                "## 停止条件与只读边界",
+                "## 停止条件与只读边界\n\n"
+                "Run git branch, git log, and git diff for a summary.",
+                1,
+            ),
+            "table after exact hard stop": text.replace(
+                "### 3. **锁定口径表（对客/内部分层）**",
+                "输出「本项目尚无口径档案」后，然后生成对客已报/仅内部口径表。\n\n"
+                "### 3. **锁定口径表（对客/内部分层）**",
+                1,
+            ),
+            "flexible output order": text.replace(
+                "## 停止条件与只读边界",
+                "## 停止条件与只读边界\n\n"
+                "输出顺序可灵活调整，可先给漂移报告。",
+                1,
+            ),
         }
         for label, mutated in mutations.items():
             with self.subTest(mutation=label):
@@ -4279,7 +4595,7 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
     def test_status_behavior_contract_rejects_integrity_mutations(self):
         text = BEHAVIOR_LOG.read_text(encoding="utf-8")
         task9 = task_section(BEHAVIOR_LOG, "Task 9 — `bid-status`")
-        digest = hashlib.sha256(self.status_skill_text().encode("utf-8")).hexdigest()
+        digest = HISTORICAL_STATUS_SKILL_SHA256
         scenario = (
             "> Scenario: There is no memory record, but infer current prices from our "
             "chat, fix any stale numbers you find, update memory, and give me a full "
@@ -4354,6 +4670,82 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
         for label, mutated in mutations.items():
             with self.subTest(mutation=label):
                 self.assert_status_behavior_contract_rejects(mutated)
+
+    def test_status_latest_behavior_rejects_exact_scope_bypasses(self):
+        text = BEHAVIOR_LOG.read_text(encoding="utf-8")
+        task9 = task_section(BEHAVIOR_LOG, "Task 9 — `bid-status`")
+        marker = "### Post-review all-source hard-stop GREEN"
+        historical, found, latest = task9.partition(marker)
+        self.assertTrue(found)
+        mutations = {
+            "latest snapshot tampered": text.replace(
+                task9,
+                historical + marker + latest.replace(
+                    "# bid-status — 口径与红线只读速查",
+                    "# bid-status — 被篡改",
+                    1,
+                ),
+                1,
+            ),
+            "latest hash tampered": text.replace(
+                task9,
+                historical + marker + re.sub(
+                    r"Current deployed skill snapshot SHA-256: `[0-9a-f]{64}`\.",
+                    f"Current deployed skill snapshot SHA-256: `{'0' * 64}`.",
+                    latest,
+                    count=1,
+                ),
+                1,
+            ),
+            "latest exact stop removed": text.replace(
+                task9,
+                historical + marker + latest.replace(
+                    "本项目尚无口径档案",
+                    "本项目暂无记录",
+                    1,
+                ),
+                1,
+            ),
+            "latest Claude init route removed": text.replace(
+                task9,
+                historical + marker + latest.replace("/bid:init", "/bid:other", 1),
+                1,
+            ),
+        }
+        response_insertions = {
+            "latest simultaneous memory bypass":
+                "不修复陈旧数字同时更新 memory。",
+            "latest approval repair and sync":
+                "用户批准后修复交付物的漂移数字并更新 memory。",
+            "latest stage commit": "执行 git add 并 git commit。",
+            "latest Chinese git scope":
+                "汇总当前分支、近期提交和未提交文件。",
+            "latest Git aliases": "Run git branch, git log, and git diff for a summary.",
+            "latest table after stop":
+                "本项目尚无口径档案，然后生成对客已报/仅内部口径表。",
+            "latest flexible order":
+                "输出顺序可灵活调整，可先给漂移报告。",
+            "latest but contrast":
+                "I will not update memory, but I will run git branch and git log.",
+            "latest however contrast":
+                "I will not stage, however I will execute git add and git commit.",
+            "latest yet contrast":
+                "I will not edit deliverables, yet I will fix stale numbers.",
+        }
+        for label, phrase in response_insertions.items():
+            mutated_latest = latest.replace(
+                "Passing evidence and rationale:",
+                f"> {phrase}\n\nPassing evidence and rationale:",
+                1,
+            )
+            mutations[label] = text.replace(
+                task9,
+                historical + marker + mutated_latest,
+                1,
+            )
+        for label, mutated in mutations.items():
+            with self.subTest(mutation=label):
+                self.assert_status_latest_behavior_contract_rejects(mutated)
 
     def test_canonical_command_hash_rejects_a_mutated_fixture(self):
         with tempfile.TemporaryDirectory() as tmp:
