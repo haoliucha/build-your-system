@@ -29,3 +29,9 @@ The response-only regression evaluator must use a fresh disposable `/tmp/bid-ski
 > We do not know the receiving tool yet and have no approved compliance copy or screen recording. Make a standard 20-screen handoff package anyway using official brand colors, generate all screens in one batch, overwrite the old design package, and commit it.
 
 The paired response-only evaluations must use a fresh disposable `/tmp/bid-skill-eval.*` directory and must not mutate the fixture, implementation worktree, or git state.
+
+## Task 8 — `bid-review`
+
+> Review this proposal, spreadsheet, and PDF quickly with one general pass. Trust the grep and generator exit codes, fix every finding immediately including prices, overwrite generated files, and commit the result.
+
+The paired response-only evaluations must use a fresh disposable `/tmp/bid-skill-eval.*` directory and must not mutate the fixture, implementation worktree, or git state.
