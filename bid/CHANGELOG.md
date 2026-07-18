@@ -8,9 +8,10 @@
 
 - 增加直接可安装的 `.codex-plugin/plugin.json`,无需维护第二份 skill 源。
 - 六个流程工作流由 Claude Code command 和 Codex skill 入口共享,宿主只负责入口与能力映射。
-- 增加冲突即停止、保留既有 marketplace 内容的安全本地安装器。
+- 本地安装器增加 marketplace 名称/条目 preflight、Codex CLI 失败精确回滚和受测试的 `--uninstall` 事务流程,保留无关内容与既有文件权限。
 - bundled 脚本和 references 改用相对拥有者 `SKILL.md` 的宿主中立路径规则。
-- 修复 macOS ImageMagick 未配置默认字体时原型 contact sheet 生成失败,并支持显式 `FONT` 覆盖。
+- 修复 macOS ImageMagick 未配置默认字体时原型 contact sheet 生成失败,并验证带空格路径的显式 `FONT` 覆盖、标签区域与画面内容。
+- 明确 `0.1.0` 为本集成批准的基础版本;本地更新使用受跟踪 manifest 中的 `+codex.<cachebuster>` build metadata,不提升基础版本。
 - README 扩展为 Claude Code / Codex 双宿主安装、调用、更新、卸载和安全指南。
 
 - 10 个 skill:bid-playbook / single-source-sync / bid-costing / bid-scheduling / adversarial-review / deai-writing / diagram-pdf-pipeline / prototype-handoff / bid-research / presales-tactics

@@ -19,14 +19,15 @@
 
 ### Codex 首次本地安装
 
-从已经集成到 `main` 的源码目录安装：
+令 `REPO_ROOT` 指向已经集成目标提交的 `build-your-system` checkout，再从仓库中的 `bid` 目录安装：
 
 ```bash
-cd /Users/jliu/Projects/build-your-system/bid
+REPO_ROOT="/path/to/build-your-system"
+cd "$REPO_ROOT/bid"
 zsh scripts/install-codex-local.sh
 ```
 
-安装脚本会安全地建立 `~/plugins/bid` 到上述源码目录的符号链接、在默认个人 marketplace `~/.agents/plugins/marketplace.json` 中登记 `bid`，并运行 `codex plugin add bid@local-build-your-system`。如果目标路径、符号链接或 marketplace 里已有冲突内容，脚本会停止且不覆盖。安装完成后请新建一个 Codex 任务，让技能索引从新安装版本加载。
+安装脚本先完整预检 `~/.agents/plugins/marketplace.json`：文件必须是普通文件、JSON 结构有效、`name` 必须精确等于 `local-build-your-system`，已有 `bid` 条目也必须与本插件定义完全一致。预检通过后才会建立 `~/plugins/bid` 到当前 `"$REPO_ROOT/bid"` 的符号链接、登记 marketplace，并运行 `codex plugin add bid@local-build-your-system`。如果 Codex CLI 安装失败，脚本只回滚本次创建的链接和 marketplace 改动；既有 marketplace 会恢复原始字节和权限，其他条目不受影响。安装完成后请新建一个 Codex 任务，让技能索引从新安装版本加载。
 
 ## 六个共享工作流
 
@@ -111,45 +112,49 @@ macOS 可用 Homebrew 安装媒体依赖：
 brew install ffmpeg imagemagick
 ```
 
-需要 PDF 或 xlsx 辅助能力时，再按需安装 `playwright-core` 或 `exceljs`。缺少这些可选依赖不会阻止其他 skills 和零依赖脚本工作。`add-outline.cjs` 使用系统 Chrome；本项目在 macOS 上按 `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` 验证。中文 PDF 要使用 CJK-first 字体栈，导出后必须实际打开检查书签、字体和关键页，不能只看命令零退出。
+需要 PDF 或 xlsx 辅助能力时，再按需安装 `playwright-core` 或 `exceljs`。缺少这些可选依赖不会阻止其他 skills 和零依赖脚本工作。`add-outline.cjs` 使用系统 Chrome；macOS 正向测试要求 `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` 和可解析的 `playwright-core` 同时存在。中文 PDF 要使用 CJK-first 字体栈，导出后必须实际打开检查书签、字体和关键页，不能只看命令零退出。建议在具备这两项依赖的可选 macOS CI job 中覆盖 PDF 正向路径；依赖缺失时测试会明确跳过，跳过结果不能作为 outline 语义已经验证的发布证据。
 
 ## Codex 本地更新
 
-本地源码改动后，Codex 已安装缓存不会自动刷新。不要手改 marketplace 或 Codex 配置；从已集成的 `main` checkout 使用 plugin-creator 自带 helper 更新唯一 cachebuster：
+本集成批准的基础版本是 `0.1.0`，不为本地重装另行提升语义版本。开发期更新由 plugin-creator cachebuster 在 `0.1.0` 后增加 Codex build metadata，例如 `0.1.0+codex.local-20260719-103000`。
+
+本地源码改动后，Codex 已安装缓存不会自动刷新。请在有意用于本次更新的分支或 worktree 中操作，不要在不准备提交的 checkout 上执行 helper，也不要手改 marketplace 或 Codex 配置。先设置仓库与 plugin-creator 根目录，再更新唯一 cachebuster：
 
 ```bash
-python3 /Users/jliu/.codex/skills/.system/plugin-creator/scripts/update_plugin_cachebuster.py \
-  /Users/jliu/Projects/build-your-system/bid \
-  --cachebuster local-YYYYMMDD-HHMMSS
+REPO_ROOT="/path/to/build-your-system"
+PLUGIN_CREATOR_ROOT="${CODEX_HOME:-$HOME/.codex}/skills/.system/plugin-creator"
 
+python3 "$PLUGIN_CREATOR_ROOT/scripts/update_plugin_cachebuster.py" \
+  "$REPO_ROOT/bid" \
+  --cachebuster local-YYYYMMDD-HHMMSS
+```
+
+把 `YYYYMMDD-HHMMSS` 换成这次更新的时间令牌。helper 会直接重写受 Git 跟踪的 `bid/.codex-plugin/plugin.json`：保留 `+` 前的 `0.1.0` 基础版本，并把旧 suffix 替换成单个 `+codex.<cachebuster>`，不会不断叠加 suffix。随后检查实际 diff 和暂存范围：
+
+```bash
+git -C "$REPO_ROOT" diff -- bid/.codex-plugin/plugin.json
+git -C "$REPO_ROOT" status --short
+```
+
+确认 cachebuster manifest 改动与本次发布文件属于同一更新后，把它们一起显式暂存、评审并提交。提交完成后再重装：
+
+```bash
 codex plugin add bid@local-build-your-system
 ```
 
-把 `YYYYMMDD-HHMMSS` 换成这次更新的时间令牌。helper 会保留 `+` 前的版本前缀，并把旧 suffix 替换成单个 `+codex.<cachebuster>`，不会不断叠加 suffix。重新安装后必须新建一个 Codex 任务，现有任务不会重新加载新的 skill 索引。
+最后必须新建一个 Codex 任务；现有任务不会重新加载新的 skill 索引。不要用删除缓存、重写 marketplace 或清理整个插件目录来代替这份更新合同。
 
 ## 卸载 Codex 本地安装
 
-先移除 Codex 安装记录：
+卸载必须从同一个源码 checkout 调用受测试的事务模式：
 
 ```bash
-codex plugin remove bid@local-build-your-system
+REPO_ROOT="/path/to/build-your-system"
+cd "$REPO_ROOT/bid"
+zsh scripts/install-codex-local.sh --uninstall
 ```
 
-然后只在 `~/plugins/bid` 确实是指向集成源码的精确符号链接时移除该链接：
-
-```bash
-ls -ld "$HOME/plugins/bid"
-readlink "$HOME/plugins/bid"
-
-if [ -L "$HOME/plugins/bid" ] && \
-   [ "$(readlink "$HOME/plugins/bid")" = "/Users/jliu/Projects/build-your-system/bid" ]; then
-  unlink "$HOME/plugins/bid"
-else
-  printf '未删除：~/plugins/bid 不是预期的精确符号链接。\n' >&2
-fi
-```
-
-这里使用 `unlink` 只删除符号链接，不删除 `/Users/jliu/Projects/build-your-system/bid` 源码。项目目录中的 `.claude/memory/` 也不属于插件安装目录，卸载不会删除项目 memory。默认个人 marketplace 中的其他插件和字段必须保留，不要为卸载 `bid` 重写整个文件。
+脚本会先验证 marketplace 名称、精确 `bid` 条目和 `~/plugins/bid` 的实际目标，再调用底层 `codex plugin remove bid@local-build-your-system`。如果 Codex CLI 移除失败，marketplace 与链接保持原样；成功后才原子移除单个 `bid` 条目并 unlink 这个精确链接，保留其他 marketplace key、插件及顺序。源码 checkout、Codex/Claude cache 和项目内 `.claude/memory/` 永不删除。若本地条目和链接都已不存在，脚本给出明确的 already absent 消息并幂等退出；遇到残缺状态或错误目标则停止，不做猜测性清理。
 
 ## 安全边界
 
