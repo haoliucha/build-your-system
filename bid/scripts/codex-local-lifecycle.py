@@ -452,10 +452,90 @@ class LocalLifecycle:
             completed = subprocess.run(
                 ["codex", "plugin", action, PLUGIN_REF], check=False
             )
+        except KeyboardInterrupt:
+            print(
+                f"codex plugin {action} interrupted; reconciling transaction state.",
+                file=sys.stderr,
+            )
+            return 130
         except OSError as error:
             print(f"codex plugin {action} failed: {error}", file=sys.stderr)
             return 1
         return completed.returncode if completed.returncode >= 0 else 1
+
+    @staticmethod
+    def codex_plugin_installed() -> bool:
+        try:
+            completed = subprocess.run(
+                ["codex", "plugin", "list", "--json"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as error:
+            raise ConflictError(f"codex plugin list --json failed: {error}") from error
+        if completed.returncode != 0:
+            detail = completed.stderr.strip()
+            suffix = f": {detail}" if detail else ""
+            raise ConflictError(
+                "codex plugin list --json failed "
+                f"({completed.returncode}){suffix}"
+            )
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError as error:
+            raise ConflictError(
+                f"codex plugin list --json returned invalid JSON: {error}"
+            ) from error
+        if not isinstance(payload, dict):
+            raise ConflictError(
+                "codex plugin list --json must return a top-level object"
+            )
+        installed = payload.get("installed")
+        if not isinstance(installed, list):
+            raise ConflictError(
+                "codex plugin list --json field 'installed' must be a list"
+            )
+
+        matches: list[dict[str, object]] = []
+        for index, item in enumerate(installed):
+            if not isinstance(item, dict):
+                raise ConflictError(
+                    "codex plugin list --json installed entry "
+                    f"{index} must be an object"
+                )
+            plugin_id = item.get("pluginId")
+            if not isinstance(plugin_id, str):
+                raise ConflictError(
+                    "codex plugin list --json installed entry "
+                    f"{index} must contain a string pluginId"
+                )
+            if plugin_id == PLUGIN_REF:
+                matches.append(item)
+            elif (
+                item.get("name") == "bid"
+                and item.get("marketplaceName") == MARKETPLACE_NAME
+            ):
+                raise ConflictError(
+                    "codex plugin list --json contains an ambiguous bid entry"
+                )
+
+        if len(matches) > 1:
+            raise ConflictError(
+                f"codex plugin list --json contains duplicate {PLUGIN_REF} entries"
+            )
+        if not matches:
+            return False
+        match = matches[0]
+        if (
+            match.get("name") != "bid"
+            or match.get("marketplaceName") != MARKETPLACE_NAME
+            or match.get("installed") is not True
+        ):
+            raise ConflictError(
+                f"codex plugin list --json contains a malformed {PLUGIN_REF} entry"
+            )
+        return True
 
     def rollback_install(
         self,
@@ -630,33 +710,142 @@ class LocalLifecycle:
         )
         return 1
 
+    def reconcile_interrupted_remove(
+        self, source_preflight_snapshot: SourceSnapshot | None
+    ) -> int:
+        if source_preflight_snapshot is None:
+            try:
+                installed_now = self.codex_plugin_installed()
+            except (ConflictError, KeyboardInterrupt) as error:
+                print(
+                    "Partial state recovery required: interrupted codex plugin "
+                    f"remove could not be reconciled: {error}",
+                    file=sys.stderr,
+                )
+                print(
+                    "Inspect installed state with: codex plugin list --json",
+                    file=sys.stderr,
+                )
+                print(f"Plugin: {PLUGIN_REF}", file=sys.stderr)
+                return 130
+            if installed_now:
+                print(
+                    "Interrupted codex plugin remove left the pre-operation "
+                    "installed state intact; local state was already absent.",
+                    file=sys.stderr,
+                )
+                return 130
+            print(
+                "Partial state recovery required: codex plugin remove completed "
+                "during the interrupt, but the local registration and source "
+                "were already absent, so automatic re-add is unsafe.",
+                file=sys.stderr,
+            )
+            print(
+                "Run the local installer from the expected stable source checkout "
+                "to restore the plugin.",
+                file=sys.stderr,
+            )
+            print(f"Plugin: {PLUGIN_REF}", file=sys.stderr)
+            return 130
+
+        try:
+            self.require_source_snapshot(source_preflight_snapshot)
+        except Exception as error:  # noqa: BLE001 - source trust gates recovery.
+            print(
+                "Partial state recovery required: interrupted codex plugin remove "
+                f"cannot be compensated because the source changed: {error}",
+                file=sys.stderr,
+            )
+            print(f"Inspect/fix source symlink: {self.source_root}", file=sys.stderr)
+            print(f"Expected source target: {self.bid_root}", file=sys.stderr)
+            print(f"Then run: codex plugin add {PLUGIN_REF}", file=sys.stderr)
+            return 130
+
+        add_returncode = self.run_codex("add")
+        if add_returncode == 0:
+            print(
+                "Interrupted codex plugin remove was compensated: the installed "
+                "state was restored and local state remained unchanged.",
+                file=sys.stderr,
+            )
+            return 130
+        print(
+            "Partial state recovery required: interrupted codex plugin remove "
+            f"could not restore installed state (add returned {add_returncode}).",
+            file=sys.stderr,
+        )
+        print(f"Run: codex plugin add {PLUGIN_REF}", file=sys.stderr)
+        print(f"Marketplace: {self.marketplace_file}", file=sys.stderr)
+        print(f"Source symlink: {self.source_root}", file=sys.stderr)
+        return 130
+
+    def rollback_local_only_uninstall(
+        self,
+        original_error: Exception,
+        state: MarketplaceState,
+        marketplace_written_snapshot: MarketplaceSnapshot | None,
+    ) -> int:
+        rollback_errors: list[str] = []
+        if marketplace_written_snapshot is not None:
+            try:
+                self.restore_marketplace(state, marketplace_written_snapshot)
+            except Exception as error:  # noqa: BLE001 - report rollback failure.
+                rollback_errors.append(str(error))
+        print(
+            "Local cleanup failed while Codex-installed state was already absent: "
+            f"{original_error}",
+            file=sys.stderr,
+        )
+        if rollback_errors:
+            print(
+                "Local rollback incomplete: " + "; ".join(rollback_errors),
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "Local marketplace changes owned by this run were restored or "
+                "no marketplace write occurred.",
+                file=sys.stderr,
+            )
+        return 1
+
     def uninstall(self) -> int:
         state = self.load_marketplace()
         source_preflight_snapshot = self.validate_source()
-
-        if not state.existed and source_preflight_snapshot is None:
-            print(
-                "Already locally absent: no bid marketplace entry or source symlink."
-            )
-            return 0
-        if (
-            state.existed
-            and not state.bid_present
-            and source_preflight_snapshot is None
-        ):
-            print(
-                "Already locally absent: no bid marketplace entry or source symlink."
-            )
-            return 0
-        if (
-            not state.existed
-            or not state.bid_present
-            or source_preflight_snapshot is None
-        ):
+        local_entry_present = state.existed and state.bid_present
+        local_source_present = source_preflight_snapshot is not None
+        if local_entry_present != local_source_present:
             raise ConflictError(
                 "local bid state is partial; expected both the exact marketplace "
                 "entry and source symlink before uninstall."
             )
+
+        codex_installed = self.codex_plugin_installed()
+        if not local_entry_present:
+            if not codex_installed:
+                print(
+                    "Already absent: Codex has no installed bid plugin and no "
+                    "local marketplace entry or source symlink exists."
+                )
+                return 0
+            codex_returncode = self.run_codex("remove")
+            if codex_returncode == 130:
+                return self.reconcile_interrupted_remove(None)
+            if codex_returncode != 0:
+                print(
+                    f"codex plugin remove failed ({codex_returncode}); "
+                    "local state was already absent.",
+                    file=sys.stderr,
+                )
+                return codex_returncode
+            print(
+                "Removed Codex-owned installed configuration and cache with "
+                f"codex plugin remove {PLUGIN_REF}."
+            )
+            print("Local marketplace entry and source symlink were already absent.")
+            print(f"Preserved source repository: {self.bid_root}")
+            return 0
 
         if (
             state.payload is None
@@ -669,14 +858,21 @@ class LocalLifecycle:
             raise RuntimeError("validated plugins list changed unexpectedly")
         plugins.remove(BID_ENTRY)
 
-        codex_returncode = self.run_codex("remove")
-        if codex_returncode != 0:
-            print(
-                f"codex plugin remove failed ({codex_returncode}); "
-                "local state unchanged.",
-                file=sys.stderr,
-            )
-            return codex_returncode
+        codex_removed = False
+        if codex_installed:
+            codex_returncode = self.run_codex("remove")
+            if codex_returncode == 130:
+                return self.reconcile_interrupted_remove(
+                    source_preflight_snapshot
+                )
+            if codex_returncode != 0:
+                print(
+                    f"codex plugin remove failed ({codex_returncode}); "
+                    "local state unchanged.",
+                    file=sys.stderr,
+                )
+                return codex_returncode
+            codex_removed = True
 
         marketplace_written_snapshot: MarketplaceSnapshot | None = None
         try:
@@ -686,18 +882,25 @@ class LocalLifecycle:
             )
             self.require_source_snapshot(source_preflight_snapshot)
             self.source_root.unlink()
-        except Exception as error:  # noqa: BLE001 - compensate the completed remove.
-            return self.compensate_failed_uninstall(
-                error,
-                state,
-                marketplace_written_snapshot,
-                source_preflight_snapshot,
+        except Exception as error:  # noqa: BLE001 - restore pre-operation state.
+            if codex_removed:
+                return self.compensate_failed_uninstall(
+                    error,
+                    state,
+                    marketplace_written_snapshot,
+                    source_preflight_snapshot,
+                )
+            return self.rollback_local_only_uninstall(
+                error, state, marketplace_written_snapshot
             )
 
-        print(
-            "Removed Codex-owned installed configuration and cache with "
-            f"codex plugin remove {PLUGIN_REF}."
-        )
+        if codex_removed:
+            print(
+                "Removed Codex-owned installed configuration and cache with "
+                f"codex plugin remove {PLUGIN_REF}."
+            )
+        else:
+            print("Codex-installed bid state was already absent.")
         print(f"Removed local bid registration from {self.marketplace_file}")
         print(f"Unlinked source symlink: {self.source_root}")
         print(f"Preserved source repository: {self.bid_root}")
@@ -726,6 +929,12 @@ def main() -> int:
 
 try:
     raise SystemExit(main())
+except KeyboardInterrupt as error:
+    print(
+        "Local plugin lifecycle interrupted before state could be changed safely.",
+        file=sys.stderr,
+    )
+    raise SystemExit(130) from error
 except ConflictError as error:
     print(f"Conflict: {error}", file=sys.stderr)
     raise SystemExit(1) from error

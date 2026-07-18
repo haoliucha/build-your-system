@@ -2,9 +2,11 @@ import ast
 import fcntl
 import json
 import os
+import signal
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -35,8 +37,10 @@ class InstallerTests(unittest.TestCase):
             """#!/usr/bin/env python3
 import json
 import os
+import signal
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -45,6 +49,49 @@ with Path(os.environ["CODEX_LOG"]).open("a", encoding="utf-8") as log:
     log.write(" ".join(args) + "\\n")
 
 action = args[1] if len(args) > 1 else ""
+
+
+def set_installed(installed):
+    Path(os.environ["CODEX_INSTALLED_STATE"]).write_text(
+        "1" if installed else "0", encoding="utf-8"
+    )
+
+
+def is_installed():
+    return Path(os.environ["CODEX_INSTALLED_STATE"]).read_text(
+        encoding="utf-8"
+    ).strip() == "1"
+
+
+def exit_130(_signum, _frame):
+    raise SystemExit(130)
+
+
+if action == "list":
+    returncode = int(os.environ.get("CODEX_LIST_EXIT", "0"))
+    if returncode == 0:
+        if "CODEX_LIST_JSON" in os.environ:
+            print(os.environ["CODEX_LIST_JSON"])
+        else:
+            installed = []
+            if is_installed():
+                installed.append(
+                    {
+                        "pluginId": "bid@local-build-your-system",
+                        "name": "bid",
+                        "marketplaceName": "local-build-your-system",
+                        "version": "0.1.0",
+                        "installed": True,
+                        "enabled": True,
+                        "source": {
+                            "source": "local",
+                            "path": os.environ["SOURCE_ROOT"],
+                        },
+                    }
+                )
+            print(json.dumps({"installed": installed, "available": []}))
+    raise SystemExit(returncode)
+
 effect = os.environ.get(f"CODEX_{action.upper()}_EFFECT", "")
 if effect == "mutate-marketplace":
     Path(os.environ["MARKETPLACE_FILE"]).write_bytes(
@@ -103,7 +150,28 @@ if action == "add" and os.environ.get("CODEX_ADD_RESTORE_PERMISSIONS") == "1":
 returncode = os.environ.get(
     f"CODEX_{action.upper()}_EXIT", os.environ.get("CODEX_EXIT_CODE", "0")
 )
-raise SystemExit(int(returncode))
+returncode = int(returncode)
+if (
+    action == "remove"
+    and returncode == 0
+    and os.environ.get("CODEX_REMOVE_MUTATE_BEFORE_BLOCK") == "1"
+):
+    set_installed(False)
+
+if os.environ.get(f"CODEX_{action.upper()}_BLOCK") == "1":
+    signal.signal(signal.SIGINT, exit_130)
+    Path(os.environ[f"CODEX_{action.upper()}_READY"]).write_text(
+        "ready", encoding="utf-8"
+    )
+    while True:
+        time.sleep(1)
+
+if returncode == 0:
+    if action == "add":
+        set_installed(True)
+    elif action == "remove":
+        set_installed(False)
+raise SystemExit(returncode)
 """,
             encoding="utf-8",
         )
@@ -117,6 +185,9 @@ raise SystemExit(int(returncode))
             MARKETPLACE_FILE=str(self.marketplace_file),
             SOURCE_ROOT=str(self.source_root),
         )
+        self.codex_installed_state = self.home / "codex-installed-state"
+        self.codex_installed_state.write_text("1", encoding="utf-8")
+        self.env["CODEX_INSTALLED_STATE"] = str(self.codex_installed_state)
         self.effect_state = self.home / "codex-effect-state.json"
         self.env["CODEX_EFFECT_STATE"] = str(self.effect_state)
 
@@ -139,6 +210,41 @@ raise SystemExit(int(returncode))
             timeout=10,
         )
 
+    def run_installer_and_interrupt(self, action, *args):
+        ready_file = self.home / f"codex-{action}-ready"
+        self.env[f"CODEX_{action.upper()}_BLOCK"] = "1"
+        self.env[f"CODEX_{action.upper()}_READY"] = str(ready_file)
+        process = subprocess.Popen(
+            ["zsh", str(INSTALLER), *args],
+            cwd=BID_ROOT,
+            env=self.env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 5
+        try:
+            while not ready_file.exists():
+                if process.poll() is not None:
+                    stdout, stderr = process.communicate()
+                    self.fail(
+                        f"installer exited before {action} was ready: "
+                        f"{process.returncode}\nstdout={stdout}\nstderr={stderr}"
+                    )
+                if time.monotonic() >= deadline:
+                    self.fail(f"timed out waiting for blocked codex {action}")
+                time.sleep(0.01)
+            os.killpg(process.pid, signal.SIGINT)
+            stdout, stderr = process.communicate(timeout=5)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+        return subprocess.CompletedProcess(
+            process.args, process.returncode, stdout, stderr
+        )
+
     def write_marketplace(self, data):
         self.marketplace_file.parent.mkdir(parents=True, exist_ok=True)
         self.marketplace_file.write_text(
@@ -146,10 +252,23 @@ raise SystemExit(int(returncode))
             encoding="utf-8",
         )
 
-    def codex_calls(self):
+    def all_codex_calls(self):
         if not self.codex_log.exists():
             return []
         return self.codex_log.read_text(encoding="utf-8").splitlines()
+
+    def codex_calls(self):
+        return [
+            call for call in self.all_codex_calls() if call != "plugin list --json"
+        ]
+
+    def set_codex_installed(self, installed):
+        self.codex_installed_state.write_text(
+            "1" if installed else "0", encoding="utf-8"
+        )
+
+    def codex_is_installed(self):
+        return self.codex_installed_state.read_text(encoding="utf-8") == "1"
 
     def set_codex_exit(self, returncode):
         self.env["CODEX_EXIT_CODE"] = str(returncode)
@@ -448,6 +567,13 @@ raise SystemExit(int(returncode))
         self.assertIn("project .claude/memory/", result.stdout)
         self.assertEqual(
             self.codex_calls(), ["plugin remove bid@local-build-your-system"]
+        )
+        self.assertEqual(
+            self.all_codex_calls(),
+            [
+                "plugin list --json",
+                "plugin remove bid@local-build-your-system",
+            ],
         )
 
     def test_uninstall_refuses_wrong_source_symlink_without_mutation(self):
@@ -825,7 +951,7 @@ raise SystemExit(int(returncode))
         self.assertTrue(self.source_root.is_symlink())
         self.assertEqual(self.source_root.readlink(), BID_ROOT)
 
-    def test_uninstall_is_idempotent_when_local_state_is_already_absent(self):
+    def test_uninstall_local_absent_and_codex_absent_is_idempotent(self):
         existing = {
             "name": "local-build-your-system",
             "interface": {"displayName": "Local Build Your System"},
@@ -833,14 +959,170 @@ raise SystemExit(int(returncode))
         }
         self.write_marketplace(existing)
         original_bytes = self.marketplace_file.read_bytes()
+        original_inode = self.marketplace_file.stat().st_ino
+        self.set_codex_installed(False)
 
         result = self.run_installer("--uninstall")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("already", result.stdout.lower())
         self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
         self.assertFalse(self.source_root.exists())
-        self.assertEqual(self.codex_calls(), [])
+        self.assertEqual(self.all_codex_calls(), ["plugin list --json"])
+
+    def test_uninstall_local_absent_and_codex_installed_removes_codex_state(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [],
+        }
+        self.write_marketplace(existing)
+        self.marketplace_file.chmod(0o640)
+        original_bytes = self.marketplace_file.read_bytes()
+        original_inode = self.marketplace_file.stat().st_ino
+        self.set_codex_installed(True)
+
+        result = self.run_installer("--uninstall")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.codex_is_installed())
+        self.assertEqual(
+            self.all_codex_calls(),
+            [
+                "plugin list --json",
+                "plugin remove bid@local-build-your-system",
+            ],
+        )
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(stat.S_IMODE(self.marketplace_file.stat().st_mode), 0o640)
+        self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
+        self.assertFalse(self.source_root.exists())
+
+    def test_uninstall_local_present_and_codex_absent_cleans_only_local_state(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "custom": {"preserve": True},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        self.marketplace_file.chmod(0o640)
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        self.set_codex_installed(False)
+
+        result = self.run_installer("--uninstall")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        updated = json.loads(self.marketplace_file.read_text(encoding="utf-8"))
+        self.assertEqual(updated["plugins"], [])
+        self.assertEqual(updated["custom"], {"preserve": True})
+        self.assertEqual(stat.S_IMODE(self.marketplace_file.stat().st_mode), 0o640)
+        self.assertFalse(self.source_root.exists())
+        self.assertFalse(self.codex_is_installed())
+        self.assertEqual(self.all_codex_calls(), ["plugin list --json"])
+
+    def test_uninstall_fails_without_mutation_when_codex_list_query_fails(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [],
+        }
+        self.write_marketplace(existing)
+        original_bytes = self.marketplace_file.read_bytes()
+        original_inode = self.marketplace_file.stat().st_ino
+        self.env["CODEX_LIST_EXIT"] = "17"
+
+        result = self.run_installer("--uninstall")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("plugin list", result.stderr.lower())
+        self.assertIn("17", result.stderr)
+        self.assertEqual(self.all_codex_calls(), ["plugin list --json"])
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
+
+    def test_uninstall_fails_without_mutation_on_malformed_codex_list_json(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [],
+        }
+        self.write_marketplace(existing)
+        original_bytes = self.marketplace_file.read_bytes()
+        original_inode = self.marketplace_file.stat().st_ino
+        self.env["CODEX_LIST_JSON"] = '{"installed": {}}'
+
+        result = self.run_installer("--uninstall")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("installed", result.stderr.lower())
+        self.assertIn("list", result.stderr.lower())
+        self.assertEqual(self.all_codex_calls(), ["plugin list --json"])
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
+
+    def test_sigint_during_add_rolls_back_local_state_and_releases_lock(self):
+        self.set_codex_installed(False)
+
+        result = self.run_installer_and_interrupt("add")
+
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertIn("interrupt", result.stderr.lower())
+        self.assertIn("rolled back", result.stderr.lower())
+        self.assertFalse(self.marketplace_file.exists())
+        self.assertFalse(self.source_root.exists())
+        self.assertFalse(self.codex_is_installed())
+        self.assertEqual(self.codex_calls(), ["plugin add bid@local-build-your-system"])
+        lock_fd = os.open(self.lifecycle_lock_file, os.O_RDWR)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+
+    def test_sigint_during_remove_restores_installed_and_local_state(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        self.marketplace_file.chmod(0o640)
+        original_bytes = self.marketplace_file.read_bytes()
+        original_inode = self.marketplace_file.stat().st_ino
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        source_inode = self.source_root.lstat().st_ino
+        self.set_codex_installed(True)
+        self.env["CODEX_REMOVE_MUTATE_BEFORE_BLOCK"] = "1"
+
+        result = self.run_installer_and_interrupt("remove", "--uninstall")
+
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertIn("interrupt", result.stderr.lower())
+        self.assertIn("restored", result.stderr.lower())
+        self.assertTrue(self.codex_is_installed())
+        self.assertEqual(
+            self.all_codex_calls(),
+            [
+                "plugin list --json",
+                "plugin remove bid@local-build-your-system",
+                "plugin add bid@local-build-your-system",
+            ],
+        )
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(stat.S_IMODE(self.marketplace_file.stat().st_mode), 0o640)
+        self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
+        self.assertEqual(self.source_root.lstat().st_ino, source_inode)
+        self.assertEqual(self.source_root.readlink(), BID_ROOT)
+        lock_fd = os.open(self.lifecycle_lock_file, os.O_RDWR)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
 
     def test_uninstall_documentation_distinguishes_deleted_and_preserved_state(self):
         text = README.read_text(encoding="utf-8")
@@ -850,8 +1132,19 @@ raise SystemExit(int(returncode))
         self.assertIn("项目内 `.claude/memory/`", text)
         self.assertIn("`.marketplace.json.lock`", text)
         self.assertIn("补偿安装不会执行", text)
+        self.assertIn("codex plugin list --json", text)
+        self.assertIn("不能只凭本地条目和链接缺失", text)
         stale_claim = "Codex/Claude cache 和项目内 `.claude/memory/` 永不删除"
         self.assertNotIn(stale_claim, text)
+
+    def test_first_install_requires_stable_main_checkout_source(self):
+        text = README.read_text(encoding="utf-8")
+        first_install = text.split("### Codex 首次本地安装", 1)[1].split("##", 1)[0]
+
+        self.assertIn("稳定的主 checkout", first_install)
+        self.assertIn("`.worktrees/`", first_install)
+        self.assertIn("缓存目录", first_install)
+        self.assertIn("不得", first_install)
 
     def test_scripts_are_valid_and_have_no_recursive_cache_or_copy_operations(self):
         mode = INSTALLER.stat().st_mode

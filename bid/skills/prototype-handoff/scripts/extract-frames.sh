@@ -47,7 +47,7 @@ case "$cmd" in
       sheet=$((sheet + 1))
     done
     echo "contact sheet 完成: $((sheet - 1)) 张 → $outdir"
-    echo "阅读纪律: 先通读 sheet 定位关注帧编号,再回原帧放大细读(勿逐帧 Read 全部原图)"
+    echo "阅读纪律: 先通读 sheet 定位关注帧编号,再回原帧放大细读(勿逐帧打开全部原图)"
     ;;
 
   pixel)

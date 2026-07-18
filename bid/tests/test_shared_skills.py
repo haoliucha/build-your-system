@@ -139,6 +139,19 @@ class SharedSkillPortabilityTests(unittest.TestCase):
                         f"host-specific token {match.group(0)!r}" if match else None,
                     )
 
+    def test_shared_script_text_has_no_forbidden_host_tokens(self):
+        for path in sorted(SKILLS_ROOT.glob("*/scripts/*")):
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8")
+            for label, pattern, _, _ in FORBIDDEN_HOST_PATTERNS:
+                with self.subTest(path=path.relative_to(BID_ROOT), token=label):
+                    match = pattern.search(text)
+                    self.assertIsNone(
+                        match,
+                        f"host-specific token {match.group(0)!r}" if match else None,
+                    )
+
     def test_host_adaptation_reference_maps_both_hosts(self):
         self.assertTrue(HOST_ADAPTATION.is_file())
         text = HOST_ADAPTATION.read_text(encoding="utf-8")

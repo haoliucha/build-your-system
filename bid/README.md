@@ -19,7 +19,7 @@
 
 ### Codex 首次本地安装
 
-令 `REPO_ROOT` 指向已经集成目标提交的 `build-your-system` checkout，再从仓库中的 `bid` 目录安装：
+令 `REPO_ROOT` 指向已经集成目标提交、准备长期保留的 `build-your-system` 稳定的主 checkout，再从仓库中的 `bid` 目录安装。不得把 `.worktrees/` 下的临时 worktree 或任何缓存目录作为 `~/plugins/bid` 的永久符号链接源：
 
 ```bash
 REPO_ROOT="/path/to/build-your-system"
@@ -154,11 +154,11 @@ cd "$REPO_ROOT/bid"
 zsh scripts/install-codex-local.sh --uninstall
 ```
 
-脚本会先验证 marketplace 名称、精确 `bid` 条目和 `~/plugins/bid` 的实际目标，再调用底层 `codex plugin remove bid@local-build-your-system`。这条 Codex 命令会删除 Codex 自己管理的已安装配置与缓存；这是卸载的预期行为。它不会删除源码 checkout、Claude 状态、项目内 `.claude/memory/`，也不会改动无关的 marketplace 条目。
+脚本会先验证 marketplace 名称、精确 `bid` 条目和 `~/plugins/bid` 的实际目标，再用 `codex plugin list --json` 查询真实安装状态；不能只凭本地条目和链接缺失就宣称已经卸载。查询失败、JSON 结构异常或目标条目含糊时，脚本会在任何卸载修改前停止。若 Codex 中仍安装 `bid`，脚本调用 `codex plugin remove bid@local-build-your-system`；若 Codex 已不存在但本地登记仍完整，则只清理本地登记和精确链接；只有 Codex 与本地状态都不存在时才幂等报告 already absent。remove 命令会删除 Codex 自己管理的已安装配置与缓存；这是卸载的预期行为。它不会删除源码 checkout、Claude 状态、项目内 `.claude/memory/`，也不会改动无关的 marketplace 条目。
 
 如果 Codex CLI 移除失败，marketplace 与链接保持原样；成功后脚本才原子移除单个 `bid` 条目并 unlink 这个精确链接，保留其他 marketplace key、插件及顺序。marketplace 的存在性、文件类型、设备与 inode、权限、mtime、大小和字节必须与预检快照一致；即使只是 chmod 或用相同字节替换了文件，脚本也会停止而不覆盖并发修改。
 
-若后续 marketplace 写入或 unlink 失败，脚本会尽力恢复本次拥有的本地改动，并在补偿前再次确认 `~/plugins/bid` 仍是预检时同一个 inode、仍精确指向当前源码 checkout。验证通过才执行 `codex plugin add bid@local-build-your-system` 恢复 Codex 已安装状态；该次卸载仍以非零状态退出。若源码链接已被并发替换、改指或删除，补偿安装不会执行，错误信息会说明 Codex 仍处于已移除状态，并要求先检查或修复精确链接，再运行同一条 add 命令。若补偿安装本身失败，错误信息也会给出精确恢复命令以及 marketplace、源码链接和源码 checkout 路径，不会宣称卸载成功。若本地条目和链接都已不存在，脚本给出明确的 already absent 消息并幂等退出；遇到残缺状态、并发修改或错误目标则停止，不做猜测性清理或覆盖。
+若后续 marketplace 写入或 unlink 失败，脚本会尽力恢复本次拥有的本地改动，并在补偿前再次确认 `~/plugins/bid` 仍是预检时同一个 inode、仍精确指向当前源码 checkout。验证通过才执行 `codex plugin add bid@local-build-your-system` 恢复 Codex 已安装状态；该次卸载仍以非零状态退出。若源码链接已被并发替换、改指或删除，补偿安装不会执行，错误信息会说明 Codex 仍处于已移除状态，并要求先检查或修复精确链接，再运行同一条 add 命令。若补偿安装本身失败，错误信息也会给出精确恢复命令以及 marketplace、源码链接和源码 checkout 路径，不会宣称卸载成功。遇到残缺状态、并发修改或错误目标时，脚本同样停止，不做猜测性清理或覆盖。
 
 ## 安全边界
 
