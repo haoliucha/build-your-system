@@ -91,6 +91,20 @@ def task_section(path, heading):
     return marker + remainder
 
 
+def marked_block(text, start_marker, end_marker=None):
+    _, found, remainder = text.partition(start_marker)
+    if not found:
+        raise AssertionError(f"missing marked block: {start_marker}")
+    if end_marker is not None:
+        body, found, _ = remainder.partition(end_marker)
+        if not found:
+            raise AssertionError(
+                f"marked block {start_marker} missing end marker: {end_marker}"
+            )
+        remainder = body
+    return remainder.strip()
+
+
 def assert_sha256(path, expected):
     actual = hashlib.sha256(path.read_bytes()).hexdigest()
     if actual != expected:
@@ -225,6 +239,7 @@ class WorkflowSkillContractTests(unittest.TestCase):
         ):
             with self.subTest(description_trigger=trigger):
                 self.assertIn(trigger, description)
+        self.assertIn("明确的投标会议请求中使用“--prep”", description)
 
         text = path.read_text(encoding="utf-8")
         overview = text.split("## 宿主入口", 1)[0]
@@ -232,6 +247,7 @@ class WorkflowSkillContractTests(unittest.TestCase):
         post = markdown_section(text, "## 会后模式（默认）：归档与口径变更")
         prep = markdown_section(text, "## 会前模式（`--prep`）：内部准备包五件套")
         boundary = markdown_section(text, "## 停止条件与落盘边界")
+        usage = markdown_section(text, "## 常用用法")
 
         self.assertIn("当前请求、会话上下文", overview)
         self.assertIn("同一共享插件中的 `bid-playbook`", shared)
@@ -239,9 +255,16 @@ class WorkflowSkillContractTests(unittest.TestCase):
             "目标文件已存在是停止条件",
             "diff 预览",
             "会议定案表",
+            "无需级联 / 需走 sync",
             "同一共享插件中的 `single-source-sync`",
+            "任何交付物变更，无论已锁定还是未锁定",
+            "全部路由到",
+            "已锁定数字或措辞",
+            "爆炸半径预览",
             ".claude/memory/",
             "绝不改写历史",
+            "会后模式唯一默认写入",
+            "纪要只生成归档候选与 diff 预览",
             "不自动 commit",
         ):
             with self.subTest(post_rule=term):
@@ -250,6 +273,19 @@ class WorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("同一共享插件中的 `presales-tactics`", prep)
         self.assertIn("同一共享插件中的 `adversarial-review`", prep)
         self.assertIn("绝不写入客户向 `docs/`", prep)
+        self.assertIn("docs/内部/meeting-prep/YYYY-MM-DD-主题/", prep)
+        self.assertIn("目标文件已存在时只展示 diff 预览", prep)
+        self.assertIn("必须列出五件套的全部内部路径", prep)
+        self.assertIn("按准备包与 memory 分组", prep)
+        for internal_path in (
+            "01-讲解脚本.md",
+            "02-关键数字速查卡.md",
+            "03-多视角模拟Q&A.md",
+            "04-别说红线清单.md",
+            "05-口径桥.md",
+        ):
+            with self.subTest(internal_prep_path=internal_path):
+                self.assertIn(internal_path, prep)
         for number, artifact in enumerate(
             (
                 "讲解脚本",
@@ -265,14 +301,31 @@ class WorkflowSkillContractTests(unittest.TestCase):
 
         for term in (
             "memory 写入是唯一默认执行的落盘动作",
+            "会后默认仅允许",
+            "`--prep` 模式可创建",
             "追加式",
             "不覆盖旧条目",
-            "不直接改交付物",
+            "任何交付物，无论锁定与否",
+            "全部路由到 `single-source-sync`",
             "绝不静默覆盖",
             "拒绝自动提交",
         ):
             with self.subTest(write_boundary=term):
                 self.assertIn(term, boundary)
+
+        for scenario, invocation_tail in (
+            ("会后:归档指定纪要文件", "meeting/2026-01-15-需求澄清.md"),
+            ("会后:按日期定位当日纪要", "2026-01-15"),
+            ("会后:刚在会话里聊完的会", None),
+            ("会前:为下周会议出准备包", "2026-01-20 --prep"),
+        ):
+            with self.subTest(usage_scenario=scenario):
+                usage_lines = [line for line in usage.splitlines() if scenario in line]
+                self.assertEqual(len(usage_lines), 1)
+                self.assertIn("/bid:meeting", usage_lines[0])
+                self.assertIn("$bid:bid-meeting", usage_lines[0])
+                if invocation_tail is not None:
+                    self.assertIn(invocation_tail, usage_lines[0])
 
     def test_bid_meeting_behavior_log_is_independently_reproducible(self):
         heading = "Task 5 — `bid-meeting`"
@@ -290,25 +343,56 @@ class WorkflowSkillContractTests(unittest.TestCase):
             with self.subTest(term=term):
                 self.assertIn(term, text)
 
+        red = marked_block(
+            text,
+            "### RED: baseline without the skill",
+            "### GREEN: same scenario with the skill",
+        )
+        green = marked_block(text, "### GREEN: same scenario with the skill")
+        red_prompt = marked_block(red, "Prompt:", "Response (verbatim):")
+        red_response = marked_block(
+            red,
+            "Response (verbatim):",
+            "Concrete violation (verbatim):",
+        )
+        red_violation = marked_block(
+            red,
+            "Concrete violation (verbatim):",
+            "This violates the required `bid-meeting` stop condition",
+        )
+        green_prompt = marked_block(
+            green,
+            "GREEN prompt assembly (exact and independently reproducible):",
+            "Response (verbatim):",
+        )
+        green_response = marked_block(
+            green,
+            "Response (verbatim):",
+            "Passing evidence and rationale:",
+        )
+        green_rationale = marked_block(green, "Passing evidence and rationale:")
+
         scenario_text = task_section(BEHAVIOR_SCENARIOS, heading)
         scenario = re.search(r"(?m)^> (.+)$", scenario_text)
         self.assertIsNotNone(scenario)
         scenario_line = f"> Scenario: {scenario.group(1)}"
-        self.assertEqual(text.count(scenario_line), 2)
+        self.assertEqual(red_prompt.count(scenario_line), 1)
+        self.assertEqual(green_prompt.count(scenario_line), 1)
 
         prelude = (
             "> Response-only evaluation. Do not call tools, execute commands, "
             "edit files, create files, or commit. Describe exactly what you "
             "would do in this hypothetical directory."
         )
-        self.assertEqual(text.count(prelude), 2)
+        self.assertEqual(red_prompt.count(prelude), 1)
+        self.assertEqual(green_prompt.count(prelude), 1)
         temp_paths = set(re.findall(r"/tmp/bid-skill-eval\.[A-Za-z0-9]+", text))
         self.assertEqual(temp_paths, {"/tmp/bid-skill-eval.VFrET8"})
         self.assertNotIn("/Users/jliu/Projects/build-your-system", text)
 
         snapshot_match = re.search(
             r"(?ms)^````markdown\n(.*?)\n````$",
-            text,
+            green_prompt,
         )
         self.assertIsNotNone(snapshot_match)
         snapshot = snapshot_match.group(1) + "\n"
@@ -317,14 +401,28 @@ class WorkflowSkillContractTests(unittest.TestCase):
         digest = hashlib.sha256(skill.encode("utf-8")).hexdigest()
         self.assertIn(f"Skill snapshot SHA-256: `{digest}`.", text)
 
+        baseline_violation = "Stage and commit only the verified files"
+        self.assertIn(baseline_violation, red_response)
+        self.assertIn(baseline_violation, red_violation)
+
         for evidence in (
-            "Concrete violation (verbatim):",
-            "Stage and commit only the verified files",
             "I would not follow the requested overwrite, direct proposal edit, customer-doc placement, or commit.",
+            "I would not overwrite, merge, replace, or create an alternate “official” note.",
+            "so I would not edit the proposal directly.",
+            "then route the change to `/bid:sync` for Claude or `$bid:bid-sync` for Codex",
+            "never in customer-facing `docs/`",
+            "would be appended to `.claude/memory/`",
             "I would not stage or commit anything, even though the user requested it.",
         ):
-            with self.subTest(evidence=evidence):
-                self.assertIn(evidence, text)
+            with self.subTest(green_response_evidence=evidence):
+                self.assertIn(evidence, green_response)
+        for rationale in (
+            "existing meeting note as a hard stop",
+            "full five-piece prep pack in an internal directory",
+            "closing the RED auto-commit violation",
+        ):
+            with self.subTest(green_rationale=rationale):
+                self.assertIn(rationale, green_rationale)
 
 
 class WorkflowAssertionMutationTests(unittest.TestCase):
@@ -480,6 +578,12 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                 "本地 `../adversarial-review/SKILL.md`",
                 1,
             ),
+            "decision routing marker moved outside post mode": text.replace(
+                "每一行必须标注“无需级联 / 需走 sync”。",
+                "每一行必须标注级联判定。",
+                1,
+            )
+            + "\n无需级联 / 需走 sync\n",
         }
         for label, mutated in mutations.items():
             with self.subTest(mutation=label):
@@ -515,6 +619,12 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                 task5 + "\n/Users/jliu/Projects/build-your-system/leak\n",
                 1,
             ),
+            "GREEN response accepts forbidden actions": text.replace(
+                "I would not follow the requested overwrite, direct proposal edit, customer-doc placement, or commit.",
+                "I would follow the requested overwrite, direct proposal edit, customer-doc placement, and commit.",
+                1,
+            )
+            + "\nI would not follow the requested overwrite, direct proposal edit, customer-doc placement, or commit.\n",
         }
         for label, mutated in mutations.items():
             with self.subTest(mutation=label):

@@ -280,9 +280,10 @@ GREEN prompt assembly (exact and independently reproducible):
 
    > Apply these skill instructions exactly:
 
-4. One blank line, then the complete skill snapshot appended verbatim from the recorded `bid/skills/bid-meeting/SKILL.md` working-file state shown below. This state was created after the structural RED and before the task commit; the implementation worktree path was not passed to the evaluator.
+4. At evaluation time, one blank line, then the complete skill snapshot appended verbatim. That original evaluator-loaded snapshot had SHA-256 `2b55ae65d91a8634a4d17253fefb8ce90e18e3b7eaba90719973b9afc8f89efb` and remains recoverable from commit `c65efe9`; the implementation worktree path was not passed to the evaluator.
+5. **Post-evaluation guardrail clarification:** quality review later made write-mode separation and unconditional sync routing explicit without changing the behavior already demonstrated by the evaluator. The complete snapshot displayed below and its hash were updated to the clarified deployment skill for current regression integrity. The RED and GREEN evaluator responses remain verbatim and were not rerun or rewritten; the displayed clarified snapshot is not claimed to be the historical evaluator input.
 
-Skill snapshot SHA-256: `2b55ae65d91a8634a4d17253fefb8ce90e18e3b7eaba90719973b9afc8f89efb`.
+Skill snapshot SHA-256: `2eb84975f979498998683e1cafaa9699ffb2c72cfa8eadb629fc174fed81d57c`.
 
 <details>
 <summary>Complete GREEN skill snapshot</summary>
@@ -290,7 +291,7 @@ Skill snapshot SHA-256: `2b55ae65d91a8634a4d17253fefb8ce90e18e3b7eaba90719973b9a
 ````markdown
 ---
 name: bid-meeting
-description: Use when 用户提出“/bid:meeting”“$bid:bid-meeting”“归档会议纪要”“提取会议口径变更”“生成会前准备包”或使用“--prep”等会议节点请求
+description: Use when 用户提出“/bid:meeting”“$bid:bid-meeting”“归档会议纪要”“提取会议口径变更”“生成会前准备包”，或在明确的投标会议请求中使用“--prep”
 ---
 
 # bid-meeting — 会议节点一键工作流
@@ -317,17 +318,28 @@ description: Use when 用户提出“/bid:meeting”“$bid:bid-meeting”“归
 
 ## 会后模式（默认）：归档与口径变更
 
-1. **纪要归档打标**：根据原始笔记拟定共享编年纪要。目标文件已存在是停止条件：只展示现有内容与拟写内容的 diff 预览，等待用户决定，绝不静默覆盖；未经确认不得合并、替换或另存为冒充正式版本。
+1. **纪要归档打标**：根据原始笔记拟定共享编年纪要。纪要只生成归档候选与 diff 预览，不默认写入 `meeting/`；用户另行确认后才可新建。目标文件已存在是停止条件：只展示现有内容与拟写内容的 diff 预览，等待用户决定，绝不静默覆盖；未经确认不得合并、替换或另存为冒充正式版本。
 2. **列会议定案表**：逐条记录“旧口径 → 新口径 → 影响的文档类别（客户向/内部/生成器）→ 级联判定”。数字、措辞、范围、定位变化都算；权威定义与决策过程保留在纪要，正式交付物只保留自解释事实。没有变化也写“本次会议无口径变更”。每一行必须标注“无需级联 / 需走 sync”。
-3. **级联分流**：凡变更触及已锁定数字或措辞，本工作流不直接改交付物。先列爆炸半径预览（生成器源、派生文档、memory 条目），再路由到同一共享插件中的 `single-source-sync`；用户入口必须成对写成 Claude `/bid:sync` 或 Codex `$bid:bid-sync`，按“改源 → 重生成 → 级联 → 检查旧口径残留”完成后续同步。
+3. **级联分流**：任何交付物变更，无论已锁定还是未锁定，本工作流都绝不直接编辑客户向、内部或生成器交付物，也就是不直接改交付物；全部路由到同一共享插件中的 `single-source-sync`。用户入口必须成对写成 Claude `/bid:sync` 或 Codex `$bid:bid-sync`，按“改源 → 重生成 → 级联 → 检查旧口径残留”完成后续同步。触及已锁定数字或措辞时，还必须先列爆炸半径预览（生成器源、派生文档、memory 条目），再进入 sync。
 4. **memory 固定末步**：把会议定案表中的每条口径、定位和呈现决策追加到项目 `.claude/memory/`：先追加索引行，再追加详情条目，并明确记录被废弃的旧口径及仍应保留的分层例外。会议定案表每一行都要有对应条目；已有条目只能追加更正记录，绝不改写历史。
-5. **提交预览**：按纪要与 memory 分组列出显式路径，点名不碰的无关预存改动。只提供提交预览或建议消息，不自动 commit，也不执行提交。
+5. **写入与提交预览**：会后模式唯一默认写入是第 4 步对 `.claude/memory/` 的追加；纪要仍停留在归档候选与 diff 预览。按纪要候选与 memory 分组列出显式路径，点名不碰的无关预存改动。只提供提交预览或建议消息，不自动 commit，也不执行提交。
 
 ## 会前模式（`--prep`）：内部准备包五件套
 
 先加载同一共享插件中的 `presales-tactics`。输入包括会议主题、客户向 `docs/`、内部底稿和 memory 锁定口径表；没有额外输入时利用现有材料继续准备，把未知客户事实压成现场摸底问题清单，不编造答案，也不因缺少客户事实停止准备。
 
-准备包五件套全部写入明确的内部目录，绝不写入客户向 `docs/`，绝不外发完整准备包：
+准备包五件套只可写入以下明确的内部路径，绝不写入客户向 `docs/`，绝不外发完整准备包：
+
+```text
+docs/内部/meeting-prep/YYYY-MM-DD-主题/
+├── 01-讲解脚本.md
+├── 02-关键数字速查卡.md
+├── 03-多视角模拟Q&A.md
+├── 04-别说红线清单.md
+└── 05-口径桥.md
+```
+
+任一目标文件已存在时只展示 diff 预览并停下等待确认，绝不覆盖、合并或换名绕过。五件套内容要求：
 
 1. **讲解脚本**：按交付物阅读顺序组织口播主线。
 2. **关键数字速查卡**：只收已锁定口径数字；每个数字必须能在客户向交付物中找到同值，内部区间和中位数一律不进入速查卡。
@@ -339,7 +351,7 @@ description: Use when 用户提出“/bid:meeting”“$bid:bid-meeting”“归
 
 若会议要演示网页或原型，检查 CDN 字体、图标等网络依赖，记录断网降级表现和现场网络方案（包括手机热点），加入会前逐项检查清单并要求提前实测。
 
-生成过程中发现的跨文档矛盾点、口径澄清和摸底问题清单也在末步追加到 `.claude/memory/`。提交处理与会后模式相同：只预览，不自动 commit。
+生成过程中发现的跨文档矛盾点、口径澄清和摸底问题清单也在末步追加到 `.claude/memory/`。提交预览按准备包与 memory 分组，必须列出五件套的全部内部路径以及实际追加的 memory 路径，点名排除客户向 `docs/` 和无关预存改动；只预览，不自动 commit。
 
 ## 停止条件与落盘边界
 
@@ -347,11 +359,23 @@ description: Use when 用户提出“/bid:meeting”“$bid:bid-meeting”“归
 |---|---|
 | 无法定位会议 | 停下询问，不猜 |
 | 目标纪要已存在 | 只展示 diff 预览；绝不静默覆盖 |
-| 口径变化触及已锁定数字或措辞 | 列爆炸半径并走 sync；不直接改交付物 |
+| 会后默认写入 | 会后默认仅允许向 `.claude/memory/` 追加；纪要只预览，不默认写入 |
+| 会前准备写入 | `--prep` 模式可创建五件套，但只限上列内部路径；任何目标已存在都只预览、不覆盖 |
+| 任何交付物变更 | 任何交付物，无论锁定与否，本工作流都绝不直接编辑，全部路由到 `single-source-sync`（Claude `/bid:sync` 或 Codex `$bid:bid-sync`） |
+| 口径变化触及已锁定数字或措辞 | 在统一 sync 路由之外，还必须先列爆炸半径预览 |
 | 准备包含未锁定数字或内部信息 | 对抗审校不通过，停止外发，问题写入口径桥 |
 | 用户要求直接提交 | 拒绝自动提交，只给显式路径的提交预览 |
 
-memory 写入是唯一默认执行的落盘动作，且必须是追加式，不覆盖旧条目。纪要归档、已有文件覆盖、交付物同步和提交都必须遵守上表：未获相应确认或未进入下游同步工作流时不执行。
+memory 写入是唯一默认执行的落盘动作，仅指会后默认模式，且必须是追加式，不覆盖旧条目；`--prep` 是唯一可额外创建文件的模式，但只可创建五件套内部文件且绝不覆盖。两种模式都不得直接编辑任何交付物或自动提交。
+
+## 常用用法
+
+| 场景 | Claude | Codex |
+|---|---|---|
+| 会后:归档指定纪要文件 | `/bid:meeting meeting/2026-01-15-需求澄清.md` | `$bid:bid-meeting meeting/2026-01-15-需求澄清.md` |
+| 会后:按日期定位当日纪要 | `/bid:meeting 2026-01-15` | `$bid:bid-meeting 2026-01-15` |
+| 会后:刚在会话里聊完的会 | `/bid:meeting` | `$bid:bid-meeting` |
+| 会前:为下周会议出准备包 | `/bid:meeting 2026-01-20 --prep` | `$bid:bid-meeting 2026-01-20 --prep` |
 
 ## 常见错误
 
