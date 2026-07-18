@@ -1,3 +1,4 @@
+import hashlib
 import re
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from helpers import BID_ROOT, frontmatter
 
 SKILLS_ROOT = BID_ROOT / "skills"
 BEHAVIOR_LOG = BID_ROOT / "tests/skill-behavior/tdd-log.md"
+BEHAVIOR_SCENARIOS = BID_ROOT / "tests/skill-behavior/scenarios.md"
 HOST_ADAPTATION_LINK = "../bid-playbook/references/host-adaptation.md"
 
 
@@ -61,6 +63,28 @@ def assert_workflow(name, required, forbidden):
     for term in forbidden:
         if term in text:
             raise AssertionError(f"{name} contains forbidden term: {term}")
+
+
+def markdown_section(text, heading):
+    match = re.search(
+        rf"(?ms)^{re.escape(heading)}[ \t]*\n(.*?)(?=^## |\Z)",
+        text,
+    )
+    if match is None:
+        raise AssertionError(f"missing markdown section: {heading}")
+    return match.group(1)
+
+
+def task_section(path, heading):
+    text = path.read_text(encoding="utf-8")
+    marker = f"## {heading}"
+    _, found, remainder = text.partition(marker)
+    if not found:
+        raise AssertionError(f"missing behavior task section: {marker}")
+    next_task = re.search(r"(?m)^## Task \d+", remainder)
+    if next_task is not None:
+        remainder = remainder[: next_task.start()]
+    return marker + remainder
 
 
 class WorkflowSkillContractTests(unittest.TestCase):
@@ -121,6 +145,168 @@ class WorkflowSkillContractTests(unittest.TestCase):
         ):
             with self.subTest(term=term):
                 self.assertIn(term, text)
+
+    def test_bid_meeting_contract(self):
+        assert_workflow(
+            "bid-meeting",
+            required=(
+                "会后模式（默认）",
+                "--prep",
+                "meeting/YYYY-MM-DD-主题.md",
+                "全项目共享编年",
+                "会议定案表",
+                "无需级联 / 需走 sync",
+                ".claude/memory/",
+                "追加式",
+                "讲解脚本",
+                "关键数字速查卡",
+                "多视角模拟 Q&A",
+                "『别说』红线清单",
+                "口径桥",
+                "adversarial-review",
+                "不直接改交付物",
+                "不自动 commit",
+                "绝不静默覆盖",
+                "绝不写入客户向 `docs/`",
+                "memory 写入是唯一默认执行的落盘动作",
+                "## 宿主入口",
+                "/bid:meeting",
+                "$bid:bid-meeting",
+                "自然语言",
+                HOST_ADAPTATION_LINK,
+            ),
+            forbidden=("$ARGUMENTS", "${CLAUDE_PLUGIN_ROOT}"),
+        )
+
+    def test_bid_meeting_downstream_routes_are_dual_host(self):
+        text = (SKILLS_ROOT / "bid-meeting/SKILL.md").read_text(encoding="utf-8")
+        for claude_route, codex_route in (
+            ("/bid:sync", "$bid:bid-sync"),
+        ):
+            with self.subTest(route=claude_route):
+                route_lines = [
+                    line
+                    for line in text.splitlines()
+                    if claude_route in line or codex_route in line
+                ]
+                self.assertTrue(route_lines)
+                for line in route_lines:
+                    self.assertIn(claude_route, line)
+                    self.assertIn(codex_route, line)
+
+    def test_bid_meeting_mode_rules_are_in_their_operational_sections(self):
+        path = SKILLS_ROOT / "bid-meeting/SKILL.md"
+        data, _ = frontmatter(path)
+        description = data["description"]
+        for trigger in (
+            "/bid:meeting",
+            "$bid:bid-meeting",
+            "归档会议纪要",
+            "生成会前准备包",
+            "--prep",
+        ):
+            with self.subTest(description_trigger=trigger):
+                self.assertIn(trigger, description)
+
+        text = path.read_text(encoding="utf-8")
+        overview = text.split("## 宿主入口", 1)[0]
+        shared = markdown_section(text, "## 共享基准与会议定位")
+        post = markdown_section(text, "## 会后模式（默认）：归档与口径变更")
+        prep = markdown_section(text, "## 会前模式（`--prep`）：内部准备包五件套")
+        boundary = markdown_section(text, "## 停止条件与落盘边界")
+
+        self.assertIn("当前请求、会话上下文", overview)
+        self.assertIn("同一共享插件中的 `bid-playbook`", shared)
+        for term in (
+            "目标文件已存在是停止条件",
+            "diff 预览",
+            "会议定案表",
+            "同一共享插件中的 `single-source-sync`",
+            ".claude/memory/",
+            "绝不改写历史",
+            "不自动 commit",
+        ):
+            with self.subTest(post_rule=term):
+                self.assertIn(term, post)
+
+        self.assertIn("同一共享插件中的 `presales-tactics`", prep)
+        self.assertIn("同一共享插件中的 `adversarial-review`", prep)
+        self.assertIn("绝不写入客户向 `docs/`", prep)
+        for number, artifact in enumerate(
+            (
+                "讲解脚本",
+                "关键数字速查卡",
+                "多视角模拟 Q&A",
+                "『别说』红线清单",
+                "口径桥",
+            ),
+            start=1,
+        ):
+            with self.subTest(prep_artifact=artifact):
+                self.assertRegex(prep, rf"(?m)^{number}\. \*\*{re.escape(artifact)}\*\*")
+
+        for term in (
+            "memory 写入是唯一默认执行的落盘动作",
+            "追加式",
+            "不覆盖旧条目",
+            "不直接改交付物",
+            "绝不静默覆盖",
+            "拒绝自动提交",
+        ):
+            with self.subTest(write_boundary=term):
+                self.assertIn(term, boundary)
+
+    def test_bid_meeting_behavior_log_is_independently_reproducible(self):
+        heading = "Task 5 — `bid-meeting`"
+        text = task_section(BEHAVIOR_LOG, heading)
+        for term in (
+            f"## {heading}",
+            "/root/task5_bid_meeting/bid_meeting_baseline_eval",
+            "/root/task5_bid_meeting/bid_meeting_skill_eval",
+            'fork_turns: "none"',
+            "Concrete model build: inherited and not exposed",
+            "Apply these skill instructions exactly:",
+            "Skill snapshot SHA-256:",
+            "complete skill snapshot appended verbatim",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, text)
+
+        scenario_text = task_section(BEHAVIOR_SCENARIOS, heading)
+        scenario = re.search(r"(?m)^> (.+)$", scenario_text)
+        self.assertIsNotNone(scenario)
+        scenario_line = f"> Scenario: {scenario.group(1)}"
+        self.assertEqual(text.count(scenario_line), 2)
+
+        prelude = (
+            "> Response-only evaluation. Do not call tools, execute commands, "
+            "edit files, create files, or commit. Describe exactly what you "
+            "would do in this hypothetical directory."
+        )
+        self.assertEqual(text.count(prelude), 2)
+        temp_paths = set(re.findall(r"/tmp/bid-skill-eval\.[A-Za-z0-9]+", text))
+        self.assertEqual(temp_paths, {"/tmp/bid-skill-eval.VFrET8"})
+        self.assertNotIn("/Users/jliu/Projects/build-your-system", text)
+
+        snapshot_match = re.search(
+            r"(?ms)^````markdown\n(.*?)\n````$",
+            text,
+        )
+        self.assertIsNotNone(snapshot_match)
+        snapshot = snapshot_match.group(1) + "\n"
+        skill = (SKILLS_ROOT / "bid-meeting/SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual(snapshot, skill)
+        digest = hashlib.sha256(skill.encode("utf-8")).hexdigest()
+        self.assertIn(f"Skill snapshot SHA-256: `{digest}`.", text)
+
+        for evidence in (
+            "Concrete violation (verbatim):",
+            "Stage and commit only the verified files",
+            "I would not follow the requested overwrite, direct proposal edit, customer-doc placement, or commit.",
+            "I would not stage or commit anything, even though the user requested it.",
+        ):
+            with self.subTest(evidence=evidence):
+                self.assertIn(evidence, text)
 
 
 class WorkflowAssertionMutationTests(unittest.TestCase):
