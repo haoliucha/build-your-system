@@ -154,7 +154,9 @@ cd "$REPO_ROOT/bid"
 zsh scripts/install-codex-local.sh --uninstall
 ```
 
-脚本会先验证 marketplace 名称、精确 `bid` 条目和 `~/plugins/bid` 的实际目标，再调用底层 `codex plugin remove bid@local-build-your-system`。如果 Codex CLI 移除失败，marketplace 与链接保持原样；成功后才原子移除单个 `bid` 条目并 unlink 这个精确链接，保留其他 marketplace key、插件及顺序。源码 checkout、Codex/Claude cache 和项目内 `.claude/memory/` 永不删除。若本地条目和链接都已不存在，脚本给出明确的 already absent 消息并幂等退出；遇到残缺状态或错误目标则停止，不做猜测性清理。
+脚本会先验证 marketplace 名称、精确 `bid` 条目和 `~/plugins/bid` 的实际目标，再调用底层 `codex plugin remove bid@local-build-your-system`。这条 Codex 命令会删除 Codex 自己管理的已安装配置与缓存；这是卸载的预期行为。它不会删除源码 checkout、Claude 状态、项目内 `.claude/memory/`，也不会改动无关的 marketplace 条目。
+
+如果 Codex CLI 移除失败，marketplace 与链接保持原样；成功后脚本才原子移除单个 `bid` 条目并 unlink 这个精确链接，保留其他 marketplace key、插件及顺序。若后续 marketplace 写入或 unlink 失败，脚本会尽力恢复本地字节、权限和链接，并执行 `codex plugin add bid@local-build-your-system` 恢复 Codex 已安装状态；该次卸载仍以非零状态退出。若补偿安装也失败，错误信息会给出精确恢复命令以及 marketplace、源码链接和源码 checkout 路径，不会宣称卸载成功。若本地条目和链接都已不存在，脚本给出明确的 already absent 消息并幂等退出；遇到残缺状态、并发修改或错误目标则停止，不做猜测性清理或覆盖。
 
 ## 安全边界
 
