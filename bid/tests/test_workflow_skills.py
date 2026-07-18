@@ -295,6 +295,9 @@ HANDOFF_NEGATION = re.compile(
     r"must\s+not|do\s+not|don't|never|refus(?:e|ed|es|ing)|would\s+not)"
     r".{0,72}$"
 )
+HANDOFF_CLAUSE_BOUNDARY = re.compile(
+    r"(?i:\b(?:but|however|yet)\b)|但是|然而|但|[\n。.，,；;!！?？]"
+)
 
 
 def assert_no_handoff_affirmative_contradictions(scoped_text):
@@ -303,23 +306,12 @@ def assert_no_handoff_affirmative_contradictions(scoped_text):
         for label in labels:
             for pattern in HANDOFF_AFFIRMATIVE_PATTERNS[label]:
                 for match in pattern.finditer(text):
-                    clause_start = max(
-                        text.rfind(separator, 0, match.start())
-                        for separator in (
-                            "\n",
-                            "。",
-                            ".",
-                            "，",
-                            ",",
-                            "；",
-                            ";",
-                            "!",
-                            "！",
-                            "?",
-                            "？",
-                        )
-                    )
-                    clause_through_match = text[clause_start + 1 : match.end()]
+                    clause_start = 0
+                    for boundary in HANDOFF_CLAUSE_BOUNDARY.finditer(
+                        text, 0, match.start()
+                    ):
+                        clause_start = boundary.end()
+                    clause_through_match = text[clause_start : match.end()]
                     if HANDOFF_NEGATION.search(clause_through_match) is not None:
                         continue
                     raise AssertionError(
@@ -1557,9 +1549,12 @@ class WorkflowSkillContractTests(unittest.TestCase):
         ):
             with self.subTest(clarification_evidence=term):
                 self.assertIn(term, current)
-        hash_fields = re.findall(
-            r"(?m)^Current deployed skill snapshot SHA-256: `([0-9a-f]{64})`\.$",
-            current,
+        hash_fields = list(
+            re.finditer(
+                r"(?m)^Current deployed skill snapshot SHA-256: "
+                r"`([0-9a-f]{64})`\.$",
+                current,
+            )
         )
         self.assertEqual(len(hash_fields), 1)
         snapshot_match = re.search(
@@ -1567,11 +1562,17 @@ class WorkflowSkillContractTests(unittest.TestCase):
             current,
         )
         self.assertIsNotNone(snapshot_match)
+        snapshot_start = current.index("````markdown")
+        self.assertLess(hash_fields[0].end(), snapshot_start)
+        self.assertEqual(
+            current[hash_fields[0].end() : snapshot_start],
+            "\n\n",
+        )
         snapshot = snapshot_match.group(1) + "\n"
         skill = (SKILLS_ROOT / "bid-handoff/SKILL.md").read_text(encoding="utf-8")
         self.assertEqual(snapshot, skill)
         digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
-        self.assertEqual(hash_fields[0], digest)
+        self.assertEqual(hash_fields[0].group(1), digest)
 
 
 class WorkflowAssertionMutationTests(unittest.TestCase):
@@ -1697,6 +1698,17 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
             with mock.patch(__name__ + ".BEHAVIOR_LOG", behavior_log):
                 with self.assertRaises(AssertionError):
                     case.test_bid_handoff_behavior_log_is_independently_reproducible()
+
+    def assert_handoff_current_deployed_contract_rejects(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            behavior_log = Path(tmp) / "tdd-log.md"
+            behavior_log.write_text(text, encoding="utf-8")
+            case = WorkflowSkillContractTests(
+                "test_bid_handoff_current_deployed_snapshot_is_current"
+            )
+            with mock.patch(__name__ + ".BEHAVIOR_LOG", behavior_log):
+                with self.assertRaises(AssertionError):
+                    case.test_bid_handoff_current_deployed_snapshot_is_current()
 
     def assert_behavior_contract_rejects(self, text):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2174,6 +2186,54 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                 "## 停止条件与执行边界",
                 1,
             ),
+            "contrast receiver inference": text.replace(
+                "## 形态 A / 形态 B 选择",
+                "不能凭空猜测但根据官方品牌资料推断接收工具。\n\n"
+                "## 形态 A / 形态 B 选择",
+                1,
+            ),
+            "contrast placeholder draft": text.replace(
+                "## P0/P1/P2 分批放行",
+                "不会直接生产但缺文案时先做占位草稿。\n\n"
+                "## P0/P1/P2 分批放行",
+                1,
+            ),
+            "contrast full batch first": text.replace(
+                "## 交付前对抗审校",
+                "不会立即交付但先生成完整 20 屏草稿再拆批。\n\n"
+                "## 交付前对抗审校",
+                1,
+            ),
+            "contrast approved overwrite": text.replace(
+                "## 停止条件与执行边界",
+                "现在不会覆盖但用户批准后将覆盖旧包。\n\n"
+                "## 停止条件与执行边界",
+                1,
+            ),
+            "contrast approved git execution": text.replace(
+                "## 停止条件与执行边界",
+                "现在不会提交但用户批准后将执行 git add 并 git commit。\n\n"
+                "## 停止条件与执行边界",
+                1,
+            ),
+            "English but contrast": text.replace(
+                "## P0/P1/P2 分批放行",
+                "I do not create drafts but without approved copy I create a "
+                "placeholder draft.\n\n## P0/P1/P2 分批放行",
+                1,
+            ),
+            "English however contrast": text.replace(
+                "## 停止条件与执行边界",
+                "I do not overwrite however after approval I will replace "
+                "the old package.\n\n## 停止条件与执行边界",
+                1,
+            ),
+            "English yet contrast": text.replace(
+                "## 停止条件与执行边界",
+                "I do not stage yet after approval I will stage the files "
+                "and commit them.\n\n## 停止条件与执行边界",
+                1,
+            ),
         }
         for label, mutated in mutations.items():
             with self.subTest(mutation=label):
@@ -2252,6 +2312,25 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                 "Once approved, I will rename and migrate the old package, then replace it.",
             "GREEN English stage commit bypass":
                 "After approval, I will stage the files and commit them.",
+            "GREEN contrast receiver inference":
+                "不能凭空猜测但根据官方品牌资料推断接收工具",
+            "GREEN contrast placeholder draft":
+                "不会直接生产但缺文案时先做占位草稿",
+            "GREEN contrast full batch first":
+                "不会立即交付但先生成完整 20 屏草稿再拆批",
+            "GREEN contrast approved overwrite":
+                "现在不会覆盖但用户批准后将覆盖旧包",
+            "GREEN contrast approved git execution":
+                "现在不会提交但用户批准后将执行 git add 并 git commit",
+            "GREEN English but contrast":
+                "I do not create drafts but without approved copy I create a "
+                "placeholder draft.",
+            "GREEN English however contrast":
+                "I do not overwrite however after approval I will replace "
+                "the old package.",
+            "GREEN English yet contrast":
+                "I do not stage yet after approval I will stage the files "
+                "and commit them.",
         }
         for label, phrase in response_insertions.items():
             mutations[label] = text.replace(
@@ -2266,6 +2345,26 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
         for label, mutated in mutations.items():
             with self.subTest(mutation=label):
                 self.assert_handoff_behavior_contract_rejects(mutated)
+
+        current_hash_line = (
+            "Current deployed skill snapshot SHA-256: "
+            "`1f97dfcd1aa4dfa0dec67be46ab85da32a3c1e8136c8feeb77fdcef8293ff719`."
+        )
+        relocated_current_hash = text.replace(
+            current_hash_line + "\n\n",
+            "",
+            1,
+        ).replace(
+            "- This follow-up preserves both evaluator prompts and verbatim "
+            "responses unchanged.",
+            current_hash_line
+            + "\n\n- This follow-up preserves both evaluator prompts and verbatim "
+            "responses unchanged.",
+            1,
+        )
+        self.assert_handoff_current_deployed_contract_rejects(
+            relocated_current_hash
+        )
 
     def test_canonical_command_hash_rejects_a_mutated_fixture(self):
         with tempfile.TemporaryDirectory() as tmp:
