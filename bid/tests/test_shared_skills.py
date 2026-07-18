@@ -16,7 +16,7 @@ DOMAIN_SKILLS = {
     "prototype-handoff",
     "single-source-sync",
 }
-WORKFLOW_SKILLS = {"bid-init", "bid-meeting", "bid-sync"}
+WORKFLOW_SKILLS = {"bid-handoff", "bid-init", "bid-meeting", "bid-sync"}
 
 SKILLS_ROOT = BID_ROOT / "skills"
 HOST_ADAPTATION = SKILLS_ROOT / "bid-playbook/references/host-adaptation.md"

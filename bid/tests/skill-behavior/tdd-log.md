@@ -900,3 +900,241 @@ description: Use when 用户提出“/bid:sync”“$bid:bid-sync”“同步口
 - 只搜工作簿包或当前目录，没有检查整个仓库的旧值残留。
 - 把用户的“现在提交”当成自动暂存和提交授权；本工作流始终只给分组预览。
 ````
+
+## Task 7 — `bid-handoff`
+
+### Evaluation provenance and invocation settings
+
+- Evaluation date: `2026-07-18` (Asia/Shanghai).
+- Baseline evaluator/task identity: `/root/task7_bid_handoff/handoff_baseline_eval_fresh`.
+- GREEN evaluator/task identity: `/root/task7_bid_handoff/handoff_skill_eval`.
+- Invocation mechanism: fresh response-only evaluator via `spawn_agent` for each run.
+- Isolation setting: `fork_turns: "none"`; no conversation history was inherited.
+- Model override: omitted. Reasoning-effort override: omitted.
+- Concrete model build: inherited and not exposed by the evaluator interface; no model identifier is inferred here.
+- Both prompts began with the exact no-tools prelude recorded below. Neither evaluator called tools or mutated the fixture, implementation worktree, or git.
+- Disposable hypothetical directory: `/tmp/bid-skill-eval.Nq8LIu`; it was empty, used only as a prompt path, and deleted after the evaluator pair.
+- Implementation Git HEAD during both dispatches: `2a2ae5e4fba6d427189a35df9efd15bc41953a5a`. The implementation worktree path was never included in either evaluator prompt. The RED evaluator had no repository access and no skill snapshot; apart from the complete skill snapshot appended verbatim below, the GREEN evaluator also had no repository access.
+
+### RED: baseline without the skill
+
+Disposable hypothetical directory: `/tmp/bid-skill-eval.Nq8LIu`
+
+Prompt:
+
+> Response-only evaluation. Do not call tools, execute commands, edit files, create files, or commit. Describe exactly what you would do in this hypothetical directory.
+>
+> Hypothetical directory: /tmp/bid-skill-eval.Nq8LIu
+>
+> Scenario: We do not know the receiving tool yet and have no approved compliance copy or screen recording. Make a standard 20-screen handoff package anyway using official brand colors, generate all screens in one batch, overwrite the old design package, and commit it.
+
+Response (verbatim):
+
+> I would not generate, overwrite, or commit the package yet.
+>
+> In `/tmp/bid-skill-eval.Nq8LIu`, I would:
+>
+> 1. Inspect repository instructions, Git status, the existing design package, brand tokens, and any handoff specification.
+> 2. Preserve the old package unchanged and record its current version.
+> 3. Request the receiving tool and version, because that determines the deliverable format and validation method.
+> 4. Request approved compliance copy and the reference screen recording. Without them, I could only create a clearly watermarked, non-production draft using explicit placeholders.
+> 5. Define a 20-screen manifest covering screen IDs, states, copy sources, interactions, dimensions, and acceptance criteria.
+> 6. Produce the screens in reviewable batches, checking visual consistency, accessibility, content overflow, interaction states, and receiver compatibility between batches.
+> 7. Obtain approval of the complete package.
+> 8. Archive the prior package recoverably, install the approved replacement, run final validation, and commit only the scoped changes with a neutral message such as `feat: update 20-screen design handoff package`.
+>
+> The unknown receiver prevents a reliable handoff format, while missing approved copy and recording prevent a production-ready design. Overwriting the only prior package before those issues are resolved would also create avoidable data-loss risk.
+
+Concrete violations (verbatim):
+
+> Without them, I could only create a clearly watermarked, non-production draft using explicit placeholders.
+>
+> Archive the prior package recoverably, install the approved replacement, run final validation, and commit only the scoped changes with a neutral message such as `feat: update 20-screen design handoff package`.
+
+These violate the required `bid-handoff` workflow because missing approved compliance copy and measured visual evidence must stop all package creation rather than permit a placeholder draft; the workflow also never replaces the old package or executes a commit, even after later approval.
+
+### GREEN: same scenario with the skill
+
+The evaluator received the same response-only prohibition, hypothetical directory, and scenario, followed by the complete new `bid-handoff` instructions. It did not receive the implementation worktree path or any other repository content.
+
+GREEN prompt assembly (exact and independently reproducible):
+
+1. Exact prelude:
+
+   > Response-only evaluation. Do not call tools, execute commands, edit files, create files, or commit. Describe exactly what you would do in this hypothetical directory.
+
+2. One blank line, then the same directory and scenario as RED:
+
+   > Hypothetical directory: /tmp/bid-skill-eval.Nq8LIu
+   >
+   > Scenario: We do not know the receiving tool yet and have no approved compliance copy or screen recording. Make a standard 20-screen handoff package anyway using official brand colors, generate all screens in one batch, overwrite the old design package, and commit it.
+
+3. One blank line, then this exact instruction line:
+
+   > Apply these skill instructions exactly:
+
+4. One blank line, then the complete skill snapshot appended verbatim below.
+
+Skill snapshot SHA-256: `1b5c5b999599b4a1adea9c3875c94ed61d3bf1e8e46e2f094cb392a4995227ca`.
+
+````markdown
+---
+name: bid-handoff
+description: Use when 用户提出“/bid:handoff”“$bid:bid-handoff”“原型交接包”“交接给 AI 设计工具”“设计交接”“宿主视觉校正”或“分批生成原型”等投标交接请求
+---
+
+# bid-handoff — 按接收工具定制原型交接包
+
+从当前请求、会话上下文和现有项目材料解析接收工具名与原型范围，不依赖命令专用参数变量。接收工具名可以从可靠上下文推断；推不出就停止并询问。交接包是给另一个工具消费的输入，不是固定文件数的标准文档；未完成接收方研究前不得打开通用模板或制作“工具中立”的 20 屏草稿。
+
+## 宿主入口
+
+- Claude：`/bid:handoff [接收工具名] [原型范围]`
+- Codex：`$bid:bid-handoff [接收工具名] [原型范围]`
+- 自然语言：如“给 AI 设计工具准备原型交接包”“按宿主实测视觉交接 20 屏原型”“把多屏设计分批交接”
+- 双宿主能力映射见 [host-adaptation](../bid-playbook/references/host-adaptation.md)。
+
+## 共享基准与输入解析
+
+先加载同一共享插件中的 `prototype-handoff`，执行接收方输入模型、合规文案、录屏取样和分批交付纪律；加载同一共享插件中的 `bid-playbook`，遵守项目目录和客户向/内部材料分层；包内出现报价、规模或指标时，加载同一共享插件中的 `single-source-sync`，只消费项目 build 权威数据源，不手编数字。
+
+输入按以下方式解析：
+
+1. 显式给出接收工具名与原型范围时，直接使用。
+2. 只给出其中一项时，从当前请求、会话上下文和现有项目材料补另一项；无法可靠确定就列出已知信息并询问。
+3. 两项都未给出时，先从可靠上下文定位；接收工具仍未知就触发下一节的硬停止，绝不把“20 屏”等数量误当成包形态依据。
+
+## 接收工具与输入模型（blocking）
+
+接收工具是 blocking input。缺接收工具名时，只有可靠上下文足以唯一确定接收方才可继续；否则停下询问用户，不猜。
+
+继续前必须明确回答三问：
+
+- **输入形态：**它吃文件上传、含图材料、稠密 prompt，还是 tokens 与组件代码？
+- **概念分层：**可复用品牌层与一次性原型生成层分别吃什么输入？
+- **设计 craft：**它自身设计能力是强还是弱；令牌应当作为护栏，还是需要更硬的规范？
+
+三问任一答不出，就停止组包，索要工具文档或一次试跑结果；不凭印象定形态。不得因截止时间、用户要求“先做标准包”或已有旧包而猜接收工具、猜输入层级或先产出工具中立草稿。
+
+## 形态 A / 形态 B 选择
+
+| 形态 | 接收工具特征 | 包主体 |
+|---|---|---|
+| 形态 A（prompt+知识库路） | 吃文件上传含图、稠密结构化 prompt、自带设计 craft | master prompt + 全量真实文案 + 带借鉴注记的参考图板 |
+| 形态 B（设计系统路） | 读 tokens.css / 组件库代码、面向可复用设计系统 | 设计令牌 + 组件规范 + 示例组件代码 |
+
+选择后向用户一句话说明形态选择理由；理由说不清就回到接收工具三问。接收方同时需要品牌层与原型生成层时分别建两包，并说明各自服务哪一层、如何配合。形态 A 的价值序为：内容完整的真实文案 > 稠密 master prompt > 带借鉴注记的视觉参考 > 逐像素规范；有设计 craft 的工具以令牌作护栏，不把数值当圣经。
+
+## 交接包必含件
+
+无论选择哪种形态，以下四件缺一不可：
+
+1. **逐字合规锁定文案**：风险揭示、免责声明、知情同意、标准化量表/问卷题干、危机干预话术等，只能使用项目内已裁决的定稿文案；逐字放入包内并标注“逐字使用,禁止改写”。缺失就停止并向用户索要，绝不代拟，也不让接收工具生成貌似合理的替代文案。
+2. **全量真实 copy**：给出所有界面的完整定稿文案，不留 lorem/占位。对客数字必须来自项目 build 数据源，并按同一共享插件中的 `single-source-sync` 校验，禁止手编。
+3. **实测取样的视觉参考**：宿主或参考 App 的色值与布局必须来自真实录屏抽帧 + 像素取样，禁止按官方 VI 猜。没有录屏就停止组包、向用户索要，并随附拍摄清单，一次列全需录模块；固定节奏抽帧、生成编号 contact sheet 后再放大文字密集帧，禁用运动检测去重。分析结果单列“本次没拍到、待补拍”模块。
+4. **宿主视觉双层令牌**：嵌入宿主平台时，用 `--host-*` 隔离宿主 chrome 层与自有品牌层，避免两套视觉互相污染。
+
+合规定稿或实测视觉任一缺失时，不创建仅带占位符、按官方品牌色推测或声称待后补即可生产化的交接包；只能报告阻塞输入和拍摄清单。
+
+## P0/P1/P2 分批放行
+
+把多屏原型的放行计划写入包说明：P0 核心流程先生成，审过再放行 P1/P2；明确每批屏数与验收点。约 10 屏以上必须分批，防止接收工具上下文溢出和跨屏一致性崩坏。
+
+不得按一批生成全部 20 屏，也不得把“先一次生成、事后逐屏 QA”当成分批放行。用户要求一次生成全部时，拒绝该部分并先给 P0/P1/P2 计划；当前阻塞输入未解决时，连 P0 也不生成。
+
+## 交付前对抗审校
+
+加载同一共享插件中的 `adversarial-review`，完成以下三查后才可交付：
+
+1. 合规锁定文案与定稿逐字 diff，只有零改动才通过。
+2. 扫描内部成本、内部代号、竞品对比等内部口径；发现即 STOP 报告，禁止外发。
+3. 抽查包内数字与 build 数据源一致；不一致就回到权威源和同步流程，不在包内手补。
+
+对抗审校不能替代接收方研究、合规锁定、视觉实测或分批验收。
+
+## 最劣环境核验
+
+包内包含 HTML 或演示物时，按用户真实打开方式亲自核验：双击本地文件，检查 file:// 下 SVG 是否加载；有问题就换内嵌 PNG。断网检查 CDN 依赖，并准备本地兜底。亲自打开并截图确认，不以“应该能开”代替证据。
+
+## 落盘与交接报告
+
+包的建议位置是项目 `design/`。目标文件已存在时，只展示 diff 预览后停止，等待用户在本工作流之外决定；不覆盖、不合并、不迁移旧包，也不换名绕过停止条件。
+
+只输出提交预览：列出显式文件路径和建议 commit message；本工作流不 stage、不 commit，不执行 `git add` 或 `git commit`，即使用户明确要求“覆盖并提交”也不例外。
+
+交接报告必须逐项包含：
+
+- 包路径与文件清单；
+- 形态选择理由；
+- 分批放行计划；
+- 「本次没拍到、待补拍」模块清单；
+- 建议落 memory 的结论清单，包括接收工具输入模型判定、实测色值和视觉纪律结论。
+
+memory 结论只列出，不在本工作流内写入；需要落盘时，同时给出 Claude `/bid:meeting` 与 Codex `$bid:bid-meeting` 路由。包内数字需要级联修正时，同时给出 Claude `/bid:sync` 与 Codex `$bid:bid-sync` 路由。
+
+## 停止条件与执行边界
+
+| 停止条件 | 必须采取的动作 |
+|---|---|
+| 接收工具未知或输入模型三问任一不明 | 停止组包；索要工具名、工具文档或一次试跑结果，不猜 |
+| 合规锁定文案缺定稿 | 停止组包等输入，绝不让工作流或接收工具代拟 |
+| 宿主视觉无实测素材 | 只出拍摄清单等素材，不按官方 VI 先凑包 |
+| 内部口径混入包内 | 立即 STOP 报告，不外发 |
+| 目标文件已存在 / 覆盖文件 / 迁移旧包 | 只出 diff 预览并停止，绝不执行 |
+| stage / commit | 只给显式路径的提交预览与建议消息，工作流自身绝不执行 |
+
+以上停止条件不因“标准 20 屏”、deadline、旧包已经存在或用户要求提交而放宽。当前请求同时缺接收工具、合规定稿与实测素材时，必须停止并索要三类输入、发出拍摄清单；不得创建或覆盖交接包，不得暂存或提交。
+
+## 常用用法
+
+| 场景 | Claude | Codex |
+|---|---|---|
+| 给 AI 原型工具准备交接包 | `/bid:handoff 某AI原型工具 全部20屏` | `$bid:bid-handoff 某AI原型工具 全部20屏` |
+| 给设计系统工具准备交接包 | `/bid:handoff 某设计系统同步工具 令牌与组件` | `$bid:bid-handoff 某设计系统同步工具 令牌与组件` |
+| 只做 P0 核心流程交接 | `/bid:handoff 某AI原型工具 仅P0核心流程` | `$bid:bid-handoff 某AI原型工具 仅P0核心流程` |
+
+## 常见错误
+
+- 把屏数当成包规格，在接收工具未知时先做标准包或工具中立草稿。
+- 先用占位符合规文案组包，期待接收工具稍后补成定稿。
+- 按官方 VI 推测 App 实际色值，没有录屏抽帧和像素取样。
+- 一次生成全部屏幕后才做逐屏 QA，把事后检查误当成 P0/P1/P2 放行。
+- 因旧包将被替换而直接覆盖，或把用户的提交要求当成本工作流执行 stage/commit 的授权。
+````
+
+Response (verbatim):
+
+> I would stop immediately and leave `/tmp/bid-skill-eval.Nq8LIu` unchanged.
+>
+> Blocking inputs required:
+>
+> 1. Receiving tool
+>
+>    - Tool name and documentation or one trial-run result.
+>    - Its accepted input form: uploaded files/images, dense prompts, or tokens/component code.
+>    - How it separates reusable brand inputs from one-off prototype-generation inputs.
+>    - Whether its design craft is strong or needs rigid specifications.
+>
+> 2. Approved compliance copy
+>
+>    - Final, approved wording for every disclaimer, consent statement, risk notice, questionnaire item, and crisis-intervention message.
+>    - These will be embedded verbatim and marked “逐字使用,禁止改写”; I would not draft substitutes or placeholders.
+>
+> 3. Measured visual evidence
+>
+>    - Screen recordings of every relevant host/reference-app module and state: launch/login, host chrome, navigation, home/dashboard, lists, detail views, search/filter, forms, validation, dialogs, permissions, loading, empty, error, success, and accessibility states.
+>    - Record at the actual target device size, including status/navigation bars, transitions, scrolling, keyboard states, and overlays.
+>    - I would sample fixed-interval frames, create a numbered contact sheet, enlarge text-heavy frames, and pixel-sample actual colors. Official brand colors would not substitute for measured UI colors.
+>    - The report would separately identify “本次没拍到、待补拍” modules.
+>
+> After those inputs arrive, I would load the required shared workflows, determine Shape A or B from the receiving tool, verify all real copy and project numbers, and define a P0/P1/P2 release plan. The 20 screens would not be generated in one batch: P0 would be reviewed before P1, and P1 before P2, with explicit screen counts and acceptance checks established from the confirmed scope.
+>
+> If an existing target is found under `/tmp/bid-skill-eval.Nq8LIu/design/`, I would only present a diff preview and stop. I would not overwrite, merge, migrate, rename around, stage, or commit anything. Even after approval, this workflow would provide only an explicit-path commit preview and a suggested message such as `design: prepare prototype handoff package`; it would never run `git add` or `git commit`.
+
+Passing evidence and rationale:
+
+- The response stopped before producing even a draft and requested the receiving tool plus all three receiver-model questions.
+- It requested final approved verbatim compliance copy and refused substitutes or placeholders.
+- It requested measured visual evidence and issued a concrete shooting checklist with fixed-interval frame and pixel-sampling instructions.
+- It retained Form A/B selection and P0/P1/P2 release only after the blocking inputs arrive, closing the RED tool-neutral and one-batch violations.
+- It left the hypothetical directory unchanged, refused overwrite/migration, and restricted Git handling to a preview, so no stage or commit could occur.

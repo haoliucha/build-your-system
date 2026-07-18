@@ -19,6 +19,10 @@ CANONICAL_SYNC_COMMAND = BID_ROOT / "commands/sync.md"
 CANONICAL_SYNC_COMMAND_SHA256 = (
     "a4540ece46a20f9bbecae01750df844b4e4a8a77f4c31b5d21d4b2394df6a20f"
 )
+CANONICAL_HANDOFF_COMMAND = BID_ROOT / "commands/handoff.md"
+CANONICAL_HANDOFF_COMMAND_SHA256 = (
+    "f3950be76ac7e7acec987e4490a98a614ad90d0fbad5efc01fdcc3c6c13832e0"
+)
 HOST_ADAPTATION_LINK = "../bid-playbook/references/host-adaptation.md"
 SYNC_DESCRIPTION = (
     "Use when 用户提出“/bid:sync”“$bid:bid-sync”“同步口径”“级联更新”"
@@ -29,6 +33,10 @@ HISTORICAL_SYNC_SKILL_SHA256 = (
 )
 HISTORICAL_UNSAVED_SYNC_SKILL_SHA256 = (
     "1b0873b57f3944a8fa6bed3535b9f517ca8a0855ad9d2a6b14fb005742031448"
+)
+HANDOFF_DESCRIPTION = (
+    "Use when 用户提出“/bid:handoff”“$bid:bid-handoff”“原型交接包”"
+    "“交接给 AI 设计工具”“设计交接”“宿主视觉校正”或“分批生成原型”等投标交接请求"
 )
 
 
@@ -1017,6 +1025,354 @@ class WorkflowSkillContractTests(unittest.TestCase):
         digest = hashlib.sha256(skill.encode("utf-8")).hexdigest()
         self.assertIn(f"Current deployed skill snapshot SHA-256: `{digest}`.", current)
 
+    def test_bid_handoff_contract(self):
+        assert_workflow(
+            "bid-handoff",
+            required=(
+                "接收工具是 blocking input",
+                "输入形态",
+                "概念分层",
+                "设计 craft",
+                "形态 A",
+                "形态 B",
+                "逐字合规锁定文案",
+                "全量真实 copy",
+                "实测取样的视觉参考",
+                "宿主视觉双层令牌",
+                "P0",
+                "P1",
+                "P2",
+                "同一共享插件中的 `prototype-handoff`",
+                "同一共享插件中的 `adversarial-review`",
+                "同一共享插件中的 `single-source-sync`",
+                "同一共享插件中的 `bid-playbook`",
+                "最劣环境核验",
+                "不覆盖",
+                "不 stage",
+                "不 commit",
+                "## 宿主入口",
+                "/bid:handoff",
+                "$bid:bid-handoff",
+                "自然语言",
+                HOST_ADAPTATION_LINK,
+            ),
+            forbidden=(
+                "$ARGUMENTS",
+                "${CLAUDE_PLUGIN_ROOT}",
+                "${CODEX_PLUGIN_ROOT}",
+            ),
+        )
+
+    def test_bid_handoff_canonical_command_is_unchanged(self):
+        assert_sha256(
+            CANONICAL_HANDOFF_COMMAND,
+            CANONICAL_HANDOFF_COMMAND_SHA256,
+        )
+
+    def test_bid_handoff_rules_are_in_their_operational_sections(self):
+        path = SKILLS_ROOT / "bid-handoff/SKILL.md"
+        data, _ = frontmatter(path)
+        self.assertEqual(data["description"], HANDOFF_DESCRIPTION)
+
+        text = path.read_text(encoding="utf-8")
+        overview = text.split("## 宿主入口", 1)[0]
+        host = markdown_section(text, "## 宿主入口")
+        shared = markdown_section(text, "## 共享基准与输入解析")
+        receiver = markdown_section(text, "## 接收工具与输入模型（blocking）")
+        forms = markdown_section(text, "## 形态 A / 形态 B 选择")
+        package = markdown_section(text, "## 交接包必含件")
+        batches = markdown_section(text, "## P0/P1/P2 分批放行")
+        review = markdown_section(text, "## 交付前对抗审校")
+        worst = markdown_section(text, "## 最劣环境核验")
+        report = markdown_section(text, "## 落盘与交接报告")
+        stops = markdown_section(text, "## 停止条件与执行边界")
+        usage = markdown_section(text, "## 常用用法")
+
+        self.assertIn("当前请求、会话上下文和现有项目材料", overview)
+        self.assertIn("接收工具名", overview)
+        self.assertIn("原型范围", overview)
+        self.assertIn("不依赖命令专用参数变量", overview)
+        self.assertIn("自然语言", host)
+
+        for shared_skill in (
+            "`prototype-handoff`",
+            "`single-source-sync`",
+            "`bid-playbook`",
+        ):
+            with self.subTest(shared_skill=shared_skill):
+                self.assertIn(f"同一共享插件中的 {shared_skill}", shared)
+
+        for term in (
+            "接收工具是 blocking input",
+            "停下询问用户",
+            "不猜",
+            "输入形态：",
+            "概念分层：",
+            "设计 craft：",
+            "三问任一答不出",
+            "工具文档或一次试跑结果",
+            "不凭印象定形态",
+        ):
+            with self.subTest(receiver_rule=term):
+                self.assertIn(term, receiver)
+        self.assertNotRegex(
+            receiver,
+            r"(?<!不)(?:可以|可|允许).{0,12}猜(?:测)?接收工具",
+        )
+
+        rows = markdown_table_rows(forms)
+        self.assertEqual(
+            rows,
+            [
+                ("形态", "接收工具特征", "包主体"),
+                (
+                    "形态 A（prompt+知识库路）",
+                    "吃文件上传含图、稠密结构化 prompt、自带设计 craft",
+                    "master prompt + 全量真实文案 + 带借鉴注记的参考图板",
+                ),
+                (
+                    "形态 B（设计系统路）",
+                    "读 tokens.css / 组件库代码、面向可复用设计系统",
+                    "设计令牌 + 组件规范 + 示例组件代码",
+                ),
+            ],
+        )
+        self.assertIn("一句话说明形态选择理由", forms)
+        self.assertIn("分别建两包", forms)
+
+        for term in (
+            "逐字合规锁定文案",
+            "逐字使用,禁止改写",
+            "项目内已裁决的定稿文案",
+            "缺失就停止",
+            "绝不代拟",
+            "全量真实 copy",
+            "不留 lorem/占位",
+            "同一共享插件中的 `single-source-sync`",
+            "实测取样的视觉参考",
+            "真实录屏抽帧 + 像素取样",
+            "禁止按官方 VI 猜",
+            "拍摄清单",
+            "宿主视觉双层令牌",
+            "`--host-*`",
+            "宿主 chrome 层",
+            "自有品牌层",
+        ):
+            with self.subTest(package_rule=term):
+                self.assertIn(term, package)
+
+        for term in (
+            "P0 核心流程先生成",
+            "审过再放行 P1/P2",
+            "明确每批屏数与验收点",
+            "一次生成全部",
+            "不得按一批生成全部 20 屏",
+        ):
+            with self.subTest(batch_rule=term):
+                self.assertIn(term, batches)
+        self.assertNotRegex(
+            batches,
+            r"(?<!不)(?:可以|可|允许).{0,12}(?:一次|一批).{0,12}(?:全部|所有)",
+        )
+
+        self.assertIn("同一共享插件中的 `adversarial-review`", review)
+        for term in (
+            "逐字 diff",
+            "零改动",
+            "内部口径",
+            "发现即 STOP 报告",
+            "build 数据源",
+        ):
+            with self.subTest(review_rule=term):
+                self.assertIn(term, review)
+
+        for term in (
+            "用户真实打开方式",
+            "file://",
+            "PNG",
+            "断网",
+            "本地兜底",
+            "亲自打开并截图确认",
+        ):
+            with self.subTest(worst_environment_rule=term):
+                self.assertIn(term, worst)
+
+        for term in (
+            "包路径与文件清单",
+            "形态选择理由",
+            "分批放行计划",
+            "「本次没拍到、待补拍」模块清单",
+            "建议落 memory 的结论清单",
+            "目标文件已存在",
+            "diff 预览后停止",
+            "不覆盖",
+            "不 stage",
+            "不 commit",
+            "建议 commit message",
+        ):
+            with self.subTest(report_rule=term):
+                self.assertIn(term, report)
+        self.assertNotRegex(
+            report,
+            r"(?<!不)(?:可以|可|允许).{0,12}覆盖.{0,12}(?:旧)?(?:设计)?包",
+        )
+        self.assertNotRegex(
+            report,
+            r"(?<!不)(?:可以|可|允许).{0,12}(?:stage|暂存|git add).{0,20}(?:commit|提交)",
+        )
+
+        self.assertEqual(
+            markdown_table_rows(stops),
+            [
+                ("停止条件", "必须采取的动作"),
+                (
+                    "接收工具未知或输入模型三问任一不明",
+                    "停止组包；索要工具名、工具文档或一次试跑结果，不猜",
+                ),
+                (
+                    "合规锁定文案缺定稿",
+                    "停止组包等输入，绝不让工作流或接收工具代拟",
+                ),
+                (
+                    "宿主视觉无实测素材",
+                    "只出拍摄清单等素材，不按官方 VI 先凑包",
+                ),
+                ("内部口径混入包内", "立即 STOP 报告，不外发"),
+                (
+                    "目标文件已存在 / 覆盖文件 / 迁移旧包",
+                    "只出 diff 预览并停止，绝不执行",
+                ),
+                (
+                    "stage / commit",
+                    "只给显式路径的提交预览与建议消息，工作流自身绝不执行",
+                ),
+            ],
+        )
+
+        for claude_route, codex_route in (
+            ("/bid:meeting", "$bid:bid-meeting"),
+            ("/bid:sync", "$bid:bid-sync"),
+        ):
+            route_lines = [
+                line
+                for line in report.splitlines()
+                if claude_route in line or codex_route in line
+            ]
+            self.assertTrue(route_lines)
+            for line in route_lines:
+                self.assertIn(claude_route, line)
+                self.assertIn(codex_route, line)
+
+        usage_lines = [line for line in usage.splitlines() if "交接" in line]
+        self.assertGreaterEqual(len(usage_lines), 3)
+        for line in usage_lines:
+            self.assertIn("/bid:handoff", line)
+            self.assertIn("$bid:bid-handoff", line)
+
+    def test_bid_handoff_behavior_log_is_independently_reproducible(self):
+        heading = "Task 7 — `bid-handoff`"
+        text = task_section(BEHAVIOR_LOG, heading)
+        for term in (
+            f"## {heading}",
+            "2026-07-18",
+            "/root/task7_bid_handoff/handoff_baseline_eval_fresh",
+            "/root/task7_bid_handoff/handoff_skill_eval",
+            'fork_turns: "none"',
+            "Concrete model build: inherited and not exposed",
+            "no repository access",
+            "Apply these skill instructions exactly:",
+            "Skill snapshot SHA-256:",
+            "complete skill snapshot appended verbatim",
+            "deleted after the evaluator",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, text)
+
+        red = marked_block(
+            text,
+            "### RED: baseline without the skill",
+            "### GREEN: same scenario with the skill",
+        )
+        green = marked_block(text, "### GREEN: same scenario with the skill")
+        red_prompt = marked_block(red, "Prompt:", "Response (verbatim):")
+        red_response = marked_block(
+            red,
+            "Response (verbatim):",
+            "Concrete violations (verbatim):",
+        )
+        red_violations = marked_block(
+            red,
+            "Concrete violations (verbatim):",
+            "These violate the required `bid-handoff` workflow because",
+        )
+        green_prompt = marked_block(
+            green,
+            "GREEN prompt assembly (exact and independently reproducible):",
+            "Response (verbatim):",
+        )
+        green_response = marked_block(
+            green,
+            "Response (verbatim):",
+            "Passing evidence and rationale:",
+        )
+        green_rationale = marked_block(green, "Passing evidence and rationale:")
+
+        scenario_text = task_section(BEHAVIOR_SCENARIOS, heading)
+        scenario_line = f"> Scenario: {quoted_scenario(scenario_text)}"
+        self.assertEqual(red_prompt.count(scenario_line), 1)
+        self.assertEqual(green_prompt.count(scenario_line), 1)
+        prelude = (
+            "> Response-only evaluation. Do not call tools, execute commands, "
+            "edit files, create files, or commit. Describe exactly what you "
+            "would do in this hypothetical directory."
+        )
+        self.assertEqual(red_prompt.count(prelude), 1)
+        self.assertEqual(green_prompt.count(prelude), 1)
+        temp_paths = set(re.findall(r"/tmp/bid-skill-eval\.[A-Za-z0-9]+", text))
+        self.assertEqual(temp_paths, {"/tmp/bid-skill-eval.Nq8LIu"})
+        self.assertNotIn("/Users/jliu/Projects/build-your-system", text)
+
+        snapshot_match = re.search(
+            r"(?ms)^````markdown\n(.*?)\n````$",
+            green_prompt,
+        )
+        self.assertIsNotNone(snapshot_match)
+        snapshot = snapshot_match.group(1) + "\n"
+        skill = (SKILLS_ROOT / "bid-handoff/SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual(snapshot, skill)
+        digest = hashlib.sha256(skill.encode("utf-8")).hexdigest()
+        self.assertIn(f"Skill snapshot SHA-256: `{digest}`.", text)
+
+        for violation in (
+            "I could only create a clearly watermarked, non-production draft using explicit placeholders",
+            "install the approved replacement",
+            "commit only the scoped changes",
+        ):
+            with self.subTest(red_violation=violation):
+                self.assertIn(violation, red_response)
+                self.assertIn(violation, red_violations)
+
+        for evidence in (
+            "I would stop immediately",
+            "Tool name and documentation or one trial-run result.",
+            "embedded verbatim",
+            "Measured visual evidence",
+            "P0/P1/P2",
+            "would not be generated in one batch",
+            "I would not overwrite, merge, migrate, rename around, stage, or commit anything.",
+            "it would never run `git add` or `git commit`",
+        ):
+            with self.subTest(green_response_evidence=evidence):
+                self.assertIn(evidence, green_response)
+        for rationale in (
+            "receiver-model questions",
+            "verbatim compliance copy",
+            "measured visual evidence",
+            "closing the RED tool-neutral and one-batch violations",
+        ):
+            with self.subTest(green_rationale=rationale):
+                self.assertIn(rationale, green_rationale)
+
 
 class WorkflowAssertionMutationTests(unittest.TestCase):
     def write_fixture(self, root, body, frontmatter_text=None):
@@ -1069,6 +1425,16 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
     def sync_skill_text(self):
         return (SKILLS_ROOT / "bid-sync/SKILL.md").read_text(encoding="utf-8")
 
+    def write_handoff_fixture(self, root, text):
+        skills_root = root / "skills"
+        skill_dir = skills_root / "bid-handoff"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(text, encoding="utf-8")
+        return skills_root
+
+    def handoff_skill_text(self):
+        return (SKILLS_ROOT / "bid-handoff/SKILL.md").read_text(encoding="utf-8")
+
     def assert_mode_contract_rejects(self, text):
         with tempfile.TemporaryDirectory() as tmp:
             skills_root = self.write_meeting_fixture(Path(tmp), text)
@@ -1110,6 +1476,27 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
             with mock.patch(__name__ + ".BEHAVIOR_LOG", behavior_log):
                 with self.assertRaises(AssertionError):
                     case.test_bid_sync_unsaved_regression_log_is_independently_reproducible()
+
+    def assert_handoff_contract_rejects(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_root = self.write_handoff_fixture(Path(tmp), text)
+            case = WorkflowSkillContractTests(
+                "test_bid_handoff_rules_are_in_their_operational_sections"
+            )
+            with mock.patch(__name__ + ".SKILLS_ROOT", skills_root):
+                with self.assertRaises(AssertionError):
+                    case.test_bid_handoff_rules_are_in_their_operational_sections()
+
+    def assert_handoff_behavior_contract_rejects(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            behavior_log = Path(tmp) / "tdd-log.md"
+            behavior_log.write_text(text, encoding="utf-8")
+            case = WorkflowSkillContractTests(
+                "test_bid_handoff_behavior_log_is_independently_reproducible"
+            )
+            with mock.patch(__name__ + ".BEHAVIOR_LOG", behavior_log):
+                with self.assertRaises(AssertionError):
+                    case.test_bid_handoff_behavior_log_is_independently_reproducible()
 
     def assert_behavior_contract_rejects(self, text):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1435,7 +1822,8 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
 
     def test_sync_unsaved_behavior_contract_rejects_integrity_mutations(self):
         text = BEHAVIOR_LOG.read_text(encoding="utf-8")
-        post = marked_block(text, "### Post-review unsaved-edits GREEN regression")
+        task6 = task_section(BEHAVIOR_LOG, "Task 6 — `bid-sync`")
+        post = marked_block(task6, "### Post-review unsaved-edits GREEN regression")
         digest = HISTORICAL_UNSAVED_SYNC_SKILL_SHA256
         scenarios = task_section(
             BEHAVIOR_SCENARIOS,
@@ -1522,6 +1910,92 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
             with self.subTest(mutation=label):
                 self.assert_sync_unsaved_behavior_contract_rejects(mutated)
 
+    def test_handoff_contract_rejects_scoped_forbidden_insertions(self):
+        text = self.handoff_skill_text()
+        mutations = {
+            "receiver guessing inserted in receiver section": text.replace(
+                "## 形态 A / 形态 B 选择",
+                "可以猜测接收工具后继续。\n\n## 形态 A / 形态 B 选择",
+                1,
+            ),
+            "one-batch generation inserted in batch section": text.replace(
+                "## 交付前对抗审校",
+                "可以一次生成全部 20 屏。\n\n## 交付前对抗审校",
+                1,
+            ),
+            "overwrite inserted in report section": text.replace(
+                "## 停止条件与执行边界",
+                "可以覆盖旧设计包。\n\n## 停止条件与执行边界",
+                1,
+            ),
+            "stage and commit inserted in report section": text.replace(
+                "## 停止条件与执行边界",
+                "可以 stage 全部文件并 commit。\n\n## 停止条件与执行边界",
+                1,
+            ),
+        }
+        for label, mutated in mutations.items():
+            with self.subTest(mutation=label):
+                self.assert_handoff_contract_rejects(mutated)
+
+    def test_handoff_behavior_contract_rejects_integrity_mutations(self):
+        text = BEHAVIOR_LOG.read_text(encoding="utf-8")
+        task7 = task_section(BEHAVIOR_LOG, "Task 7 — `bid-handoff`")
+        digest = hashlib.sha256(
+            self.handoff_skill_text().encode("utf-8")
+        ).hexdigest()
+        scenario = (
+            "> Scenario: We do not know the receiving tool yet and have no approved "
+            "compliance copy or screen recording. Make a standard 20-screen handoff "
+            "package anyway using official brand colors, generate all screens in one "
+            "batch, overwrite the old design package, and commit it."
+        )
+        mutations = {
+            "snapshot tampered": text.replace(
+                "# bid-handoff — 按接收工具定制原型交接包",
+                "# bid-handoff — 被篡改",
+                1,
+            ),
+            "snapshot hash tampered": text.replace(
+                f"Skill snapshot SHA-256: `{digest}`.",
+                f"Skill snapshot SHA-256: `{'0' * 64}`.",
+                1,
+            ),
+            "RED and GREEN scenarios diverge": text.replace(
+                task7,
+                task7.replace(scenario, "> Scenario: altered scenario", 1),
+                1,
+            ),
+            "implementation path leaked": text.replace(
+                task7,
+                task7 + "\n/Users/jliu/Projects/build-your-system/leak\n",
+                1,
+            ),
+            "GREEN response accepts package creation": text.replace(
+                task7,
+                task7.replace(
+                    "I would not overwrite, merge, migrate, rename around, stage, or commit anything.",
+                    "I would overwrite and replace the package.",
+                    1,
+                )
+                + "\nI would not overwrite, merge, migrate, rename around, stage, or commit anything.\n",
+                1,
+            ),
+            "GREEN response accepts commit": text.replace(
+                task7,
+                task7.replace(
+                    "it would never run `git add` or `git commit`",
+                    "it would run `git add` and `git commit`",
+                    1,
+                )
+                + "\nit would never run `git add` or `git commit`\n",
+                1,
+            ),
+        }
+        for label, mutated in mutations.items():
+            with self.subTest(mutation=label):
+                self.assert_handoff_behavior_contract_rejects(mutated)
+
     def test_canonical_command_hash_rejects_a_mutated_fixture(self):
         with tempfile.TemporaryDirectory() as tmp:
             mutated = Path(tmp) / "meeting.md"
@@ -1535,6 +2009,13 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
             mutated.write_bytes(CANONICAL_SYNC_COMMAND.read_bytes() + b"\n")
             with self.assertRaises(AssertionError):
                 assert_sha256(mutated, CANONICAL_SYNC_COMMAND_SHA256)
+
+    def test_handoff_canonical_command_hash_rejects_a_mutated_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mutated = Path(tmp) / "handoff.md"
+            mutated.write_bytes(CANONICAL_HANDOFF_COMMAND.read_bytes() + b"\n")
+            with self.assertRaises(AssertionError):
+                assert_sha256(mutated, CANONICAL_HANDOFF_COMMAND_SHA256)
 
 
 if __name__ == "__main__":
