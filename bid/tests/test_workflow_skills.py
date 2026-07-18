@@ -67,6 +67,7 @@ STATUS_DESCRIPTION = (
 HISTORICAL_STATUS_SKILL_SHA256 = (
     "7b73ee804c79d95718a644b1a9c320d1da94cf124b4ede9c2c927113ab9b8eed"
 )
+FINAL_STATUS_GREEN_MARKER = "### FINAL CURRENT Task 9 all-source hard-stop GREEN"
 
 
 def assert_workflow(name, required, forbidden):
@@ -622,9 +623,9 @@ STATUS_AFFIRMATIVE_PATTERNS = {
     ),
     "write_or_fix_values": (
         re.compile(
-            r"(?is)(?:修改|修复|改正|替换|更新|写入).{0,30}"
+            r"(?is)(?:修改|修复|改正|校正|纠正|替换|更新|写入).{0,30}"
             r"(?:交付物|生成产物|客户向文件|过期数字|陈旧数字|"
-            r"旧数字|漂移数字|不一致)"
+            r"旧数字|漂移(?:数字)?|不一致)"
         ),
         re.compile(
             r"(?is)(?:fix|edit|modify|replace|update|write).{0,30}"
@@ -633,7 +634,7 @@ STATUS_AFFIRMATIVE_PATTERNS = {
     ),
     "write_memory": (
         re.compile(
-            r"(?is)(?:更新|写入|追加|修改|新建).{0,20}"
+            r"(?is)(?:更新|同步|写入|追加|修改|新建).{0,20}"
             r"(?:memory|记忆|口径档案|口径记录)"
         ),
         re.compile(
@@ -667,6 +668,27 @@ STATUS_AFFIRMATIVE_PATTERNS = {
             r"(?is)(?:run|execute|will|would|can|may).{0,20}git\s+add"
         ),
         re.compile(r"(?is)git\s+commit"),
+        re.compile(
+            r"(?is)(?:暂存|提交)(?:这些|上述|相关|所有)?"
+            r"(?:变更|改动|修改|文件)"
+        ),
+        re.compile(
+            r"(?is)(?:经)?(?:用户)?(?:批准|同意|拍板)(?:通过)?后"
+            r".{0,18}(?:暂存|提交)"
+        ),
+    ),
+    "approval_gated_write_or_repair": (
+        re.compile(
+            r"(?is)(?:经)?(?:用户)?(?:批准|同意|拍板)(?:通过)?后"
+            r".{0,24}(?:修复|校正|改正|纠正|更新|同步)"
+            r".{0,24}(?:漂移|memory|记忆|口径档案|口径记录)"
+        ),
+    ),
+    "known_conflict_as_pending": (
+        re.compile(
+            r"(?is)(?:已知|明确).{0,16}冲突.{0,20}"
+            r"(?:可|可以|也可|允许).{0,12}(?:⚠\s*)?待核"
+        ),
     ),
     "silent_lower_source_backfill": (
         re.compile(
@@ -2968,13 +2990,20 @@ class WorkflowSkillContractTests(unittest.TestCase):
         step2 = markdown_subsection(workflow, "### 2. **定位事实源与硬停止**")
         step4 = markdown_subsection(workflow, "### 4. **红线清单**")
         step5 = markdown_subsection(workflow, "### 5. **遗留待办三清单**")
+        step6 = markdown_subsection(
+            workflow,
+            "### 6. **漂移抽查（只读）与固定交付**",
+        )
 
         for term in (
             "始终只读检查全部三处",
             "最高优先级且明确标注「已锁定口径」的来源为权威源",
             "memory 有明确锁定记录时必须优先",
             "低优先级来源只用于佐证",
-            "冲突项进入漂移报告或标「⚠ 待核」",
+            "任一低优先级来源对同一字段出现不同的明确值",
+            "必须逐项列入漂移报告",
+            "已知冲突绝不得标「⚠ 待核」",
+            "只有证据含糊、未标记或无法比较时才标「⚠ 待核」",
             "不得用低优先级来源静默回填 memory 缺失字段",
             "缺失字段保持「未解决/⚠ 待核」",
             "memory 没有明确锁定记录时，才可回退到 build/",
@@ -2985,6 +3014,15 @@ class WorkflowSkillContractTests(unittest.TestCase):
         ):
             with self.subTest(source_resolution=term):
                 self.assertIn(term, step2)
+
+        for term in (
+            "任一低优先级来源同字段的明确冲突都必须纳入本报告",
+            "不受小样本限制",
+            "低优先级来源名称 + 路径 + 当前值 vs memory 锁定值",
+            "不得把已知冲突降级为「⚠ 待核」",
+        ):
+            with self.subTest(conflict_report=term):
+                self.assertIn(term, step6)
 
         for section, label in ((step4, "红线"), (step5, "遗留待办")):
             with self.subTest(lower_source_limitation=label):
@@ -3121,13 +3159,11 @@ class WorkflowSkillContractTests(unittest.TestCase):
     def test_bid_status_post_review_green_is_current_and_reproducible(self):
         heading = "Task 9 — `bid-status`"
         task9 = task_section(BEHAVIOR_LOG, heading)
-        post = marked_block(
-            task9,
-            "### Post-review all-source hard-stop GREEN",
-        )
+        self.assertEqual(task9.count(FINAL_STATUS_GREEN_MARKER), 1)
+        post = marked_block(task9, FINAL_STATUS_GREEN_MARKER)
         for term in (
             "2026-07-18",
-            "/root/task9_bid_status/bid_status_all_sources_eval_final",
+            "/root/task9_bid_status/bid_status_final_current_eval",
             'fork_turns: "none"',
             "Concrete model build: inherited and not exposed",
             "no repository access",
@@ -3135,6 +3171,7 @@ class WorkflowSkillContractTests(unittest.TestCase):
             "complete current skill snapshot appended verbatim",
             "deleted after the evaluator",
             "historical scenario is insufficient for the all-source stop",
+            "uniquely designated current Task 9 GREEN",
         ):
             with self.subTest(provenance=term):
                 self.assertIn(term, post)
@@ -3180,6 +3217,12 @@ class WorkflowSkillContractTests(unittest.TestCase):
         self.assertEqual(hash_fields, [digest])
 
         self.assertEqual(response.count("本项目尚无口径档案"), 1)
+        raw_table_lines = [
+            line
+            for line in response.splitlines()
+            if re.fullmatch(r"\s*(?:>\s*)?\|(?:[^|\n]*\|){2,}\s*", line)
+        ]
+        self.assertEqual(raw_table_lines, [])
         for route in (
             "/bid:init",
             "$bid:bid-init",
@@ -3206,6 +3249,10 @@ class WorkflowSkillContractTests(unittest.TestCase):
             "commit",
             "修复陈旧数字",
             "更新 memory",
+            "暂存",
+            "提交这些变更",
+            "校正漂移",
+            "同步口径档案",
         ):
             with self.subTest(latest_forbidden=forbidden):
                 self.assertNotIn(forbidden, response)
@@ -4420,6 +4467,18 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
     def test_status_contract_rejects_scoped_mutations_and_bypasses(self):
         text = self.status_skill_text()
         mutations = {
+            "known conflict demoted to pending": text.replace(
+                "已知冲突绝不得标「⚠ 待核」",
+                "已知冲突可以标「⚠ 待核」",
+                1,
+            )
+            + "\n已知冲突绝不得标「⚠ 待核」\n",
+            "known conflict report moved outside step six": text.replace(
+                "任一低优先级来源同字段的明确冲突都必须纳入本报告",
+                "抽样命中时才列冲突",
+                1,
+            )
+            + "\n任一低优先级来源同字段的明确冲突都必须纳入本报告\n",
             "does not inspect all three sources": text.replace(
                 "始终只读检查全部三处",
                 "找到 memory 锁定记录就不再检查低优先级来源",
@@ -4592,6 +4651,18 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
             with self.subTest(text=text):
                 assert_no_status_affirmative_contradictions({"response": text})
 
+    def test_status_chinese_alias_contradictions_are_rejected(self):
+        unsafe_cases = (
+            "已知冲突可以标「⚠ 待核」。",
+            "用户批准后暂存并提交这些变更。",
+            "经用户拍板后校正漂移并同步口径档案。",
+            "用户同意后同步 memory。",
+        )
+        for text in unsafe_cases:
+            with self.subTest(text=text):
+                with self.assertRaises(AssertionError):
+                    assert_no_status_affirmative_contradictions({"response": text})
+
     def test_status_behavior_contract_rejects_integrity_mutations(self):
         text = BEHAVIOR_LOG.read_text(encoding="utf-8")
         task9 = task_section(BEHAVIOR_LOG, "Task 9 — `bid-status`")
@@ -4674,7 +4745,7 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
     def test_status_latest_behavior_rejects_exact_scope_bypasses(self):
         text = BEHAVIOR_LOG.read_text(encoding="utf-8")
         task9 = task_section(BEHAVIOR_LOG, "Task 9 — `bid-status`")
-        marker = "### Post-review all-source hard-stop GREEN"
+        marker = FINAL_STATUS_GREEN_MARKER
         historical, found, latest = task9.partition(marker)
         self.assertTrue(found)
         mutations = {
@@ -4711,6 +4782,17 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                 historical + marker + latest.replace("/bid:init", "/bid:other", 1),
                 1,
             ),
+            "later duplicate current GREEN with unsafe response": text.replace(
+                task9,
+                task9
+                + "\n\n"
+                + marker
+                + "\n\nResponse (verbatim):\n\n"
+                + "> 本项目尚无口径档案\n>\n"
+                + "> | 字段 | 值 |\n> |---|---|\n> | 报价 | 100 |\n>\n"
+                + "> 用户批准后暂存并提交这些变更。\n",
+                1,
+            ),
         }
         response_insertions = {
             "latest simultaneous memory bypass":
@@ -4731,6 +4813,12 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                 "I will not stage, however I will execute git add and git commit.",
             "latest yet contrast":
                 "I will not edit deliverables, yet I will fix stale numbers.",
+            "latest raw Markdown table":
+                "| 字段 | 值 |\n> |---|---|\n> | 报价 | 100 |",
+            "latest Chinese staging aliases":
+                "用户批准后暂存并提交这些变更。",
+            "latest Chinese approval aliases":
+                "经用户拍板后校正漂移并同步口径档案。",
         }
         for label, phrase in response_insertions.items():
             mutated_latest = latest.replace(
