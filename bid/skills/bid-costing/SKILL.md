@@ -1,7 +1,6 @@
 ---
 name: bid-costing
-description: This skill should be used when producing or defending cost estimates for To-B bid/delivery projects — building parameterized cost models, verifying cloud or vendor unit prices against list-price anchors, tiering the evidence behind every line item, presenting low~high cost ranges, and responding to line-by-line challenges from clients or reviewers. Triggers on phrases like "成本测算", "报价依据", "这个数字怎么来的", "TCO", "云资源核价", "算力成本", "报价改一下", "降成本", "成本区间", "列表价还是活动价", "价格阶梯", "成本表".
-version: 0.1.0
+description: Use when producing or defending cost estimates for To-B bid/delivery projects — building parameterized cost models, verifying cloud or vendor unit prices against list-price anchors, tiering the evidence behind every line item, presenting low~high cost ranges, and responding to line-by-line challenges from clients or reviewers. Triggers on phrases like "成本测算", "报价依据", "这个数字怎么来的", "TCO", "云资源核价", "算力成本", "报价改一下", "降成本", "成本区间", "列表价还是活动价", "价格阶梯", "成本表".
 ---
 
 # bid-costing — 可辩护的成本测算
@@ -47,6 +46,8 @@ version: 0.1.0
 | 规模档 × 低高区间两轴叠加一张表 | 主表锁单一基准,规模档单独成曲线子表 |
 
 ## 脚本
+路径约定：先定位本 SKILL.md 所在目录，再从该目录解析 `scripts/...`；不要相对于进程 CWD 解析。
+
 `node scripts/discount-check.cjs [声称列表价|-] <价格:折扣>...` — 折扣标签反算互证:各路径反算隐含列表价,偏差超阈值(默认 0.5%)即 FAIL。
 
 ## 环境提示(macOS + WPS/Excel 适用)

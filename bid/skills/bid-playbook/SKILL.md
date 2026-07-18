@@ -1,7 +1,6 @@
 ---
 name: bid-playbook
-description: This skill should be used when running a To-B bid/deliverable project as an AI coding agent — the entry playbook of the bid plugin. Covers repository layout (meeting/ notes by date, customer-facing docs/ physically separated from docs/内部/, build/ generators as the single source of numbers, dependency-ordered deliverable numbering with letter-suffix insertion), execution rhythm (spec→plan→execute; ask only at real forks with a recommended option; lock the full value table before wide cascades), compliance-first sequencing (data authorization as step zero, worst-case-default safe paths), and a routing table to the plugin's other 9 skills and 6 /bid:* commands. Triggers on phrases like "投标项目怎么推进", "新建投标项目", "交付物编号怎么排", "投标项目目录规范", "这个点要不要问用户", "口径锁定了怎么改", "多项目怎么分目录", "bid playbook", "投标方法论".
-version: 0.1.0
+description: Use when running a To-B bid/deliverable project as an AI coding agent — the entry playbook of the bid plugin. Covers repository layout (meeting/ notes by date, customer-facing docs/ physically separated from docs/内部/, build/ generators as the single source of numbers, dependency-ordered deliverable numbering with letter-suffix insertion), execution rhythm (spec→plan→execute; ask only at real forks with a recommended option; lock the full value table before wide cascades), compliance-first sequencing (data authorization as step zero, worst-case-default safe paths), and a routing table to the plugin's other 9 skills and 6 /bid:* commands. Triggers on phrases like "投标项目怎么推进", "新建投标项目", "交付物编号怎么排", "投标项目目录规范", "这个点要不要问用户", "口径锁定了怎么改", "多项目怎么分目录", "bid playbook", "投标方法论".
 ---
 
 # bid-playbook — To-B 投标/交付物项目方法论总纲
@@ -64,3 +63,4 @@ command 是流程动作,skill 是方法论。
 - `references/directory-and-numbering.md` — 目录/编号/多项目治理/memory 维护细则与失败案例
 - `references/decision-gates.md` — 岔路口判据、取值表模板、指令冲突处置、提交纪律
 - `references/compliance-and-caliber.md` — 数据合规前置、口径锁定、分层脱敏红线
+- `references/host-adaptation.md` — 双宿主的技能加载、工具、独立执行单元、memory 与资源路径适配

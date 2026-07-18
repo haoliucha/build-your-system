@@ -1,12 +1,11 @@
 ---
 name: bid-research
-description: This skill should be used when gathering evidence for a To-B bid or proposal — competitor teardowns, benchmark verification, screen-recording frame analysis, open-source license audits, structured research output, and multi-chain triangulation of major technical decisions. It governs how to collect evidence (adversarial review of finished drafts is a sibling skill). Triggers on phrases like "竞品调研", "竞品拆解", "对标分析", "录屏拆解", "录屏分析", "开源选型", "license 审查", "调研取证", "投标调研", "证据链验证".
-version: 0.1.0
+description: Use when gathering evidence for a To-B bid or proposal — competitor teardowns, benchmark verification, screen-recording frame analysis, open-source license audits, structured research output, and multi-chain triangulation of major technical decisions. It governs how to collect evidence (adversarial review of finished drafts is a sibling skill). Triggers on phrases like "竞品调研", "竞品拆解", "对标分析", "录屏拆解", "录屏分析", "开源选型", "license 审查", "调研取证", "投标调研", "证据链验证".
 ---
 
 # bid-research — To-B 投标调研取证
 
-管「怎么取证」;成稿核查归 review 类 skill,不在本 skill 范围。写给执行调研的 Claude Code agent,聚焦公开检索、一手素材、录屏拆解、license 审查、证据链的程序性纪律。
+管「怎么取证」;成稿核查归 review 类 skill,不在本 skill 范围。写给执行调研的宿主 agent,聚焦公开检索、一手素材、录屏拆解、license 审查、证据链的程序性纪律。
 
 ## 三条铁律
 
@@ -33,14 +32,16 @@ version: 0.1.0
 
 固定节奏抽帧 + 带帧号标签的 contact sheet,建「帧号→时间」映射:
 
+路径约定：先定位本 SKILL.md 所在目录，再从该目录解析 `scripts/...`；不要相对于进程 CWD 解析。
+
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/skills/bid-research/scripts/extract-frames.sh" <录屏.mp4> <输出目录> [fps] [cols]
+bash scripts/extract-frames.sh <录屏.mp4> <输出目录> [fps] [cols]
 ```
 
 要点(详见 `references/screen-recording.md`):
 
 - **别用帧差/场景检测去重**:滚动与转场动画会击穿帧差法(阈值高了漏真切换,低了爆冗余),固定节奏(默认 1fps)最稳。
-- macOS 下 `montage` 标签不显式指定字体文件路径会**静默不渲染帧号**(脚本已内置);**先 Read 第一张 sheet 自检可读性,再批量读**。
+- macOS 下 `montage` 标签不显式指定字体文件路径会**静默不渲染帧号**(脚本已内置);**先打开并检查第一张 sheet 的可读性,再批量读取**。
 - contact sheet 只做定位;关键画面回读 `frames/` 下全分辨率原帧锁定精确文案。
 - 主动追竞品在安全/合规关键时刻(如高风险信号)的真实处理路径——录屏可实证的短板是方案最有力的正面差异化打点;与不可实证的架构猜测严格分区(不可实证的断言最终会被全删,别写)。
 
