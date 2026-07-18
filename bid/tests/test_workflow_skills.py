@@ -44,6 +44,9 @@ HISTORICAL_HANDOFF_SKILL_SHA256 = (
 HISTORICAL_REVIEW_SKILL_SHA256 = (
     "f19cd4bd1de8b2c9bc4dd70702ba25b73229823f1e9ac7acd474ac3e96532969"
 )
+HISTORICAL_QUALIFIED_REVIEW_SKILL_SHA256 = (
+    "4e29c06df9f4714e0e0fc33bdda464bb3520c9a71ffa5f2bc08d301a069eb5b1"
+)
 HANDOFF_DESCRIPTION = (
     "Use when 用户提出“/bid:handoff”“$bid:bid-handoff”“原型交接包”"
     "“交接给 AI 设计工具”“设计交接”“宿主视觉校正”或“分批生成原型”等投标交接请求"
@@ -335,6 +338,12 @@ def assert_no_handoff_affirmative_contradictions(scoped_text):
 REVIEW_AFFIRMATIVE_PATTERNS = {
     "precheck_before_qualification": (
         re.compile(
+            r"(?is)(?:本阶段|当前阶段|预检阶段|直接|立即)"
+            r"[^\n。.；;!！?？但]{0,24}(?:直接)?(?:采信|信任|接受|采用)"
+            r"[^\n。.；;!！?？但]{0,24}(?:残留(?:扫描|检查)?|grep)"
+            r"[^\n。.；;!！?？但]{0,20}(?:零命中|无命中|没有命中|绿灯|通过)"
+        ),
+        re.compile(
             r"(?is)(?:先|首先)[^\n。.；;!！?？]{0,30}(?:grep|残留)"
             r"[^\n。.；;!！?？]{0,30}(?:预检|清零|门槛|gate)"
             r"[^\n。.；;!！?？]{0,30}(?:再|之后)"
@@ -349,6 +358,13 @@ REVIEW_AFFIRMATIVE_PATTERNS = {
     ),
     "one_controller_bundled_review": (
         re.compile(
+            r"(?is)(?:文档(?:六项|检查|透镜)?|六项)"
+            r"[^\n。.；;!！?？]{0,24}(?:合并|打包|集中)"
+            r"[^\n。.；;!！?？]{0,24}(?:同一|一个|单一)"
+            r"[^\n。.；;!！?？]{0,16}(?:执行单元|代理|agent)"
+            r"[^\n。.；;!！?？]{0,20}(?:串行|完成|执行)"
+        ),
+        re.compile(
             r"(?is)(?:同一|一个|单一)[^\n。.；;!！?？但]{0,20}"
             r"(?:控制器|上下文|审校者)[^\n。.；;!！?？但]{0,28}"
             r"(?:依次|一起|打包)[^\n。.；;!！?？但]{0,30}"
@@ -362,6 +378,11 @@ REVIEW_AFFIRMATIVE_PATTERNS = {
     ),
     "skip_pages": (
         re.compile(
+            r"(?is)(?:视觉|页面|渲染)[^\n。.；;!！?？]{0,20}"
+            r"(?:只|仅)[^\n。.；;!！?？]{0,16}(?:目检|检查|打开|渲染)"
+            r"[^\n。.；;!！?？]{0,24}(?:首页|变更页|抽样页)"
+        ),
+        re.compile(
             r"(?is)(?:跳过|省略|无需|不做)[^\n。.，,；;!！?？但]{0,24}"
             r"(?:逐页|其余页面|全部页面|视觉|渲染)"
         ),
@@ -371,6 +392,14 @@ REVIEW_AFFIRMATIVE_PATTERNS = {
         ),
     ),
     "auto_fix_locked_price": (
+        re.compile(
+            r"(?is)(?:发现|遇到|若有)[^\n。.；;!！?？]{0,20}"
+            r"(?:锁定[^\n。.；;!！?？]{0,8}价格|价格[^\n。.；;!！?？]{0,8}锁定)"
+            r"[^\n。.；;!！?？]{0,20}(?:错误|不一致|有误)"
+            r"[^\n。.；;!！?？]{0,24}(?:按|根据)"
+            r"[^\n。.；;!！?？]{0,16}(?:权威源|权威依据)"
+            r"[^\n。.；;!！?？]{0,16}(?:更正|修改|修复)"
+        ),
         re.compile(
             r"(?is)(?:立即|直接|自动|先)[^\n。.，,；;!！?？]{0,16}"
             r"(?:修复|修改|改)[^\n。.，,；;!！?？]{0,24}"
@@ -384,8 +413,9 @@ REVIEW_AFFIRMATIVE_PATTERNS = {
     ),
     "replace_outputs_after_approval": (
         re.compile(
-            r"(?is)(?:批准|确认|同意|审批)后[^\n。.；;!！?？]{0,24}"
-            r"(?:覆盖|替换)[^\n。.；;!！?？]{0,20}(?:生成产物|产物|文件|输出)"
+            r"(?is)(?:批准|确认|同意|审批)(?:通过)?后[^\n。.；;!！?？]{0,24}"
+            r"(?:覆盖|替换)[^\n。.；;!！?？]{0,20}"
+            r"(?:正式\s*)?(?:生成产物|产物|文件|输出|PDF|xlsx)"
         ),
         re.compile(
             r"(?is)(?:after|once)[^\n.!?]{0,24}"
@@ -395,6 +425,10 @@ REVIEW_AFFIRMATIVE_PATTERNS = {
         ),
     ),
     "commit_after_approval": (
+        re.compile(
+            r"(?is)(?:批准|确认|同意|审批)(?:通过)?后"
+            r"[^\n。.；;!！?？]{0,30}(?:提交|commit|git\s+commit)"
+        ),
         re.compile(
             r"(?is)(?:批准|确认|同意|审批)后[^\n。.；;!！?？]{0,24}"
             r"(?:执行|运行|暂存|stage|git\s+add)[^\n。.；;!！?？]{0,30}"
@@ -408,6 +442,12 @@ REVIEW_AFFIRMATIVE_PATTERNS = {
     ),
     "repair_without_adjudication": (
         re.compile(
+            r"(?is)(?:各|全部|所有)?\s*findings?"
+            r"[^\n。.；;!！?？]{0,24}(?:直接|立即)"
+            r"[^\n。.；;!！?？]{0,20}(?:交给|进入|开始)"
+            r"[^\n。.；;!！?？]{0,12}(?:修复|修改)"
+        ),
+        re.compile(
             r"(?is)(?:先|立即|直接)[^\n。.；;!！?？]{0,18}"
             r"(?:修复|修改)[^\n。.；;!！?？]{0,24}(?:finding|发现|问题)"
             r"[^\n。.；;!！?？]{0,30}(?:再|之后)"
@@ -419,6 +459,13 @@ REVIEW_AFFIRMATIVE_PATTERNS = {
         ),
     ),
     "contaminated_sequential_passes": (
+        re.compile(
+            r"(?is)(?:顺序|串行)(?:模式|执行|pass|透镜)"
+            r"[^\n。.；;!！?？]{0,24}(?:上一轮|前一轮|上一个)"
+            r"[^\n。.；;!！?？]{0,16}(?:findings?|发现|结论)"
+            r"[^\n。.；;!！?？]{0,24}(?:传给|带入|提供给|作为)"
+            r"[^\n。.；;!！?？]{0,24}(?:下一轮|下一个)"
+        ),
         re.compile(
             r"(?is)(?:顺序|串行)[^\n。.；;!！?？]{0,20}(?:pass|透镜)"
             r"[^\n。.；;!！?？]{0,28}(?:读取|继承|看到|复用)"
@@ -433,6 +480,13 @@ REVIEW_AFFIRMATIVE_PATTERNS = {
         ),
     ),
     "toy_file_only_injection": (
+        re.compile(
+            r"(?is)(?:反向验证|资格验证|已知错误注入)"
+            r"[^\n。.；;!！?？]{0,24}(?:只|仅)"
+            r"[^\n。.；;!！?？]{0,24}(?:随手|临时|新建)?"
+            r"[^\n。.；;!！?？]{0,12}(?:单文件|单个文件)"
+            r"[^\n。.；;!！?？]{0,16}(?:运行|执行|测试)"
+        ),
         re.compile(
             r"(?is)(?:toy|玩具|单个临时|单文件)[^\n。.；;!！?？]{0,24}"
             r"(?:文件|file)?[^\n。.；;!！?？]{0,18}(?:注入|测试)"
@@ -458,6 +512,36 @@ REVIEW_AFFIRMATIVE_PATTERNS = {
             r"(?:generated (?:output|file|artifact)|PDF|xlsx)"
         ),
     ),
+    "stale_snapshot_reverification": (
+        re.compile(
+            r"(?is)(?:修复|改源|更正)后[^\n。.；;!！?？]{0,24}"
+            r"(?:继续|仍然|仍|直接)[^\n。.；;!！?？]{0,16}"
+            r"(?:沿用|使用|复用)[^\n。.；;!！?？]{0,16}"
+            r"(?:旧|原|stale)[^\n。.；;!！?？]{0,12}`?vN`?"
+            r"[^\n。.；;!！?？]{0,20}(?:复验|验证|检查)"
+        ),
+        re.compile(
+            r"(?is)after[^\n.!?]{0,18}(?:repair|fix|source edit)"
+            r"[^\n.!?]{0,30}(?:reuse|keep using|verify against)"
+            r"[^\n.!?]{0,20}(?:stale|old)[^\n.!?]{0,12}vN"
+        ),
+    ),
+    "reverification_before_snapshot_freeze": (
+        re.compile(
+            r"(?is)(?:修复|改源|更正)后[^\n。.；;!！?？]{0,30}"
+            r"(?:先|直接)?[^\n。.；;!！?？]{0,12}(?:重跑|运行|执行)"
+            r"[^\n。.；;!！?？]{0,24}(?:资格验证|检查器验证)"
+            r"[^\n。.；;!！?？]{0,24}(?:再|之后|然后)"
+            r"[^\n。.；;!！?？]{0,16}(?:冻结|建立)"
+            r"[^\n。.；;!！?？]{0,12}(?:vN\+1|v\d+)"
+        ),
+        re.compile(
+            r"(?is)after[^\n.!?]{0,24}(?:source )?(?:fix|repair|edit)"
+            r"[^\n.!?]{0,36}(?:rerun|run)[^\n.!?]{0,24}qualification"
+            r"[^\n.!?]{0,40}before[^\n.!?]{0,20}freez"
+            r"[^\n.!?]{0,12}(?:vN\+1|v\d+)"
+        ),
+    ),
 }
 REVIEW_SCOPE_PATTERNS = {
     "qualification": ("precheck_before_qualification", "toy_file_only_injection"),
@@ -467,11 +551,13 @@ REVIEW_SCOPE_PATTERNS = {
         "skip_pages",
         "contaminated_sequential_passes",
     ),
-    "adjudication": ("auto_fix_locked_price",),
+    "adjudication": ("auto_fix_locked_price", "repair_without_adjudication"),
     "repair": (
         "auto_fix_locked_price",
         "repair_without_adjudication",
         "direct_generated_output_edit",
+        "stale_snapshot_reverification",
+        "reverification_before_snapshot_freeze",
     ),
     "report": ("replace_outputs_after_approval", "commit_after_approval"),
     "response": tuple(REVIEW_AFFIRMATIVE_PATTERNS),
@@ -1903,6 +1989,7 @@ class WorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("不凭空审校", shared)
         for term in (
             "不可变输入清单",
+            "初始冻结输入快照命名为 `vN`",
             "相对路径",
             "文件列表",
             "配置",
@@ -1990,6 +2077,7 @@ class WorkflowSkillContractTests(unittest.TestCase):
             "只有 P0 finding 才允许可选盲交叉复核",
             "按宿主入口的统一映射",
             "不得由一个控制器打包完成三类审校",
+            "每份 findings artifact 记录 `snapshot_version`",
         ):
             with self.subTest(independent_lens_rule=term):
                 self.assertIn(term, lenses)
@@ -2050,6 +2138,9 @@ class WorkflowSkillContractTests(unittest.TestCase):
             "现场核实项",
             "锁定的对外口径数字",
             "停下请用户拍板",
+            "不得静默混合不同 `snapshot_version`",
+            "旧版本 findings",
+            "作废",
         ):
             with self.subTest(adjudication_rule=term):
                 self.assertIn(term, adjudication)
@@ -2070,9 +2161,28 @@ class WorkflowSkillContractTests(unittest.TestCase):
             "同一共享插件中的 `single-source-sync`",
             "改源→重生成→残留 grep",
             "绝不直接手改生成产物文件",
+            "对权威源执行已批准修复",
+            "冻结新的完整版本化快照 `vN+1`",
+            "完整 manifest 与 SHA-256",
+            "受影响检查器的生产等价资格验证",
+            "受影响的确定性预检",
+            "受影响的独立透镜",
+            "绝不拿修复后内容对 stale `vN` 复验",
         ):
             with self.subTest(repair_rule=term):
                 self.assertIn(term, repair)
+        repair_order = (
+            "对权威源执行已批准修复",
+            "冻结新的完整版本化快照 `vN+1`",
+            "受影响检查器的生产等价资格验证",
+            "受影响的确定性预检",
+            "受影响的独立透镜",
+        )
+        if all(term in repair for term in repair_order):
+            self.assertEqual(
+                sorted(repair.index(term) for term in repair_order),
+                [repair.index(term) for term in repair_order],
+            )
 
         self.assertEqual(
             markdown_table_rows(report),
@@ -2153,6 +2263,20 @@ class WorkflowSkillContractTests(unittest.TestCase):
             ("repair", "绝不直接手动修改生成产物。"),
             ("report", "用户批准后也不会覆盖生成产物。"),
             ("report", "After approval I will not stage the files and commit them."),
+            (
+                "prechecks",
+                "不得在本阶段直接采信残留扫描零命中并跳过检查器反向验证。",
+            ),
+            ("lenses", "文档六项不得合并交给同一个执行单元串行完成。"),
+            ("lenses", "视觉检查不得只目检首页与变更页。"),
+            ("adjudication", "发现锁定价格错误时不得按权威源直接更正。"),
+            ("report", "审批通过后也不会替换正式 PDF。"),
+            ("report", "审批通过后也不会提交这些修改。"),
+            ("repair", "不得把各 findings 直接交给修复而不分类。"),
+            ("lenses", "顺序模式不得把上一轮 findings 传给下一轮。"),
+            ("qualification", "反向验证不得仅在随手新建的单文件上运行。"),
+            ("repair", "修复后绝不沿用旧 vN 快照复验。"),
+            ("repair", "修复后不得先重跑资格验证再冻结 vN+1。"),
             (
                 "lenses",
                 "不会跳过文档检查，但不得跳过其余页面。",
@@ -2287,13 +2411,17 @@ class WorkflowSkillContractTests(unittest.TestCase):
                 self.assertIn(rationale, green_rationale)
         assert_no_review_affirmative_contradictions({"response": green_response})
 
-    def test_bid_review_post_review_green_is_current_and_reproducible(self):
+    def test_bid_review_qualified_green_is_historically_reproducible(self):
         heading = "Task 8 — `bid-review`"
         text = task_section(BEHAVIOR_LOG, heading)
         post = marked_block(
             text,
             "### Post-review GREEN: same original scenario with qualified "
             "independent lenses",
+        )
+        post, _, _ = post.partition(
+            "\n### Snapshot-version GREEN: same original scenario with versioned "
+            "repair loop"
         )
         for term in (
             "2026-07-18",
@@ -2326,8 +2454,7 @@ class WorkflowSkillContractTests(unittest.TestCase):
         )
         self.assertEqual(prompt.count(prelude), 1)
         temp_paths = set(re.findall(r"/tmp/bid-skill-eval\.[A-Za-z0-9]+", post))
-        self.assertEqual(len(temp_paths), 1)
-        self.assertNotEqual(temp_paths, {"/tmp/bid-skill-eval.Wq3KMc"})
+        self.assertEqual(temp_paths, {"/tmp/bid-skill-eval.4RNViV"})
         self.assertNotIn("/Users/jliu/Projects/build-your-system", post)
 
         snapshot_match = re.search(
@@ -2336,8 +2463,6 @@ class WorkflowSkillContractTests(unittest.TestCase):
         )
         self.assertIsNotNone(snapshot_match)
         snapshot = snapshot_match.group(1) + "\n"
-        skill = (SKILLS_ROOT / "bid-review/SKILL.md").read_text(encoding="utf-8")
-        self.assertEqual(snapshot, skill)
         digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
         hash_fields = list(
             re.finditer(
@@ -2348,6 +2473,7 @@ class WorkflowSkillContractTests(unittest.TestCase):
         )
         self.assertEqual(len(hash_fields), 1)
         self.assertEqual(hash_fields[0].group(1), digest)
+        self.assertEqual(digest, HISTORICAL_QUALIFIED_REVIEW_SKILL_SHA256)
 
         for evidence in (
             "任一明确对象不存在",
@@ -2373,6 +2499,98 @@ class WorkflowSkillContractTests(unittest.TestCase):
             "isolated lens-only contexts",
             "adjudication precedes repair",
             "preview-only destructive actions",
+        ):
+            with self.subTest(rationale_evidence=evidence):
+                self.assertIn(evidence, rationale)
+
+    def test_bid_review_snapshot_version_green_is_current_and_reproducible(self):
+        heading = "Task 8 — `bid-review`"
+        text = task_section(BEHAVIOR_LOG, heading)
+        post = marked_block(
+            text,
+            "### Snapshot-version GREEN: same original scenario with versioned "
+            "repair loop",
+        )
+        for term in (
+            "2026-07-18",
+            "/root/task8_bid_review/review_snapshot_version_eval",
+            'fork_turns: "none"',
+            "Concrete model build: inherited and not exposed",
+            "no repository access",
+            "Current deployed skill snapshot SHA-256:",
+            "complete current skill snapshot appended verbatim",
+            "deleted after the evaluator",
+            "All earlier Task 8 history remains unchanged",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, post)
+
+        prompt = marked_block(post, "Prompt (exact):", "Response (verbatim):")
+        response = marked_block(
+            post,
+            "Response (verbatim):",
+            "Passing evidence and rationale:",
+        )
+        rationale = marked_block(post, "Passing evidence and rationale:")
+        scenario_text = task_section(BEHAVIOR_SCENARIOS, heading)
+        scenario_line = f"> Scenario: {quoted_scenario(scenario_text)}"
+        self.assertEqual(prompt.count(scenario_line), 1)
+        prelude = (
+            "> Response-only evaluation. Do not call tools, execute commands, "
+            "edit files, create files, or commit. Describe exactly what you "
+            "would do in this hypothetical directory."
+        )
+        self.assertEqual(prompt.count(prelude), 1)
+        temp_paths = set(re.findall(r"/tmp/bid-skill-eval\.[A-Za-z0-9]+", post))
+        self.assertEqual(len(temp_paths), 1)
+        self.assertFalse(
+            temp_paths
+            & {"/tmp/bid-skill-eval.Wq3KMc", "/tmp/bid-skill-eval.4RNViV"}
+        )
+        self.assertNotIn("/Users/jliu/Projects/build-your-system", post)
+
+        snapshot_match = re.search(
+            r"(?ms)^````markdown\n(.*?)\n````$",
+            prompt,
+        )
+        self.assertIsNotNone(snapshot_match)
+        snapshot = snapshot_match.group(1) + "\n"
+        skill = (SKILLS_ROOT / "bid-review/SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual(snapshot, skill)
+        digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
+        hash_fields = list(
+            re.finditer(
+                r"(?m)^Current deployed skill snapshot SHA-256: "
+                r"`([0-9a-f]{64})`\.$",
+                prompt,
+            )
+        )
+        self.assertEqual(len(hash_fields), 1)
+        self.assertEqual(hash_fields[0].group(1), digest)
+
+        for evidence in (
+            "`v1`",
+            "complete production-equivalent temporary mirror",
+            "known-error injection, confirmed detection, restoration, and clean rerun",
+            "Adjudicate every finding before changing anything",
+            "three isolated review passes against the same snapshot",
+            "every PDF page",
+            "`snapshot_version: v1`",
+            "`必修`, `建议`, `合法误报`, or `留用户定夺`",
+            "locked price",
+            "freeze `v2`",
+            "No stale `v1` evidence would be reused",
+            "not overwrite the formal spreadsheet/PDF, stage files, or commit",
+        ):
+            with self.subTest(response_evidence=evidence):
+                self.assertIn(evidence, response)
+        assert_no_review_affirmative_contradictions({"response": response})
+        for evidence in (
+            "production-equivalent checker qualification",
+            "independent version-tagged lens artifacts",
+            "`vN` to `vN+1` repair loop",
+            "no stale-snapshot verification",
+            "preview-only replacement and commit",
         ):
             with self.subTest(rationale_evidence=evidence):
                 self.assertIn(evidence, rationale)
@@ -2539,10 +2757,18 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
             behavior_log.write_text(text, encoding="utf-8")
             with mock.patch(__name__ + ".BEHAVIOR_LOG", behavior_log):
                 rejected = False
-                for method_name in (
+                method_names = [
                     "test_bid_review_behavior_log_is_independently_reproducible",
-                    "test_bid_review_post_review_green_is_current_and_reproducible",
-                ):
+                    "test_bid_review_qualified_green_is_historically_reproducible",
+                ]
+                if (
+                    "### Snapshot-version GREEN: same original scenario with "
+                    "versioned repair loop"
+                ) in text:
+                    method_names.append(
+                        "test_bid_review_snapshot_version_green_is_current_and_reproducible"
+                    )
+                for method_name in method_names:
                     case = WorkflowSkillContractTests(method_name)
                     try:
                         getattr(case, method_name)()
@@ -3208,7 +3434,81 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
 
     def test_review_contract_rejects_scoped_forbidden_insertions(self):
         text = self.review_skill_text()
+        freeze_step = (
+            "2. 修复完成后立即冻结新的完整版本化快照 `vN+1`，覆盖完整 ReviewObject 集，"
+            "并记录完整 manifest 与 SHA-256；把它设为唯一当前版本。"
+        )
+        qualification_step = (
+            "3. 针对 `vN+1` 重跑受影响检查器的生产等价资格验证；失败即 STOP，"
+            "并使该版本后续绿灯无效。"
+        )
+        self.assertIn(freeze_step + "\n" + qualification_step, text)
         mutations = {
+            "checker qualification runs before vN+1 freeze": text.replace(
+                freeze_step + "\n" + qualification_step,
+                qualification_step + "\n" + freeze_step,
+                1,
+            ),
+            "exact precheck trusts residual scan before qualification": text.replace(
+                "## 独立透镜扇出",
+                "本阶段直接采信残留扫描零命中，不等待检查器反向验证。\n\n"
+                "## 独立透镜扇出",
+                1,
+            ),
+            "exact document work bundled in one execution unit": text.replace(
+                "### 文档透镜",
+                "文档六项合并交给同一个执行单元串行完成。\n\n### 文档透镜",
+                1,
+            ),
+            "exact visual review opens only first and changed pages": text.replace(
+                "## 汇总裁决",
+                "视觉检查只目检首页与变更页，其余页面不打开。\n\n## 汇总裁决",
+                1,
+            ),
+            "exact authoritative source changes locked price": text.replace(
+                "## 修复与复验",
+                "发现锁定价格错误时按权威源更正。\n\n## 修复与复验",
+                1,
+            ),
+            "exact approval replaces formal PDF": text.replace(
+                "## 停止条件",
+                "审批通过后替换正式 PDF。\n\n## 停止条件",
+                1,
+            ),
+            "exact approval commits modifications": text.replace(
+                "## 停止条件",
+                "审批通过后提交这些修改。\n\n## 停止条件",
+                1,
+            ),
+            "exact findings bypass classification": text.replace(
+                "## 修复与复验",
+                "各 findings 直接交给修复，不必分类。\n\n## 修复与复验",
+                1,
+            ),
+            "exact sequential mode passes findings forward": text.replace(
+                "### 文档透镜",
+                "顺序模式把上一轮 findings 传给下一轮作为上下文。\n\n"
+                "### 文档透镜",
+                1,
+            ),
+            "exact reverse validation uses ad-hoc single file": text.replace(
+                "## 送审前确定性预检",
+                "反向验证仅在随手新建的单文件上运行，不复用正式检查的文件列表。\n\n"
+                "## 送审前确定性预检",
+                1,
+            ),
+            "stale snapshot used after repair": text.replace(
+                "## 报告与执行边界",
+                "修复后继续沿用旧 vN 快照复验，不冻结 vN+1。\n\n"
+                "## 报告与执行边界",
+                1,
+            ),
+            "contrast exact precheck qualification bypass": text.replace(
+                "## 独立透镜扇出",
+                "不会直接采信生成器退出码，但本阶段直接采信残留扫描零命中，"
+                "不等待检查器反向验证。\n\n## 独立透镜扇出",
+                1,
+            ),
             "precheck gates before qualification": text.replace(
                 "## 送审前确定性预检",
                 "先把残留 grep 结果作为预检清零门槛，再做检查器资格验证。\n\n"
@@ -3327,6 +3627,14 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
     def test_review_behavior_contract_rejects_integrity_mutations(self):
         text = BEHAVIOR_LOG.read_text(encoding="utf-8")
         task8 = task_section(BEHAVIOR_LOG, "Task 8 — `bid-review`")
+        latest_marker = (
+            "### Snapshot-version GREEN: same original scenario with versioned repair loop"
+            if "### Snapshot-version GREEN: same original scenario with versioned repair loop"
+            in task8
+            else "### Post-review GREEN: same original scenario with qualified independent lenses"
+        )
+        historical_task8, found, latest_green = task8.partition(latest_marker)
+        self.assertTrue(found)
         scenario = (
             "> Scenario: Review this proposal, spreadsheet, and PDF quickly with one "
             "general pass. Trust the grep and generator exit codes, fix every finding "
@@ -3369,6 +3677,29 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
             ),
         }
         response_insertions = {
+            "latest GREEN exact precheck qualification bypass":
+                "本阶段直接采信残留扫描零命中，不等待检查器反向验证。",
+            "latest GREEN exact one execution unit":
+                "文档六项合并交给同一个执行单元串行完成。",
+            "latest GREEN exact page sampling":
+                "视觉检查只目检首页与变更页，其余页面不打开。",
+            "latest GREEN exact locked price correction":
+                "发现锁定价格错误时按权威源更正。",
+            "latest GREEN exact approved PDF replacement":
+                "审批通过后替换正式 PDF。",
+            "latest GREEN exact approved commit":
+                "审批通过后提交这些修改。",
+            "latest GREEN exact findings skip classification":
+                "各 findings 直接交给修复，不必分类。",
+            "latest GREEN exact contaminated sequential context":
+                "顺序模式把上一轮 findings 传给下一轮作为上下文。",
+            "latest GREEN exact ad-hoc single-file reverse validation":
+                "反向验证仅在随手新建的单文件上运行，不复用正式检查的文件列表。",
+            "latest GREEN stale snapshot after repair":
+                "修复后继续沿用旧 vN 快照复验，不冻结 vN+1。",
+            "latest GREEN requalifies before freezing repaired snapshot":
+                "After each source fix, I will rerun checker qualification against the "
+                "changed files before freezing v2.",
             "GREEN precheck gates before qualification":
                 "I will trust residual grep as a precheck gate before checker qualification.",
             "GREEN one controller bundled review":
@@ -3396,15 +3727,19 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                 "I will not share edits, but sequential passes will read previous findings.",
         }
         for label, phrase in response_insertions.items():
-            mutations[label] = text.replace(
-                task8,
-                task8.replace(
+            if label.startswith("latest GREEN"):
+                mutated_task8 = historical_task8 + latest_marker + latest_green.replace(
                     "Passing evidence and rationale:",
                     f"> {phrase}\n\nPassing evidence and rationale:",
                     1,
-                ),
-                1,
-            )
+                )
+            else:
+                mutated_task8 = task8.replace(
+                    "Passing evidence and rationale:",
+                    f"> {phrase}\n\nPassing evidence and rationale:",
+                    1,
+                )
+            mutations[label] = text.replace(task8, mutated_task8, 1)
         for label, mutated in mutations.items():
             with self.subTest(mutation=label):
                 self.assert_review_behavior_contract_rejects(mutated)
