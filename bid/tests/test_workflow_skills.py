@@ -15,7 +15,15 @@ CANONICAL_MEETING_COMMAND = BID_ROOT / "commands/meeting.md"
 CANONICAL_MEETING_COMMAND_SHA256 = (
     "d0f04a703f72571d57270820b66945799f463d8a011e826fb3f329261e0f61b1"
 )
+CANONICAL_SYNC_COMMAND = BID_ROOT / "commands/sync.md"
+CANONICAL_SYNC_COMMAND_SHA256 = (
+    "a4540ece46a20f9bbecae01750df844b4e4a8a77f4c31b5d21d4b2394df6a20f"
+)
 HOST_ADAPTATION_LINK = "../bid-playbook/references/host-adaptation.md"
+SYNC_DESCRIPTION = (
+    "Use when 用户提出“/bid:sync”“$bid:bid-sync”“同步口径”“级联更新”"
+    "“替换旧金额”“重生成交付物”或要求检查跨文档旧值残留"
+)
 
 
 def assert_workflow(name, required, forbidden):
@@ -77,6 +85,28 @@ def markdown_section(text, heading):
     if match is None:
         raise AssertionError(f"missing markdown section: {heading}")
     return match.group(1)
+
+
+def markdown_subsection(text, heading):
+    match = re.search(
+        rf"(?ms)^{re.escape(heading)}[ \t]*\n(.*?)(?=^### |^## |\Z)",
+        text,
+    )
+    if match is None:
+        raise AssertionError(f"missing markdown subsection: {heading}")
+    return match.group(1)
+
+
+def markdown_table_rows(section):
+    rows = []
+    for line in section.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = tuple(cell.strip() for cell in line.strip("|").split("|"))
+        if all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
+            continue
+        rows.append(cells)
+    return rows
 
 
 def task_section(path, heading):
@@ -424,6 +454,282 @@ class WorkflowSkillContractTests(unittest.TestCase):
             with self.subTest(green_rationale=rationale):
                 self.assertIn(rationale, green_rationale)
 
+    def test_bid_sync_contract(self):
+        assert_workflow(
+            "bid-sync",
+            required=(
+                "同步口径",
+                "级联更新",
+                "替换旧金额",
+                "重生成交付物",
+                "当前请求、会话上下文",
+                "爆炸半径映射",
+                "公式驱动",
+                "硬编码副本",
+                "同一共享插件中的 `single-source-sync`",
+                "同一共享插件中的 `bid-playbook`",
+                "同一共享插件中的 `adversarial-review`",
+                "## 固定执行序（七步，顺序不可调换）",
+                "## 停止条件汇总",
+                "## 宿主入口",
+                "/bid:sync",
+                "$bid:bid-sync",
+                "自然语言",
+                HOST_ADAPTATION_LINK,
+            ),
+            forbidden=(
+                "$ARGUMENTS",
+                "${CLAUDE_PLUGIN_ROOT}",
+                "${CODEX_PLUGIN_ROOT}",
+            ),
+        )
+
+    def test_bid_sync_canonical_command_is_unchanged(self):
+        assert_sha256(
+            CANONICAL_SYNC_COMMAND,
+            CANONICAL_SYNC_COMMAND_SHA256,
+        )
+
+    def test_bid_sync_rules_are_in_their_operational_sections(self):
+        path = SKILLS_ROOT / "bid-sync/SKILL.md"
+        data, _ = frontmatter(path)
+        self.assertEqual(data["description"], SYNC_DESCRIPTION)
+
+        text = path.read_text(encoding="utf-8")
+        overview = text.split("## 宿主入口", 1)[0]
+        host = markdown_section(text, "## 宿主入口")
+        inputs = markdown_section(text, "## 共享基准与输入解析")
+        workflow = markdown_section(text, "## 固定执行序（七步，顺序不可调换）")
+        stops = markdown_section(text, "## 停止条件汇总")
+        optional = markdown_section(text, "## 可选终检")
+        usage = markdown_section(text, "## 常用用法")
+
+        self.assertIn("当前请求、会话上下文", overview)
+        self.assertIn("自然语言", host)
+        self.assertIn("同一共享插件中的 `single-source-sync`", inputs)
+        self.assertIn("同一共享插件中的 `bid-playbook`", inputs)
+        for term in (
+            "爆炸半径映射",
+            "公式驱动",
+            "硬编码副本",
+            "只修改源（生成器脚本或数据）",
+            "绝不直接修改生成产物或产品文件",
+            "派生值一律参数实算",
+            "无变更描述时",
+        ):
+            with self.subTest(input_rule=term):
+                self.assertIn(term, inputs)
+
+        headings = re.findall(r"(?m)^### ([1-7])\. \*\*(.+?)\*\*[ \t]*$", workflow)
+        self.assertEqual(
+            headings,
+            [
+                ("1", "lsof 写句柄检查"),
+                ("2", "手改检测（回捕）"),
+                ("3", "跑生成器"),
+                ("4", "内容抽验"),
+                ("5", "全库 grep 残留"),
+                ("6", "memory 核对 + 落决策（固定末步）"),
+                ("7", "分组提交预览（不执行）"),
+            ],
+        )
+
+        step_terms = {
+            "### 1. **lsof 写句柄检查**": (
+                "`lsof <产物路径>`",
+                "WPS/Excel",
+                "检出即停",
+                "手动关闭且不保存",
+            ),
+            "### 2. **手改检测（回捕）**": (
+                "逐格逻辑值 dump diff",
+                "raw zip diff 不能作为语义比较",
+                "备份现产物",
+                "重生成到对比副本",
+                "cell-dump 逐格对比",
+                "还原备份",
+                "捕捉手改意图",
+                "落进生成器源",
+                "绝不直接覆盖",
+            ),
+            "### 3. **跑生成器**": (
+                "依赖顺序",
+                "命令零退出不等于产物已更新",
+            ),
+            "### 4. **内容抽验**": (
+                "新串在",
+                "旧串亡",
+                "格式存活",
+                "小数位",
+                "颜色标记",
+                "逐项可见加总 = 小计",
+                "逐行核对",
+                "回到源修",
+            ),
+            "### 5. **全库 grep 残留**": (
+                "整个仓库",
+                "叙事 md",
+                "构建脚本",
+                "图 spec",
+                "README",
+                "逐条判读后再动手",
+                "数字子串巧合",
+                "规则自述",
+                "改源后回到第 3 步级联",
+                "重读改动处上下文",
+            ),
+            "### 6. **memory 核对 + 落决策（固定末步）**": (
+                "交付物现状一致",
+                "追加更正记录",
+                "追加写入 memory",
+                "绝不改写历史",
+                "决策与理由",
+                "旧口径回潮",
+            ),
+            "### 7. **分组提交预览（不执行）**": (
+                "显式文件路径",
+                "禁 `git add -A`",
+                "提交信息草案",
+                "排除集",
+                "只预览",
+                "不 stage",
+                "不自动 commit",
+            ),
+        }
+        for heading, terms in step_terms.items():
+            step = markdown_subsection(text, heading)
+            for term in terms:
+                with self.subTest(step=heading, term=term):
+                    self.assertIn(term, step)
+
+        self.assertEqual(
+            markdown_table_rows(stops),
+            [
+                ("场景", "动作"),
+                ("lsof 检出写句柄", "停,等用户关闭且不保存"),
+                ("cell-dump diff 检出手改", "停,捕捉意图落源后再继续"),
+                ("抽验发现旧串残留 / 格式回退", "回源修复重跑,禁止手补产物"),
+                ("grep 命中无法判读", "列出上下文问用户,不擅自改"),
+                ("commit / 覆盖含手改的产物", "一律只预览,显式确认后执行"),
+            ],
+        )
+        self.assertIn("同一共享插件中的 `adversarial-review`", optional)
+        self.assertIn("3 个以上文档", optional)
+
+        usage_lines = [line for line in usage.splitlines() if "同步" in line]
+        self.assertGreaterEqual(len(usage_lines), 2)
+        for line in usage_lines:
+            self.assertIn("/bid:sync", line)
+            self.assertIn("$bid:bid-sync", line)
+
+    def test_bid_sync_behavior_log_is_independently_reproducible(self):
+        heading = "Task 6 — `bid-sync`"
+        text = task_section(BEHAVIOR_LOG, heading)
+        for term in (
+            f"## {heading}",
+            "2026-07-18",
+            "/root/task6_bid_sync/bid_sync_baseline_eval",
+            "/root/task6_bid_sync/bid_sync_skill_eval_refactor",
+            'fork_turns: "none"',
+            "Concrete model build: inherited and not exposed",
+            "no repository access",
+            "Apply these skill instructions exactly:",
+            "Skill snapshot SHA-256:",
+            "complete skill snapshot appended verbatim",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, text)
+
+        red = marked_block(
+            text,
+            "### RED: baseline without the skill",
+            "### GREEN: same scenario with the skill",
+        )
+        green = marked_block(text, "### GREEN: same scenario with the skill")
+        red_prompt = marked_block(red, "Prompt:", "Response (verbatim):")
+        red_response = marked_block(
+            red,
+            "Response (verbatim):",
+            "Concrete violations (verbatim):",
+        )
+        red_violations = marked_block(
+            red,
+            "Concrete violations (verbatim):",
+            "These violate the required `bid-sync` workflow because",
+        )
+        green_prompt = marked_block(
+            green,
+            "GREEN prompt assembly (exact and independently reproducible):",
+            "Response (verbatim):",
+        )
+        green_response = marked_block(
+            green,
+            "Response (verbatim):",
+            "Passing evidence and rationale:",
+        )
+        green_rationale = marked_block(green, "Passing evidence and rationale:")
+
+        scenario_text = task_section(BEHAVIOR_SCENARIOS, heading)
+        scenario = re.search(r"(?m)^> (.+)$", scenario_text)
+        self.assertIsNotNone(scenario)
+        scenario_line = f"> Scenario: {scenario.group(1)}"
+        self.assertEqual(red_prompt.count(scenario_line), 1)
+        self.assertEqual(green_prompt.count(scenario_line), 1)
+
+        prelude = (
+            "> Response-only evaluation. Do not call tools, execute commands, "
+            "edit files, create files, or commit. Describe exactly what you "
+            "would do in this hypothetical directory."
+        )
+        self.assertEqual(red_prompt.count(prelude), 1)
+        self.assertEqual(green_prompt.count(prelude), 1)
+        temp_paths = set(re.findall(r"/tmp/bid-skill-eval\.[A-Za-z0-9]+", text))
+        self.assertEqual(temp_paths, {"/tmp/bid-skill-eval.PQV4Qa"})
+        self.assertNotIn("/Users/jliu/Projects/build-your-system", text)
+
+        snapshot_match = re.search(
+            r"(?ms)^````markdown\n(.*?)\n````$",
+            green_prompt,
+        )
+        self.assertIsNotNone(snapshot_match)
+        snapshot = snapshot_match.group(1) + "\n"
+        skill = (SKILLS_ROOT / "bid-sync/SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual(snapshot, skill)
+        digest = hashlib.sha256(skill.encode("utf-8")).hexdigest()
+        self.assertIn(f"Skill snapshot SHA-256: `{digest}`.", text)
+
+        for violation in (
+            "diff the normalized XML parts",
+            "stage the related changed sources and all regenerated outputs",
+            "commit them with a concise message",
+        ):
+            with self.subTest(red_violation=violation):
+                self.assertIn(violation, red_response)
+                self.assertIn(violation, red_violations)
+
+        for evidence in (
+            "我不会立即重生成、覆盖或提交。",
+            "`lsof <产物路径>`",
+            "只要检出 WPS 写句柄，立即停止",
+            "不会使用 raw ZIP/XML diff 判断语义变化",
+            "只修改生成器脚本或数据源",
+            "全库搜索旧金额",
+            "在 memory 中追加更正及本次决策记录，不改写历史",
+            "最后只提供分组提交预览",
+            "不会暂存或提交",
+        ):
+            with self.subTest(green_response_evidence=evidence):
+                self.assertIn(evidence, green_response)
+        for rationale in (
+            "lsof stop before any file operation",
+            "logical-cell dump",
+            "full-repository residual search",
+            "append-only memory",
+            "closing the RED raw-diff and auto-commit violations",
+        ):
+            with self.subTest(green_rationale=rationale):
+                self.assertIn(rationale, green_rationale)
+
 
 class WorkflowAssertionMutationTests(unittest.TestCase):
     def write_fixture(self, root, body, frontmatter_text=None):
@@ -466,6 +772,16 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
     def meeting_skill_text(self):
         return (SKILLS_ROOT / "bid-meeting/SKILL.md").read_text(encoding="utf-8")
 
+    def write_sync_fixture(self, root, text):
+        skills_root = root / "skills"
+        skill_dir = skills_root / "bid-sync"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(text, encoding="utf-8")
+        return skills_root
+
+    def sync_skill_text(self):
+        return (SKILLS_ROOT / "bid-sync/SKILL.md").read_text(encoding="utf-8")
+
     def assert_mode_contract_rejects(self, text):
         with tempfile.TemporaryDirectory() as tmp:
             skills_root = self.write_meeting_fixture(Path(tmp), text)
@@ -475,6 +791,27 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
             with mock.patch(__name__ + ".SKILLS_ROOT", skills_root):
                 with self.assertRaises(AssertionError):
                     case.test_bid_meeting_mode_rules_are_in_their_operational_sections()
+
+    def assert_sync_contract_rejects(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_root = self.write_sync_fixture(Path(tmp), text)
+            case = WorkflowSkillContractTests(
+                "test_bid_sync_rules_are_in_their_operational_sections"
+            )
+            with mock.patch(__name__ + ".SKILLS_ROOT", skills_root):
+                with self.assertRaises(AssertionError):
+                    case.test_bid_sync_rules_are_in_their_operational_sections()
+
+    def assert_sync_behavior_contract_rejects(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            behavior_log = Path(tmp) / "tdd-log.md"
+            behavior_log.write_text(text, encoding="utf-8")
+            case = WorkflowSkillContractTests(
+                "test_bid_sync_behavior_log_is_independently_reproducible"
+            )
+            with mock.patch(__name__ + ".BEHAVIOR_LOG", behavior_log):
+                with self.assertRaises(AssertionError):
+                    case.test_bid_sync_behavior_log_is_independently_reproducible()
 
     def assert_behavior_contract_rejects(self, text):
         with tempfile.TemporaryDirectory() as tmp:
@@ -630,12 +967,116 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
             with self.subTest(mutation=label):
                 self.assert_behavior_contract_rejects(mutated)
 
+    def test_sync_contract_rejects_reordered_misplaced_or_weakened_rules(self):
+        text = self.sync_skill_text()
+        mutations = {
+            "lsof stop moved outside step": text.replace(
+                "检出即停",
+                "检出后记录",
+                1,
+            )
+            + "\n检出即停\n",
+            "capture and generator steps reordered": text.replace(
+                "### 2. **手改检测（回捕）**",
+                "### 3. **手改检测（回捕）**",
+                1,
+            ).replace(
+                "### 3. **跑生成器**",
+                "### 2. **跑生成器**",
+                1,
+            ),
+            "raw archive comparison allowed": text.replace(
+                "raw zip diff 不能作为语义比较",
+                "raw zip diff 可用于语义比较",
+                1,
+            ),
+            "source-only rule moved outside input parsing": text.replace(
+                "只修改源（生成器脚本或数据）",
+                "只修改权威位置",
+                1,
+            )
+            + "\n只修改源（生成器脚本或数据）\n",
+            "auto-commit guard moved outside preview step": text.replace(
+                "不自动 commit",
+                "确认后自动 commit",
+                1,
+            )
+            + "\n不自动 commit\n",
+            "append-only memory rule moved outside memory step": text.replace(
+                "追加写入 memory",
+                "写入 memory",
+                1,
+            )
+            + "\n追加写入 memory\n",
+            "stop table condition weakened": text.replace(
+                "| lsof 检出写句柄 | 停,等用户关闭且不保存 |",
+                "| lsof 检出写句柄 | 记录后继续 |",
+                1,
+            )
+            + "\n停,等用户关闭且不保存\n",
+        }
+        for label, mutated in mutations.items():
+            with self.subTest(mutation=label):
+                self.assert_sync_contract_rejects(mutated)
+
+    def test_sync_behavior_contract_rejects_integrity_mutations(self):
+        text = BEHAVIOR_LOG.read_text(encoding="utf-8")
+        task6 = task_section(BEHAVIOR_LOG, "Task 6 — `bid-sync`")
+        digest = hashlib.sha256(self.sync_skill_text().encode("utf-8")).hexdigest()
+        scenario = (
+            "> Scenario: The spreadsheet is still open in WPS and I manually fixed "
+            "two cells. Replace the old amount everywhere, regenerate over the file, "
+            "use a raw zip diff if needed, and commit all changed outputs now."
+        )
+        mutations = {
+            "snapshot tampered": text.replace(
+                "# bid-sync — 口径变更级联同步",
+                "# bid-sync — 被篡改",
+                1,
+            ),
+            "snapshot hash tampered": text.replace(
+                f"Skill snapshot SHA-256: `{digest}`.",
+                f"Skill snapshot SHA-256: `{'0' * 64}`.",
+                1,
+            ),
+            "RED and GREEN scenarios diverge": text.replace(
+                task6,
+                task6.replace(scenario, "> Scenario: altered scenario", 1),
+                1,
+            ),
+            "implementation path leaked": text.replace(
+                task6,
+                task6 + "\n/Users/jliu/Projects/build-your-system/leak\n",
+                1,
+            ),
+            "GREEN response accepts auto-commit": text.replace(
+                task6,
+                task6.replace(
+                    "不会暂存或提交",
+                    "会暂存并提交",
+                    1,
+                )
+                + "\n不会暂存或提交\n",
+                1,
+            ),
+        }
+        for label, mutated in mutations.items():
+            with self.subTest(mutation=label):
+                self.assert_sync_behavior_contract_rejects(mutated)
+
     def test_canonical_command_hash_rejects_a_mutated_fixture(self):
         with tempfile.TemporaryDirectory() as tmp:
             mutated = Path(tmp) / "meeting.md"
             mutated.write_bytes(CANONICAL_MEETING_COMMAND.read_bytes() + b"\n")
             with self.assertRaises(AssertionError):
                 assert_sha256(mutated, CANONICAL_MEETING_COMMAND_SHA256)
+
+    def test_sync_canonical_command_hash_rejects_a_mutated_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mutated = Path(tmp) / "sync.md"
+            mutated.write_bytes(CANONICAL_SYNC_COMMAND.read_bytes() + b"\n")
+            with self.assertRaises(AssertionError):
+                assert_sha256(mutated, CANONICAL_SYNC_COMMAND_SHA256)
 
 
 if __name__ == "__main__":

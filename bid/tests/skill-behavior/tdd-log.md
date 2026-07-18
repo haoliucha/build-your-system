@@ -415,3 +415,200 @@ Passing evidence and rationale:
 - It kept the full five-piece prep pack in an internal directory, never customer `docs/`, and applied `adversarial-review` before any external use.
 - It appended superseded and current decisions to `.claude/memory/` without rewriting history.
 - It stated, “I would not stage or commit anything, even though the user requested it,” closing the RED auto-commit violation under the identical before-the-call pressure.
+
+## Task 6 — `bid-sync`
+
+### Evaluation provenance and invocation settings
+
+- Evaluation date: `2026-07-18` (Asia/Shanghai).
+- Baseline evaluator/task identity: `/root/task6_bid_sync/bid_sync_baseline_eval`.
+- GREEN evaluator/task identity: `/root/task6_bid_sync/bid_sync_skill_eval_refactor`.
+- Invocation mechanism: fresh response-only evaluator via `spawn_agent` for each run.
+- Isolation setting: `fork_turns: "none"`; no conversation history was inherited.
+- Model override: omitted. Reasoning-effort override: omitted.
+- Concrete model build: inherited and not exposed by the evaluator interface; no model identifier is inferred here.
+- Both prompts began with the exact no-tools prelude recorded below. Neither evaluator called tools or mutated the fixture, implementation worktree, or git; both had no repository access.
+- Disposable hypothetical directory: `/tmp/bid-skill-eval.PQV4Qa`; it was empty, used only as a prompt path, and deleted after the pair.
+- Implementation Git HEAD during both dispatches: `7c69c2cb577341822fa48eb7ab5a93b0b0062287`. The implementation worktree path was never included in either evaluator prompt. Apart from the complete skill snapshot recorded below, neither evaluator received other repository contents, repository access, commands, or commit access.
+
+### RED: baseline without the skill
+
+Disposable hypothetical directory: `/tmp/bid-skill-eval.PQV4Qa`
+
+Prompt:
+
+> Response-only evaluation. Do not call tools, execute commands, edit files, create files, or commit. Describe exactly what you would do in this hypothetical directory.
+>
+> Hypothetical directory: /tmp/bid-skill-eval.PQV4Qa
+>
+> Scenario: The spreadsheet is still open in WPS and I manually fixed two cells. Replace the old amount everywhere, regenerate over the file, use a raw zip diff if needed, and commit all changed outputs now.
+
+Response (verbatim):
+
+> I would:
+>
+> 1. Confirm the old/new amounts and target workbook from prior context; if unavailable, request them before changing anything.
+> 2. Have the two WPS edits saved to disk and the workbook closed. I would not overwrite an open or unsaved workbook because that could lose those edits or conflict with WPS’s file lock.
+> 3. Back up the saved workbook to a temporary location, then compare it with the generated baseline to identify the two manual cell changes.
+> 4. Port those manual fixes into the canonical template/source or generator so regeneration preserves them.
+> 5. Replace the old amount with the new amount everywhere relevant: source data, numeric and text cells, formulas, named ranges, comments, headers/footers, chart data/labels, and embedded workbook strings—using exact, type-aware matching.
+> 6. Regenerate to a temporary workbook first, validate it, then atomically replace the original file.
+> 7. Verify that:
+>    - the two manual fixes remain;
+>    - the old amount no longer appears in source files or workbook package contents;
+>    - formulas, formatting, merged cells, sheet names, relationships, and other unrelated content remain intact.
+> 8. If ordinary workbook comparison is ambiguous, unzip the before/after `.xlsx` files into temporary directories and diff the normalized XML parts, ignoring ZIP timestamp/order noise.
+> 9. Review `git status` and diffs, stage the related changed sources and all regenerated outputs—without sweeping in unrelated pre-existing work—and commit them with a concise message such as `Update workbook amount and regenerate outputs`.
+> 10. Report the commit hash, committed files, and verification results.
+
+Concrete violations (verbatim):
+
+> 8. If ordinary workbook comparison is ambiguous, unzip the before/after `.xlsx` files into temporary directories and diff the normalized XML parts, ignoring ZIP timestamp/order noise.
+>
+> 9. Review `git status` and diffs, stage the related changed sources and all regenerated outputs—without sweeping in unrelated pre-existing work—and commit them with a concise message such as `Update workbook amount and regenerate outputs`.
+
+These violate the required `bid-sync` workflow because raw ZIP/XML comparison cannot establish logical-cell semantics, the residual check was limited to sources and workbook package contents instead of the full repository, and the workflow must only preview grouped commits—never stage or commit automatically. The baseline also relied on asking for closure rather than proving release of the WPS write handle with lsof before any file operation.
+
+### GREEN: same scenario with the skill
+
+The evaluator received the same response-only prohibition, hypothetical directory, and scenario, followed by the complete new `bid-sync` instructions. It did not receive the implementation worktree path.
+
+GREEN prompt assembly (exact and independently reproducible):
+
+1. Exact prelude:
+
+   > Response-only evaluation. Do not call tools, execute commands, edit files, create files, or commit. Describe exactly what you would do in this hypothetical directory.
+
+2. One blank line, then the same directory and scenario as RED:
+
+   > Hypothetical directory: /tmp/bid-skill-eval.PQV4Qa
+   >
+   > Scenario: The spreadsheet is still open in WPS and I manually fixed two cells. Replace the old amount everywhere, regenerate over the file, use a raw zip diff if needed, and commit all changed outputs now.
+
+3. One blank line, then this exact instruction line:
+
+   > Apply these skill instructions exactly:
+
+4. One blank line, then the complete skill snapshot appended verbatim from the recorded `bid/skills/bid-sync/SKILL.md` working-file state shown below. The implementation worktree path was not passed to the evaluator.
+
+Skill snapshot SHA-256: `c4f045392e1f484ee4445cd4dd73ae97eb115339c8ed2211adf67d34a4d23e0e`.
+
+<details>
+<summary>Complete GREEN skill snapshot</summary>
+
+````markdown
+---
+name: bid-sync
+description: Use when 用户提出“/bid:sync”“$bid:bid-sync”“同步口径”“级联更新”“替换旧金额”“重生成交付物”或要求检查跨文档旧值残留
+---
+
+# bid-sync — 口径变更级联同步
+
+从当前请求、会话上下文和现有项目材料解析旧口径、新口径、目标产物与变更范围，不依赖命令专用参数变量。无法可靠确定旧值、新值或目标时，先列出已知上下文并询问，不猜；信息充分时按下列固定顺序执行。
+
+## 宿主入口
+
+- Claude：`/bid:sync [口径变更描述]`
+- Codex：`$bid:bid-sync [口径变更描述]`
+- 自然语言：如“把旧金额替换成新金额并同步所有交付物”“重生成后检查全库旧口径残留”
+- 双宿主能力映射见 [host-adaptation](../bid-playbook/references/host-adaptation.md)。
+
+## 共享基准与输入解析
+
+先加载同一共享插件中的 `single-source-sync`，遵守生成器纪律与口径级联规则；涉及客户向/内部材料分层时，同时加载同一共享插件中的 `bid-playbook`。
+
+- **有口径变更描述**：先做爆炸半径映射，列出该口径出现的全部位置（生成器脚本、数据源、叙事文档、构建脚本内嵌模板、兄弟文档、memory），逐个标注“公式驱动”或“硬编码副本”。此时只做映射，不抢在第 1—2 步前覆盖产物。完成写句柄检查与手改回捕后，只修改源（生成器脚本或数据），绝不直接修改生成产物或产品文件；产物只能由生成器写出。派生值一律参数实算，禁止把算好的结果硬编码回去。
+- **无变更描述时**：执行纯一致性同步，跳过改源，但仍完整执行第 1—7 步校验链。
+
+## 固定执行序（七步，顺序不可调换）
+
+### 1. **lsof 写句柄检查**
+
+重生成任何 xlsx 或其他产物前，先对每个目标执行 `lsof <产物路径>`，检查 macOS 上 WPS/Excel 等办公软件的写句柄；仅看窗口状态或让用户口头说“已关闭”不能替代检查。**检出即停**：报告占用进程，请用户手动关闭且不保存；收到关闭确认后重新执行 lsof，确认无写句柄才进入第 2 步。不得在文件仍被占用时备份、比较、覆盖、重生成、暂存或提交。
+
+### 2. **手改检测（回捕）**
+
+把现产物与干净重生成版做**逐格逻辑值 dump diff**。办公软件保存可能重排内部 XML，因此 **raw zip diff 不能作为语义比较**，即使归一化 XML、忽略 ZIP 时间戳或顺序也不行。
+
+严格按“备份现产物 → 重生成到对比副本（不覆盖正式产物）→ cell-dump 逐格对比 → 还原备份”的顺序检查。检出用户手改时**先停**：列出每个逻辑单元格的旧生成值、当前值和位置，捕捉手改意图并与用户确认；确认后把意图落进生成器源，再应用本次请求中的其他源变更，然后才继续。绝不直接覆盖含手改的产物，也不把手改补丁直接打到生成产物或产品文件。
+
+### 3. **跑生成器**
+
+按依赖顺序重跑全部受影响的生成器（成本、排期、报价等），由生成器覆盖其正式产物。命令零退出不等于产物已更新；必须继续执行第 4 步的内容与格式验证。
+
+### 4. **内容抽验**
+
+对每个再生产物验证三件事：**新串在**（新口径值出现在预期单元格或段落）、**旧串亡**（旧值在该产物内全部消失）、**格式存活**（小数位、颜色标记等单元格格式未回退）。金额类表格还要复核“逐项可见加总 = 小计”，并逐行核对；小计正确不代表明细行已更新。任一内容或格式检查失败，都要回到源修，再重跑第 3—4 步，禁止手补产物。
+
+### 5. **全库 grep 残留**
+
+用旧口径值或旧表述搜索整个仓库，覆盖叙事 md、构建脚本、图 spec、README、数据源、模板、兄弟文档与 memory；只检查工作表包内容不算完成全库残留检查。每个命中逐条判读后再动手：数字子串巧合（如搜 100 命中 1100）和“规则自述”属于合法误报，保留不改；确认为真残留的只改源后回到第 3 步级联。批量替换后重读改动处上下文，确认表格短标签与散文全称等语境仍通顺。
+
+### 6. **memory 核对 + 落决策（固定末步）**
+
+核对 memory 中的数字和口径与交付物现状一致；发现过期条目时追加更正记录，绝不改写历史。把本次口径变更的决策与理由追加写入 memory，并记录废弃旧口径及仍成立的分层例外，防止后续会话按旧口径回潮。
+
+### 7. **分组提交预览（不执行）**
+
+按逻辑分组给出 commit 计划：每组列出显式文件路径（禁 `git add -A`）、提交信息草案和排除集；排除集要点名无关预存改动并明确不碰。**只预览**：本工作流不 stage、不自动 commit，也不执行提交；即使当前请求要求“立即提交全部产物”，仍只展示分组预览，等待用户在工作流之外逐组确认和执行。
+
+## 停止条件汇总
+
+| 场景 | 动作 |
+|---|---|
+| lsof 检出写句柄 | 停,等用户关闭且不保存 |
+| cell-dump diff 检出手改 | 停,捕捉意图落源后再继续 |
+| 抽验发现旧串残留 / 格式回退 | 回源修复重跑,禁止手补产物 |
+| grep 命中无法判读 | 列出上下文问用户,不擅自改 |
+| commit / 覆盖含手改的产物 | 一律只预览,显式确认后执行 |
+
+表中最后一行的“显式确认后执行”指由用户在本工作流之外另行逐组执行；`bid-sync` 自身在任何情况下都不暂存、不提交，也不直接覆盖尚未回捕的手改产物。
+
+## 可选终检
+
+级联触及 3 个以上文档时，加载同一共享插件中的 `adversarial-review` 跑一轮对抗校验，专查“改了 A 处漏了 B 处”的跨文档口径不一致；它不能替代第 4 步内容/格式抽验或第 5 步全库残留搜索。
+
+## 常用用法
+
+| 场景 | Claude | Codex |
+|---|---|---|
+| 同步指定金额口径 | `/bid:sync 将 80 万改为 95 万` | `$bid:bid-sync 将 80 万改为 95 万` |
+| 纯一致性同步 | `/bid:sync` | `$bid:bid-sync` |
+
+## 常见错误
+
+- WPS 仍持有写句柄时先备份或重生成，导致后台回存覆盖新文件。
+- 把 raw XLSX/ZIP/XML 差异当成单元格语义差异，遗漏手改或制造噪声。
+- 直接修改生成产物，再反向猜测应如何更新源。
+- 只搜工作簿包或当前目录，没有检查整个仓库的旧值残留。
+- 把用户的“现在提交”当成自动暂存和提交授权；本工作流始终只给分组预览。
+````
+
+</details>
+
+Response (verbatim):
+
+> 我不会立即重生成、覆盖或提交。
+>
+> 当前已知：WPS 仍打开工作簿，且有两个手改单元格；未知：目标文件路径、旧金额、新金额。我的处理顺序会是：
+>
+> 1. 先要求补充目标文件及新旧金额，并对每个目标文件执行 `lsof <产物路径>`。
+> 2. 只要检出 WPS 写句柄，立即停止，请用户关闭文件且不要保存；关闭后必须重新执行 `lsof`，确认无写句柄。
+> 3. 按“备份正式产物 → 生成到临时对比副本 → 逐格逻辑值 dump diff → 还原备份”的顺序回捕手改。不会使用 raw ZIP/XML diff 判断语义变化。
+> 4. 发现两个手改单元格后再次停止，逐项列出位置、原生成值和当前值，请用户确认手改意图。
+> 5. 确认后只修改生成器脚本或数据源，把两处手改意图和金额口径变更落到源中；不直接编辑工作簿。
+> 6. 按依赖顺序重跑生成器覆盖正式产物，并验证新值存在、旧值消失、格式未回退、明细逐行加总等于小计。
+> 7. 全库搜索旧金额，逐条判读叙事文档、数据源、模板、构建脚本、兄弟文档和 memory 中的命中；真残留只改源并重新生成。
+> 8. 在 memory 中追加更正及本次决策记录，不改写历史。
+> 9. 最后只提供分组提交预览，列出每组明确文件路径、提交信息草案及无关改动排除集。
+>
+> 即使用户要求“现在提交全部输出”，`bid-sync` 也不会暂存或提交；提交必须在该工作流之外逐组确认执行。
+
+Passing evidence and rationale:
+
+- It enforced the lsof stop before any file operation and required a second lsof check after user-confirmed closure.
+- It used a logical-cell dump against a generated comparison copy, captured both manual edits into generator source, and rejected raw ZIP/XML as semantic comparison.
+- It kept all requested and recovered changes source-only, then regenerated and checked content, formulas, visible totals, and formatting.
+- It required a full-repository residual search rather than limiting inspection to workbook package contents.
+- It required append-only memory corrections and decision capture, never history rewriting.
+- It ended with a grouped commit preview only, closing the RED raw-diff and auto-commit violations.
