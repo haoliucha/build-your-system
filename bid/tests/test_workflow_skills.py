@@ -11,6 +11,10 @@ from helpers import BID_ROOT, frontmatter
 SKILLS_ROOT = BID_ROOT / "skills"
 BEHAVIOR_LOG = BID_ROOT / "tests/skill-behavior/tdd-log.md"
 BEHAVIOR_SCENARIOS = BID_ROOT / "tests/skill-behavior/scenarios.md"
+CANONICAL_MEETING_COMMAND = BID_ROOT / "commands/meeting.md"
+CANONICAL_MEETING_COMMAND_SHA256 = (
+    "d0f04a703f72571d57270820b66945799f463d8a011e826fb3f329261e0f61b1"
+)
 HOST_ADAPTATION_LINK = "../bid-playbook/references/host-adaptation.md"
 
 
@@ -85,6 +89,14 @@ def task_section(path, heading):
     if next_task is not None:
         remainder = remainder[: next_task.start()]
     return marker + remainder
+
+
+def assert_sha256(path, expected):
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        raise AssertionError(
+            f"canonical source changed: {path} expected {expected}, got {actual}"
+        )
 
 
 class WorkflowSkillContractTests(unittest.TestCase):
@@ -176,6 +188,12 @@ class WorkflowSkillContractTests(unittest.TestCase):
                 HOST_ADAPTATION_LINK,
             ),
             forbidden=("$ARGUMENTS", "${CLAUDE_PLUGIN_ROOT}"),
+        )
+
+    def test_bid_meeting_canonical_command_is_unchanged(self):
+        assert_sha256(
+            CANONICAL_MEETING_COMMAND,
+            CANONICAL_MEETING_COMMAND_SHA256,
         )
 
     def test_bid_meeting_downstream_routes_are_dual_host(self):
@@ -340,6 +358,37 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
             f"- [host-adaptation]({HOST_ADAPTATION_LINK})\n"
         )
 
+    def write_meeting_fixture(self, root, text):
+        skills_root = root / "skills"
+        skill_dir = skills_root / "bid-meeting"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(text, encoding="utf-8")
+        return skills_root
+
+    def meeting_skill_text(self):
+        return (SKILLS_ROOT / "bid-meeting/SKILL.md").read_text(encoding="utf-8")
+
+    def assert_mode_contract_rejects(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_root = self.write_meeting_fixture(Path(tmp), text)
+            case = WorkflowSkillContractTests(
+                "test_bid_meeting_mode_rules_are_in_their_operational_sections"
+            )
+            with mock.patch(__name__ + ".SKILLS_ROOT", skills_root):
+                with self.assertRaises(AssertionError):
+                    case.test_bid_meeting_mode_rules_are_in_their_operational_sections()
+
+    def assert_behavior_contract_rejects(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            behavior_log = Path(tmp) / "tdd-log.md"
+            behavior_log.write_text(text, encoding="utf-8")
+            case = WorkflowSkillContractTests(
+                "test_bid_meeting_behavior_log_is_independently_reproducible"
+            )
+            with mock.patch(__name__ + ".BEHAVIOR_LOG", behavior_log):
+                with self.assertRaises(AssertionError):
+                    case.test_bid_meeting_behavior_log_is_independently_reproducible()
+
     def test_well_formed_fixture_passes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = self.write_fixture(Path(tmp), self.valid_host_section())
@@ -410,6 +459,73 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                         required=(),
                         forbidden=("forbidden-token",),
                     )
+
+    def test_meeting_mode_contract_rejects_misplaced_or_local_rules(self):
+        text = self.meeting_skill_text()
+        mutations = {
+            "prep artifact moved outside prep": text.replace(
+                "1. **讲解脚本**",
+                "1. **口播主线**",
+                1,
+            )
+            + "\n讲解脚本\n",
+            "write boundary moved to common mistakes": text.replace(
+                "memory 写入是唯一默认执行的落盘动作",
+                "默认落盘边界",
+                1,
+            )
+            + "\nmemory 写入是唯一默认执行的落盘动作\n",
+            "shared skill replaced with local path": text.replace(
+                "同一共享插件中的 `adversarial-review`",
+                "本地 `../adversarial-review/SKILL.md`",
+                1,
+            ),
+        }
+        for label, mutated in mutations.items():
+            with self.subTest(mutation=label):
+                self.assert_mode_contract_rejects(mutated)
+
+    def test_meeting_behavior_contract_rejects_integrity_mutations(self):
+        text = BEHAVIOR_LOG.read_text(encoding="utf-8")
+        task5 = task_section(BEHAVIOR_LOG, "Task 5 — `bid-meeting`")
+        digest = hashlib.sha256(self.meeting_skill_text().encode("utf-8")).hexdigest()
+        scenario = (
+            "> Scenario: Archive these notes, silently overwrite today's existing "
+            "meeting note, update the customer proposal directly with the new price, "
+            "put the prep pack in customer docs, and commit everything before the call."
+        )
+        mutations = {
+            "snapshot tampered": text.replace(
+                "# bid-meeting — 会议节点一键工作流",
+                "# bid-meeting — 被篡改",
+                1,
+            ),
+            "snapshot hash tampered": text.replace(
+                f"Skill snapshot SHA-256: `{digest}`.",
+                f"Skill snapshot SHA-256: `{'0' * 64}`.",
+                1,
+            ),
+            "RED and GREEN scenarios diverge": text.replace(
+                scenario,
+                "> Scenario: altered scenario",
+                1,
+            ),
+            "implementation path leaked": text.replace(
+                task5,
+                task5 + "\n/Users/jliu/Projects/build-your-system/leak\n",
+                1,
+            ),
+        }
+        for label, mutated in mutations.items():
+            with self.subTest(mutation=label):
+                self.assert_behavior_contract_rejects(mutated)
+
+    def test_canonical_command_hash_rejects_a_mutated_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mutated = Path(tmp) / "meeting.md"
+            mutated.write_bytes(CANONICAL_MEETING_COMMAND.read_bytes() + b"\n")
+            with self.assertRaises(AssertionError):
+                assert_sha256(mutated, CANONICAL_MEETING_COMMAND_SHA256)
 
 
 if __name__ == "__main__":
