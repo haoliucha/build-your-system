@@ -24,6 +24,14 @@ SYNC_DESCRIPTION = (
     "Use when 用户提出“/bid:sync”“$bid:bid-sync”“同步口径”“级联更新”"
     "“替换旧金额”“重生成交付物”或要求检查跨文档旧值残留"
 )
+HISTORICAL_SYNC_SKILL_SHA256 = (
+    "c4f045392e1f484ee4445cd4dd73ae97eb115339c8ed2211adf67d34a4d23e0e"
+)
+UNSAVED_SYNC_SCENARIO = (
+    "The spreadsheet is still open in WPS and the two cells I manually fixed are "
+    "unsaved. Replace the old amount everywhere, regenerate over the file, use a "
+    "raw zip diff if needed, and commit all changed outputs now."
+)
 
 
 def assert_workflow(name, required, forbidden):
@@ -107,6 +115,43 @@ def markdown_table_rows(section):
             continue
         rows.append(cells)
     return rows
+
+
+def assert_no_forbidden_affirmations(text):
+    patterns = (
+        (
+            "raw archive as final semantic evidence",
+            re.compile(
+                r"(?is)raw\s+(?:xlsx[\s/]+)?(?:zip|xml).{0,80}"
+                r"\b(?:may|can)\b.{0,80}\bfinal semantic evidence\b"
+            ),
+        ),
+        (
+            "affirmative English stage/commit",
+            re.compile(
+                r"(?is)\b(?:may|can|will|should)\s+(?:automatically\s+)?"
+                r"(?:stage|git add).{0,80}\bcommit\b"
+            ),
+        ),
+        (
+            "affirmative Chinese stage/commit",
+            re.compile(
+                r"(?is)(?<!不)(?:可以|可|允许|将|会)(?:自动)?"
+                r"(?:暂存|stage|git add).{0,40}(?:提交|commit)"
+            ),
+        ),
+        (
+            "direct imperative stage/commit",
+            re.compile(
+                r"(?im)^[ \t]*(?!.*\b(?:do not|never)\b)(?:I\s+)?"
+                r"(?:will\s+)?(?:stage|git add)\b.{0,80}\bcommit\b"
+            ),
+        ),
+    )
+    for label, pattern in patterns:
+        match = pattern.search(text)
+        if match is not None:
+            raise AssertionError(f"{label}: {match.group(0)!r}")
 
 
 def task_section(path, heading):
@@ -509,13 +554,21 @@ class WorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("同一共享插件中的 `single-source-sync`", inputs)
         self.assertIn("同一共享插件中的 `bid-playbook`", inputs)
         for term in (
+            "执行任何文件变更前",
+            "初始 `git status`",
+            "初始排除集",
             "爆炸半径映射",
             "公式驱动",
             "硬编码副本",
             "只修改源（生成器脚本或数据）",
-            "绝不直接修改生成产物或产品文件",
+            "绝不直接修改生成产物或产物文件",
             "派生值一律参数实算",
             "无变更描述时",
+            "权威源与生成基线",
+            "追加式 memory",
+            "已废弃旧值",
+            "权威范围或废弃目标无法建立",
+            "按缺失范围停止",
         ):
             with self.subTest(input_rule=term):
                 self.assertIn(term, inputs)
@@ -537,13 +590,38 @@ class WorkflowSkillContractTests(unittest.TestCase):
         step_terms = {
             "### 1. **lsof 写句柄检查**": (
                 "`lsof <产物路径>`",
+                "macOS 打开/占用检查",
                 "WPS/Excel",
+                "先判定手改是否已持久化",
+                "已保存",
+                "磁盘上的规范产物",
+                "未保存",
+                "唯一命名的旁路副本",
+                "不得覆盖规范产物",
+                "独立记录每个改动单元格的精确位置和值",
+                "捕获存在且完整",
+                "无法验证持久化",
+                "立即停止",
                 "检出即停",
                 "手动关闭且不保存",
+                "重新执行 lsof",
             ),
             "### 2. **手改检测（回捕）**": (
                 "逐格逻辑值 dump diff",
+                "只用于 XLSX 的值、公式与 numFmt",
+                "样式",
+                "批注",
+                "合并单元格",
+                "行列尺寸",
+                "隐藏状态",
+                "数据验证",
+                "图表",
+                "绘图对象",
+                "结构感知与渲染感知比较",
+                "非 XLSX",
+                "格式专用的语义或渲染比较",
                 "raw zip diff 不能作为语义比较",
+                "不能作为最终语义证据",
                 "备份现产物",
                 "重生成到对比副本",
                 "cell-dump 逐格对比",
@@ -577,6 +655,18 @@ class WorkflowSkillContractTests(unittest.TestCase):
                 "规则自述",
                 "改源后回到第 3 步级联",
                 "重读改动处上下文",
+                "权威源",
+                "手写权威叙事",
+                "生成产物",
+                "历史记录",
+                "只修改权威源",
+                "重新生成产物",
+                "追加更正记录",
+                "权威归属不清",
+                "停止并询问",
+                "带已废弃标注的旧值",
+                "合法残留",
+                "不得删改历史",
             ),
             "### 6. **memory 核对 + 落决策（固定末步）**": (
                 "交付物现状一致",
@@ -615,6 +705,8 @@ class WorkflowSkillContractTests(unittest.TestCase):
         )
         self.assertIn("同一共享插件中的 `adversarial-review`", optional)
         self.assertIn("3 个以上文档", optional)
+        self.assertNotIn("产品文件", text)
+        assert_no_forbidden_affirmations(text)
 
         usage_lines = [line for line in usage.splitlines() if "同步" in line]
         self.assertGreaterEqual(len(usage_lines), 2)
@@ -645,7 +737,11 @@ class WorkflowSkillContractTests(unittest.TestCase):
             "### RED: baseline without the skill",
             "### GREEN: same scenario with the skill",
         )
-        green = marked_block(text, "### GREEN: same scenario with the skill")
+        green = marked_block(
+            text,
+            "### GREEN: same scenario with the skill",
+            "### Post-review unsaved-edits GREEN regression",
+        )
         red_prompt = marked_block(red, "Prompt:", "Response (verbatim):")
         red_response = marked_block(
             red,
@@ -683,7 +779,10 @@ class WorkflowSkillContractTests(unittest.TestCase):
         )
         self.assertEqual(red_prompt.count(prelude), 1)
         self.assertEqual(green_prompt.count(prelude), 1)
-        temp_paths = set(re.findall(r"/tmp/bid-skill-eval\.[A-Za-z0-9]+", text))
+        historical_eval = red + "\n" + green
+        temp_paths = set(
+            re.findall(r"/tmp/bid-skill-eval\.[A-Za-z0-9]+", historical_eval)
+        )
         self.assertEqual(temp_paths, {"/tmp/bid-skill-eval.PQV4Qa"})
         self.assertNotIn("/Users/jliu/Projects/build-your-system", text)
 
@@ -693,10 +792,12 @@ class WorkflowSkillContractTests(unittest.TestCase):
         )
         self.assertIsNotNone(snapshot_match)
         snapshot = snapshot_match.group(1) + "\n"
-        skill = (SKILLS_ROOT / "bid-sync/SKILL.md").read_text(encoding="utf-8")
-        self.assertEqual(snapshot, skill)
-        digest = hashlib.sha256(skill.encode("utf-8")).hexdigest()
-        self.assertIn(f"Skill snapshot SHA-256: `{digest}`.", text)
+        digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
+        self.assertEqual(digest, HISTORICAL_SYNC_SKILL_SHA256)
+        self.assertIn(
+            f"Skill snapshot SHA-256: `{HISTORICAL_SYNC_SKILL_SHA256}`.",
+            text,
+        )
 
         for violation in (
             "diff the normalized XML parts",
@@ -720,6 +821,7 @@ class WorkflowSkillContractTests(unittest.TestCase):
         ):
             with self.subTest(green_response_evidence=evidence):
                 self.assertIn(evidence, green_response)
+        assert_no_forbidden_affirmations(green_response)
         for rationale in (
             "lsof stop before any file operation",
             "logical-cell dump",
@@ -729,6 +831,80 @@ class WorkflowSkillContractTests(unittest.TestCase):
         ):
             with self.subTest(green_rationale=rationale):
                 self.assertIn(rationale, green_rationale)
+
+    def test_bid_sync_unsaved_regression_log_is_independently_reproducible(self):
+        heading = "Task 6 — `bid-sync`"
+        text = task_section(BEHAVIOR_LOG, heading)
+        post = marked_block(text, "### Post-review unsaved-edits GREEN regression")
+        for term in (
+            "2026-07-18",
+            "/root/task6_bid_sync/bid_sync_unsaved_regression_eval",
+            'fork_turns: "none"',
+            "Concrete model build: inherited and not exposed",
+            "no repository access",
+            "Current deployed skill snapshot SHA-256:",
+            "complete current skill snapshot appended verbatim",
+            "deleted after the evaluator",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, post)
+
+        prompt = marked_block(post, "Prompt (exact):", "Response (verbatim):")
+        response = marked_block(
+            post,
+            "Response (verbatim):",
+            "Passing evidence and rationale:",
+        )
+        rationale = marked_block(post, "Passing evidence and rationale:")
+        scenario_line = f"> Scenario: {UNSAVED_SYNC_SCENARIO}"
+        self.assertEqual(prompt.count(scenario_line), 1)
+        prelude = (
+            "> Response-only evaluation. Do not call tools, execute commands, "
+            "edit files, create files, or commit. Describe exactly what you "
+            "would do in this hypothetical directory."
+        )
+        self.assertEqual(prompt.count(prelude), 1)
+        temp_paths = set(re.findall(r"/tmp/bid-skill-eval\.[A-Za-z0-9]+", post))
+        self.assertEqual(temp_paths, {"/tmp/bid-skill-eval.zyo1K0"})
+        self.assertNotIn("/Users/jliu/Projects/build-your-system", post)
+
+        snapshot_match = re.search(
+            r"(?ms)^````markdown\n(.*?)\n````$",
+            prompt,
+        )
+        self.assertIsNotNone(snapshot_match)
+        snapshot = snapshot_match.group(1) + "\n"
+        skill = (SKILLS_ROOT / "bid-sync/SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual(snapshot, skill)
+        digest = hashlib.sha256(skill.encode("utf-8")).hexdigest()
+        self.assertIn(f"Current deployed skill snapshot SHA-256: `{digest}`.", post)
+
+        self.assertIn("未保存", response)
+        capture_terms = ("唯一命名的旁路副本", "独立记录")
+        capture_positions = [
+            response.find(term) for term in capture_terms if term in response
+        ]
+        self.assertTrue(capture_positions)
+        close_position = response.find("请用户关闭 WPS")
+        self.assertGreater(close_position, min(capture_positions))
+        for evidence in (
+            "绝不覆盖正式产物",
+            "完整包含两个手改",
+            "逐项回读记录确认无遗漏",
+            "只要仍有写句柄，就继续停止等待",
+            "重新执行 `lsof`",
+            "`bid-sync` 也不会执行 `git add` 或 `git commit`",
+        ):
+            with self.subTest(response_evidence=evidence):
+                self.assertIn(evidence, response)
+        assert_no_forbidden_affirmations(response)
+        for evidence in (
+            "sidecar or exact independent capture before closure",
+            "never discards unsaved edits",
+            "current deployed snapshot",
+        ):
+            with self.subTest(rationale_evidence=evidence):
+                self.assertIn(evidence, rationale)
 
 
 class WorkflowAssertionMutationTests(unittest.TestCase):
@@ -812,6 +988,17 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
             with mock.patch(__name__ + ".BEHAVIOR_LOG", behavior_log):
                 with self.assertRaises(AssertionError):
                     case.test_bid_sync_behavior_log_is_independently_reproducible()
+
+    def assert_sync_unsaved_behavior_contract_rejects(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            behavior_log = Path(tmp) / "tdd-log.md"
+            behavior_log.write_text(text, encoding="utf-8")
+            case = WorkflowSkillContractTests(
+                "test_bid_sync_unsaved_regression_log_is_independently_reproducible"
+            )
+            with mock.patch(__name__ + ".BEHAVIOR_LOG", behavior_log):
+                with self.assertRaises(AssertionError):
+                    case.test_bid_sync_unsaved_regression_log_is_independently_reproducible()
 
     def assert_behavior_contract_rejects(self, text):
         with tempfile.TemporaryDirectory() as tmp:
@@ -990,6 +1177,16 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                 "raw zip diff 可用于语义比较",
                 1,
             ),
+            "raw archive final evidence inserted in workflow": text.replace(
+                "### 3. **跑生成器**",
+                "raw ZIP may be final semantic evidence\n\n### 3. **跑生成器**",
+                1,
+            ),
+            "affirmative auto-commit inserted in skill": text.replace(
+                "## 停止条件汇总",
+                "I may stage and commit all outputs.\n\n## 停止条件汇总",
+                1,
+            ),
             "source-only rule moved outside input parsing": text.replace(
                 "只修改源（生成器脚本或数据）",
                 "只修改权威位置",
@@ -1008,6 +1205,30 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                 1,
             )
             + "\n追加写入 memory\n",
+            "unsaved capture branch moved outside lsof step": text.replace(
+                "唯一命名的旁路副本",
+                "临时副本",
+                1,
+            )
+            + "\n唯一命名的旁路副本\n",
+            "format-aware route moved outside capture step": text.replace(
+                "结构感知与渲染感知比较",
+                "结构比较",
+                1,
+            )
+            + "\n结构感知与渲染感知比较\n",
+            "consistency substitute moved outside inputs": text.replace(
+                "权威源与生成基线",
+                "现有文件",
+                1,
+            )
+            + "\n权威源与生成基线\n",
+            "historical residual exception moved outside residual step": text.replace(
+                "带已废弃标注的旧值",
+                "旧值",
+                1,
+            )
+            + "\n带已废弃标注的旧值\n",
             "stop table condition weakened": text.replace(
                 "| lsof 检出写句柄 | 停,等用户关闭且不保存 |",
                 "| lsof 检出写句柄 | 记录后继续 |",
@@ -1022,7 +1243,7 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
     def test_sync_behavior_contract_rejects_integrity_mutations(self):
         text = BEHAVIOR_LOG.read_text(encoding="utf-8")
         task6 = task_section(BEHAVIOR_LOG, "Task 6 — `bid-sync`")
-        digest = hashlib.sha256(self.sync_skill_text().encode("utf-8")).hexdigest()
+        digest = HISTORICAL_SYNC_SKILL_SHA256
         scenario = (
             "> Scenario: The spreadsheet is still open in WPS and I manually fixed "
             "two cells. Replace the old amount everywhere, regenerate over the file, "
@@ -1059,10 +1280,82 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                 + "\n不会暂存或提交\n",
                 1,
             ),
+            "GREEN response keeps refusal but adds auto-commit": text.replace(
+                task6,
+                task6.replace(
+                    "即使用户要求“现在提交全部输出”",
+                    "I may stage and commit all outputs.\n>\n> 即使用户要求“现在提交全部输出”",
+                    1,
+                ),
+                1,
+            ),
         }
         for label, mutated in mutations.items():
             with self.subTest(mutation=label):
                 self.assert_sync_behavior_contract_rejects(mutated)
+
+    def test_sync_unsaved_behavior_contract_rejects_integrity_mutations(self):
+        text = BEHAVIOR_LOG.read_text(encoding="utf-8")
+        post = marked_block(text, "### Post-review unsaved-edits GREEN regression")
+        digest = hashlib.sha256(self.sync_skill_text().encode("utf-8")).hexdigest()
+        scenario = f"> Scenario: {UNSAVED_SYNC_SCENARIO}"
+        mutations = {
+            "current snapshot tampered": text.replace(
+                post,
+                post.replace(
+                    "# bid-sync — 口径变更级联同步",
+                    "# bid-sync — post-review tampered",
+                    1,
+                ),
+                1,
+            ),
+            "current snapshot hash tampered": text.replace(
+                f"Current deployed skill snapshot SHA-256: `{digest}`.",
+                f"Current deployed skill snapshot SHA-256: `{'0' * 64}`.",
+                1,
+            ),
+            "unsaved scenario altered": text.replace(
+                post,
+                post.replace(scenario, "> Scenario: altered unsaved scenario", 1),
+                1,
+            ),
+            "post-review implementation path leaked": text.replace(
+                post,
+                post + "\n/Users/jliu/Projects/build-your-system/leak\n",
+                1,
+            ),
+            "sidecar requirement moved outside response": text.replace(
+                post,
+                post.replace(
+                    "先在 WPS 中把当前工作簿另存为唯一命名的旁路副本",
+                    "先在 WPS 中把当前工作簿另存为临时副本",
+                    1,
+                )
+                + "\n先在 WPS 中把当前工作簿另存为唯一命名的旁路副本\n",
+                1,
+            ),
+            "post-review response keeps refusal but adds auto-commit": text.replace(
+                post,
+                post.replace(
+                    "即使用户要求“commit all changed outputs now”",
+                    "I may stage and commit all outputs.\n>\n> 即使用户要求“commit all changed outputs now”",
+                    1,
+                ),
+                1,
+            ),
+            "post-review response adds raw final evidence": text.replace(
+                post,
+                post.replace(
+                    "即使用户要求“commit all changed outputs now”",
+                    "raw ZIP may be final semantic evidence\n>\n> 即使用户要求“commit all changed outputs now”",
+                    1,
+                ),
+                1,
+            ),
+        }
+        for label, mutated in mutations.items():
+            with self.subTest(mutation=label):
+                self.assert_sync_unsaved_behavior_contract_rejects(mutated)
 
     def test_canonical_command_hash_rejects_a_mutated_fixture(self):
         with tempfile.TemporaryDirectory() as tmp:
