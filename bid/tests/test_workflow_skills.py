@@ -292,7 +292,8 @@ HANDOFF_SCOPE_PATTERNS = {
 }
 HANDOFF_NEGATION = re.compile(
     r"(?is)(?:不|绝不|不得|禁止|拒绝|不可|不能|不会|"
-    r"must\s+not|do\s+not|don't|never|refus(?:e|ed|es|ing)|would\s+not)"
+    r"must\s+not|do\s+not|don't|will\s+not|cannot|can't|may\s+not|"
+    r"should\s+not|never|refus(?:e|ed|es|ing)|would\s+not)"
     r".{0,72}$"
 )
 HANDOFF_CLAUSE_BOUNDARY = re.compile(
@@ -1533,6 +1534,46 @@ class WorkflowSkillContractTests(unittest.TestCase):
             with self.subTest(green_rationale=rationale):
                 self.assertIn(rationale, green_rationale)
         assert_no_handoff_affirmative_contradictions({"response": green_response})
+
+    def test_bid_handoff_safe_english_negations_are_not_contradictions(self):
+        safe_cases = (
+            (
+                "receiver",
+                "I cannot infer the receiving tool from the official brand guide.",
+            ),
+            (
+                "package",
+                "Without approved copy I will not create a placeholder draft.",
+            ),
+            (
+                "batches",
+                "I will not generate all 20 screens first, then split them into batches.",
+            ),
+            (
+                "report",
+                "After approval I will not replace the old package.",
+            ),
+            (
+                "report",
+                "After approval I will not stage the files and commit them.",
+            ),
+            (
+                "receiver",
+                "I can't infer the receiving tool from the official brand guide.",
+            ),
+            (
+                "package",
+                "Without approved copy I may not create a placeholder draft.",
+            ),
+            (
+                "batches",
+                "I should not generate all 20 screens first, then split them "
+                "into batches.",
+            ),
+        )
+        for scope, text in safe_cases:
+            with self.subTest(scope=scope, text=text):
+                assert_no_handoff_affirmative_contradictions({scope: text})
 
     def test_bid_handoff_current_deployed_snapshot_is_current(self):
         heading = "Task 7 — `bid-handoff`"
