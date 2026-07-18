@@ -193,6 +193,35 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.source_root.readlink(), BID_ROOT)
         self.assertEqual(self.codex_calls(), [])
 
+    def test_symlinked_marketplace_is_rejected_before_any_mutation(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Local Build Your System"},
+            "plugins": [],
+        }
+        target = self.home / "external-marketplace.json"
+        target.write_text(
+            json.dumps(existing, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        target_bytes = target.read_bytes()
+        self.marketplace_file.parent.mkdir(parents=True)
+        self.marketplace_file.symlink_to(target)
+        marketplace_inode = self.marketplace_file.lstat().st_ino
+
+        result = self.run_installer()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("conflict", result.stderr.lower())
+        self.assertIn("symlink", result.stderr.lower())
+        self.assertTrue(self.marketplace_file.is_symlink())
+        self.assertEqual(self.marketplace_file.lstat().st_ino, marketplace_inode)
+        self.assertEqual(self.marketplace_file.readlink(), target)
+        self.assertEqual(target.read_bytes(), target_bytes)
+        self.assertFalse(self.source_root.exists())
+        self.assertFalse(self.source_root.is_symlink())
+        self.assertEqual(self.codex_calls(), [])
+
     def test_script_is_executable_and_has_no_cache_or_copy_operations(self):
         mode = INSTALLER.stat().st_mode
         text = INSTALLER.read_text(encoding="utf-8").lower()

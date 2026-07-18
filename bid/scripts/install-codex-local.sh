@@ -7,6 +7,11 @@ BID_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)"
 SOURCE_ROOT="$HOME/plugins/bid"
 MARKETPLACE_FILE="$HOME/.agents/plugins/marketplace.json"
 
+if [ -L "$MARKETPLACE_FILE" ]; then
+  printf 'Conflict: %s is a symlink; refusing to modify it.\n' "$MARKETPLACE_FILE" >&2
+  exit 1
+fi
+
 if [ ! -e "$SOURCE_ROOT" ] && [ ! -L "$SOURCE_ROOT" ]; then
   mkdir -p "$(dirname -- "$SOURCE_ROOT")"
   ln -s "$BID_ROOT" "$SOURCE_ROOT"
