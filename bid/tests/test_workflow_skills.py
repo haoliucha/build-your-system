@@ -333,83 +333,147 @@ def assert_no_handoff_affirmative_contradictions(scoped_text):
 
 
 REVIEW_AFFIRMATIVE_PATTERNS = {
-    "single_general_pass": (
+    "precheck_before_qualification": (
         re.compile(
-            r"(?is)(?:一个|单一|一次|一轮).{0,16}"
-            r"(?:通用|综合|general).{0,12}(?:pass|审校|检查|评审)"
-        ),
-        re.compile(r"(?is)\b(?:one|single)\s+general\s+pass\b"),
-    ),
-    "trust_without_reverse_test": (
-        re.compile(
-            r"(?is)(?:无需|跳过|不做).{0,20}(?:已知错误注入|反向验证|reverse test)"
-            r".{0,36}(?:信任|采信|依赖).{0,24}(?:grep|生成器|退出码|exit code)"
+            r"(?is)(?:先|首先)[^\n。.；;!！?？]{0,30}(?:grep|残留)"
+            r"[^\n。.；;!！?？]{0,30}(?:预检|清零|门槛|gate)"
+            r"[^\n。.；;!！?？]{0,30}(?:再|之后)"
+            r"[^\n。.；;!！?？]{0,24}(?:反向验证|资格验证|已知错误注入)"
         ),
         re.compile(
-            r"(?is)\btrust\b.{0,30}(?:grep|generator|exit code).{0,36}"
-            r"\bwithout\b.{0,24}(?:known.error|injection|reverse test)"
+            r"(?is)\b(?:use|trust)\b[^\n.!?]{0,30}(?:grep|residual)"
+            r"[^\n.!?]{0,30}(?:gate|precheck|progress)"
+            r"[^\n.!?]{0,24}\bbefore\b[^\n.!?]{0,24}"
+            r"(?:qualification|reverse test|known-error injection)"
         ),
     ),
-    "skip_visual_inspection": (
+    "one_controller_bundled_review": (
+        re.compile(
+            r"(?is)(?:同一|一个|单一)[^\n。.；;!！?？但]{0,20}"
+            r"(?:控制器|上下文|审校者)[^\n。.；;!！?？但]{0,28}"
+            r"(?:依次|一起|打包)[^\n。.；;!！?？但]{0,30}"
+            r"(?:文档|财务|视觉)"
+        ),
+        re.compile(
+            r"(?is)\b(?:one|same|single)\b[^\n.!?]{0,20}"
+            r"(?:controller|context|reviewer)[^\n.!?]{0,30}"
+            r"(?:bundl|review)[^\n.!?]{0,30}(?:document|finance|visual)"
+        ),
+    ),
+    "skip_pages": (
         re.compile(
             r"(?is)(?:跳过|省略|无需|不做)[^\n。.，,；;!！?？但]{0,24}"
-            r"(?:逐页|逐张|视觉|渲染)[^\n。.，,；;!！?？但]{0,18}"
-            r"(?:目检|检查|inspection)?"
+            r"(?:逐页|其余页面|全部页面|视觉|渲染)"
         ),
         re.compile(
-            r"(?is)\bskip\b.{0,30}(?:page.by.page|visual|render)"
-            r".{0,20}(?:inspection|review)?"
+            r"(?is)\bskip\b[^\n.!?]{0,30}"
+            r"(?:page.by.page|remaining pages|all pages|visual|render)"
         ),
     ),
-    "auto_fix_locked_value": (
+    "auto_fix_locked_price": (
         re.compile(
             r"(?is)(?:立即|直接|自动|先)[^\n。.，,；;!！?？]{0,16}"
             r"(?:修复|修改|改)[^\n。.，,；;!！?？]{0,24}"
             r"(?:锁定|对外口径|价格|报价|义务)"
         ),
         re.compile(
-            r"(?is)\b(?:immediately|directly|automatically)\b.{0,24}"
-            r"(?:fix|change|edit).{0,28}(?:locked|price|obligation|commitment)"
+            r"(?is)\b(?:immediately|directly|automatically)\b[^\n.!?]{0,24}"
+            r"(?:fix|change|edit)[^\n.!?]{0,28}"
+            r"(?:locked|price|obligation|commitment)"
+        ),
+    ),
+    "replace_outputs_after_approval": (
+        re.compile(
+            r"(?is)(?:批准|确认|同意|审批)后[^\n。.；;!！?？]{0,24}"
+            r"(?:覆盖|替换)[^\n。.；;!！?？]{0,20}(?:生成产物|产物|文件|输出)"
+        ),
+        re.compile(
+            r"(?is)(?:after|once)[^\n.!?]{0,24}"
+            r"(?:approval|approved|confirmation|confirmed)[^\n.!?]{0,24}"
+            r"(?:overwrite|replace)[^\n.!?]{0,24}"
+            r"(?:generated )?(?:output|file|artifact)s?"
+        ),
+    ),
+    "commit_after_approval": (
+        re.compile(
+            r"(?is)(?:批准|确认|同意|审批)后[^\n。.；;!！?？]{0,24}"
+            r"(?:执行|运行|暂存|stage|git\s+add)[^\n。.；;!！?？]{0,30}"
+            r"(?:提交|commit|git\s+commit)"
+        ),
+        re.compile(
+            r"(?is)(?:after|once)[^\n.!?]{0,24}"
+            r"(?:approval|approved|confirmation|confirmed)[^\n.!?]{0,24}"
+            r"(?:stage|git\s+add)[^\n.!?]{0,30}(?:commit|git\s+commit)"
+        ),
+    ),
+    "repair_without_adjudication": (
+        re.compile(
+            r"(?is)(?:先|立即|直接)[^\n。.；;!！?？]{0,18}"
+            r"(?:修复|修改)[^\n。.；;!！?？]{0,24}(?:finding|发现|问题)"
+            r"[^\n。.；;!！?？]{0,30}(?:再|之后)"
+            r"[^\n。.；;!！?？]{0,18}(?:裁决|adjudicat)"
+        ),
+        re.compile(
+            r"(?is)\b(?:repair|fix)\b[^\n.!?]{0,24}(?:finding|issue)s?"
+            r"[^\n.!?]{0,24}\b(?:before|without)\b[^\n.!?]{0,18}adjudicat"
+        ),
+    ),
+    "contaminated_sequential_passes": (
+        re.compile(
+            r"(?is)(?:顺序|串行)[^\n。.；;!！?？]{0,20}(?:pass|透镜)"
+            r"[^\n。.；;!！?？]{0,28}(?:读取|继承|看到|复用)"
+            r"[^\n。.；;!！?？]{0,24}(?:前一轮|上一轮|上一个)"
+            r"[^\n。.；;!！?？]{0,18}(?:finding|结论|发现)"
+        ),
+        re.compile(
+            r"(?is)\bsequential\b[^\n.!?]{0,24}(?:pass|lens)"
+            r"[^\n.!?]{0,28}(?:read|inherit|reuse|see)"
+            r"[^\n.!?]{0,24}(?:previous|prior)[^\n.!?]{0,18}"
+            r"(?:finding|conclusion|output)"
+        ),
+    ),
+    "toy_file_only_injection": (
+        re.compile(
+            r"(?is)(?:toy|玩具|单个临时|单文件)[^\n。.；;!！?？]{0,24}"
+            r"(?:文件|file)?[^\n。.；;!！?？]{0,18}(?:注入|测试)"
+            r"[^\n。.；;!！?？]{0,30}(?:无需|不用|不必|跳过)"
+            r"[^\n。.；;!！?？]{0,24}(?:完整镜像|完整文件列表|相同配置|同配置)"
+        ),
+        re.compile(
+            r"(?is)(?:toy|single)[^\n.!?]{0,18}file[^\n.!?]{0,24}"
+            r"(?:inject|test)[^\n.!?]{0,30}(?:without|instead of)"
+            r"[^\n.!?]{0,24}(?:full|exact)[^\n.!?]{0,18}"
+            r"(?:mirror|file list|config)"
         ),
     ),
     "direct_generated_output_edit": (
         re.compile(
-            r"(?is)(?:直接|手工|手动).{0,16}(?:打补丁|修补|修改|改).{0,20}"
+            r"(?is)(?:直接|手工|手动)[^\n。.；;!！?？]{0,16}"
+            r"(?:打补丁|修补|修改|改)[^\n。.；;!！?？]{0,20}"
             r"(?:生成产物|产物文件|生成文件|PDF|xlsx)"
         ),
         re.compile(
-            r"(?is)\b(?:directly|manually)\b.{0,18}(?:patch|edit|fix|modify)"
-            r".{0,24}(?:generated (?:output|file|artifact)|PDF|xlsx)"
+            r"(?is)\b(?:directly|manually)\b[^\n.!?]{0,18}"
+            r"(?:patch|edit|fix|modify)[^\n.!?]{0,24}"
+            r"(?:generated (?:output|file|artifact)|PDF|xlsx)"
         ),
     ),
-    "overwrite_generated_output": (
-        re.compile(
-            r"(?is)(?:用户|客户|负责人|审批人).{0,18}(?:批准|确认|同意|审批)后"
-            r".{0,18}(?:将|会|可以|可|允许)?.{0,8}覆盖.{0,18}"
-            r"(?:生成产物|产物|文件|输出)?"
-        ),
-        re.compile(
-            r"(?is)(?:将|会|可以|可|允许|立即|直接).{0,20}覆盖.{0,18}"
-            r"(?:生成产物|产物|文件|输出)"
-        ),
-        re.compile(
-            r"(?is)(?:after|once).{0,24}(?:approval|approved|confirmation|confirmed)"
-            r".{0,24}(?:will|can|may|would)?\s*overwrite.{0,24}"
-            r"(?:generated )?(?:output|file|artifact)s?"
-        ),
-        re.compile(
-            r"(?is)\b(?:will|can|may|would)\b.{0,18}overwrite.{0,24}"
-            r"(?:generated )?(?:output|file|artifact)s?"
-        ),
-    ),
-    "stage_commit": HANDOFF_AFFIRMATIVE_PATTERNS["stage_commit"],
 }
 REVIEW_SCOPE_PATTERNS = {
-    "lenses": ("single_general_pass", "skip_visual_inspection"),
-    "checker": ("trust_without_reverse_test",),
-    "adjudication": ("auto_fix_locked_value",),
-    "repair": ("direct_generated_output_edit", "overwrite_generated_output"),
-    "report": ("overwrite_generated_output", "stage_commit"),
+    "qualification": ("precheck_before_qualification", "toy_file_only_injection"),
+    "prechecks": ("precheck_before_qualification", "repair_without_adjudication"),
+    "lenses": (
+        "one_controller_bundled_review",
+        "skip_pages",
+        "contaminated_sequential_passes",
+    ),
+    "adjudication": ("auto_fix_locked_price",),
+    "repair": (
+        "auto_fix_locked_price",
+        "repair_without_adjudication",
+        "direct_generated_output_edit",
+    ),
+    "report": ("replace_outputs_after_approval", "commit_after_approval"),
     "response": tuple(REVIEW_AFFIRMATIVE_PATTERNS),
 }
 REVIEW_NEGATION = re.compile(
@@ -417,6 +481,9 @@ REVIEW_NEGATION = re.compile(
     r"must\s+not|do\s+not|don't|will\s+not|cannot|can't|may\s+not|"
     r"should\s+not|never|refus(?:e|ed|es|ing)|would\s+not)"
     r".{0,72}$"
+)
+REVIEW_CLAUSE_BOUNDARY = re.compile(
+    r"(?i:\b(?:but|however|yet)\b)|但是|然而|但|[\n。.，,；;!！?？]"
 )
 
 
@@ -426,7 +493,7 @@ def assert_no_review_affirmative_contradictions(scoped_text):
             for pattern in REVIEW_AFFIRMATIVE_PATTERNS[label]:
                 for match in pattern.finditer(text):
                     clause_start = 0
-                    for boundary in HANDOFF_CLAUSE_BOUNDARY.finditer(
+                    for boundary in REVIEW_CLAUSE_BOUNDARY.finditer(
                         text, 0, match.start()
                     ):
                         clause_start = boundary.end()
@@ -1785,12 +1852,12 @@ class WorkflowSkillContractTests(unittest.TestCase):
         overview = text.split("## 宿主入口", 1)[0]
         host = markdown_section(text, "## 宿主入口")
         shared = markdown_section(text, "## 共享基准与对象解析")
+        checker = markdown_section(text, "## 检查器生产等价资格验证")
         prechecks = markdown_section(text, "## 送审前确定性预检")
         lenses = markdown_section(text, "## 独立透镜扇出")
         document = markdown_subsection(text, "### 文档透镜")
         finance = markdown_subsection(text, "### 财务透镜")
         visual = markdown_subsection(text, "### 视觉透镜")
-        checker = markdown_section(text, "## 检查器反向验证")
         adjudication = markdown_section(text, "## 汇总裁决")
         repair = markdown_section(text, "## 修复与复验")
         report = markdown_section(text, "## 报告与执行边界")
@@ -1830,9 +1897,46 @@ class WorkflowSkillContractTests(unittest.TestCase):
             ],
         )
         self.assertIn("受众层决定脱敏透镜是否启用及严格度", shared)
-        self.assertIn("对象清单为空或路径全部不存在", shared)
+        self.assertIn("任一显式请求路径不存在", shared)
+        self.assertIn("对象清单为空", shared)
         self.assertIn("STOP", shared)
         self.assertIn("不凭空审校", shared)
+        for term in (
+            "不可变输入清单",
+            "相对路径",
+            "文件列表",
+            "配置",
+            "flags",
+            "生产检查命令",
+            "内容快照",
+            "SHA-256",
+        ):
+            with self.subTest(manifest_rule=term):
+                self.assertIn(term, shared)
+
+        for term in (
+            "每个关键检查器",
+            "任何 grep/残留结果不得作为进度门槛",
+            "完整临时镜像",
+            "完全相同的相对路径布局",
+            "完全相同的文件列表",
+            "完全相同的生产检查命令、flags 与配置",
+            "镜像目标",
+            "绝不注入真实文件",
+            "先运行原样检查",
+            "注入一个已知错误",
+            "必须检出",
+            "删除注入错误",
+            "干净复跑",
+            "toy 单文件",
+            "检查器失败即 STOP",
+            "此前所有绿灯失效",
+        ):
+            with self.subTest(checker_rule=term):
+                self.assertIn(term, checker)
+        self.assertLess(checker.index("先运行原样检查"), checker.index("注入一个已知错误"))
+        self.assertLess(checker.index("注入一个已知错误"), checker.index("删除注入错误"))
+        self.assertLess(checker.index("删除注入错误"), checker.index("干净复跑"))
 
         for term in (
             "超载",
@@ -1840,6 +1944,10 @@ class WorkflowSkillContractTests(unittest.TestCase):
             "舍入溢出",
             "算式不平",
             "可 grep 的残留旧值",
+            "算术检查不依赖自动检查器",
+            "残留/grep 检查器完成资格验证后",
+            "预检 finding 必须先裁决",
+            "裁决为 `必修`",
             "确定性检查全部清零",
             "才允许进入独立透镜",
             "不直接改锁定价格或对外口径数字",
@@ -1848,9 +1956,10 @@ class WorkflowSkillContractTests(unittest.TestCase):
                 self.assertIn(term, prechecks)
 
         heading_order = (
+            "## 共享基准与对象解析",
+            "## 检查器生产等价资格验证",
             "## 送审前确定性预检",
             "## 独立透镜扇出",
-            "## 检查器反向验证",
             "## 汇总裁决",
             "## 修复与复验",
             "## 报告与执行边界",
@@ -1864,12 +1973,23 @@ class WorkflowSkillContractTests(unittest.TestCase):
         for term in (
             "相互独立",
             "互不通气",
-            "分别记录 findings",
+            "同一份不可变输入清单、内容快照与 SHA-256",
+            "fresh 隔离上下文",
+            "只含该透镜指令",
+            "不得包含其他透镜或前一轮 findings",
+            "分别写入独立 findings artifact",
+            "只有汇总裁决",
+            "才加载全部 findings artifacts",
             "最后统一裁决",
             "宿主不支持并行执行单元时",
-            "顺序执行互不通气的独立 pass",
+            "显式重置并隐藏前一轮 findings",
+            "fresh lens context",
+            "无法保证上下文隔离",
+            "执行彼此分离的 distinct passes",
+            "裁决前不得合并",
+            "只有 P0 finding 才允许可选盲交叉复核",
             "按宿主入口的统一映射",
-            "不得退化成一个通用 pass",
+            "不得由一个控制器打包完成三类审校",
         ):
             with self.subTest(independent_lens_rule=term):
                 self.assertIn(term, lenses)
@@ -1916,24 +2036,6 @@ class WorkflowSkillContractTests(unittest.TestCase):
                 self.assertIn(term, visual)
 
         for term in (
-            "先注入一个已知错误",
-            "确认检查器抓到",
-            "删除注入错误",
-            "复测真实零命中",
-            "再采信",
-            "检查器抓不到注入的已知错误",
-            "先修检查器",
-            "报错不等于通过",
-            "显式文件列表",
-        ):
-            with self.subTest(checker_rule=term):
-                self.assertIn(term, checker)
-        self.assertLess(
-            checker.index("先注入一个已知错误"),
-            checker.index("再采信"),
-        )
-
-        for term in (
             "≥3 个独立视角共指",
             "必修",
             "建议",
@@ -1953,7 +2055,11 @@ class WorkflowSkillContractTests(unittest.TestCase):
                 self.assertIn(term, adjudication)
 
         for term in (
-            "逐条修复判断类问题",
+            "只有已裁决为 `必修`",
+            "安全、有权威依据、非锁定数字且不改变义务强度",
+            "才允许自动修复",
+            "`建议` 只进入预览",
+            "不得在裁决前修复",
             "重跑对应透镜",
             "复验清零",
             "义务强度",
@@ -1990,9 +2096,10 @@ class WorkflowSkillContractTests(unittest.TestCase):
                 self.assertIn(term, report)
 
         for term in (
-            "对象清单为空或路径全部不存在",
+            "任一显式请求对象或路径不存在",
+            "对象清单为空",
             "确定性检查未清零",
-            "检查器抓不到已知错误",
+            "检查器资格验证失败",
             "锁定的对外口径数字或义务强度",
             "外部页面抓不到",
             "查不到的事实",
@@ -2020,7 +2127,8 @@ class WorkflowSkillContractTests(unittest.TestCase):
         assert_no_review_affirmative_contradictions(
             {
                 "lenses": lenses,
-                "checker": checker,
+                "qualification": checker,
+                "prechecks": prechecks,
                 "adjudication": adjudication,
                 "repair": repair,
                 "report": report + "\n" + stops,
@@ -2029,14 +2137,26 @@ class WorkflowSkillContractTests(unittest.TestCase):
 
     def test_bid_review_safe_negations_are_not_contradictions(self):
         safe_cases = (
-            ("lenses", "不得退化成一个通用 pass。"),
-            ("lenses", "分别执行独立透镜，而非一个通用 pass。"),
-            ("lenses", "不得跳过逐页渲染目检。"),
-            ("checker", "I will not trust grep without a known-error injection."),
-            ("adjudication", "不得直接修改锁定价格。"),
+            (
+                "qualification",
+                "不得先把残留 grep 结果作为预检门槛，再做检查器资格验证。",
+            ),
+            (
+                "qualification",
+                "不得只用 toy 单文件注入测试而跳过完整镜像。",
+            ),
+            ("lenses", "不得由同一个控制器依次审校文档、财务和视觉。"),
+            ("lenses", "不得跳过其余页面。"),
+            ("lenses", "顺序 pass 不得读取前一轮 findings。"),
+            ("adjudication", "不得自动修改锁定价格。"),
+            ("repair", "不得先修复 findings，之后再统一裁决。"),
             ("repair", "绝不直接手动修改生成产物。"),
             ("report", "用户批准后也不会覆盖生成产物。"),
             ("report", "After approval I will not stage the files and commit them."),
+            (
+                "lenses",
+                "不会跳过文档检查，但不得跳过其余页面。",
+            ),
         )
         for scope, text in safe_cases:
             with self.subTest(scope=scope, text=text):
@@ -2044,7 +2164,11 @@ class WorkflowSkillContractTests(unittest.TestCase):
 
     def test_bid_review_behavior_log_is_independently_reproducible(self):
         heading = "Task 8 — `bid-review`"
-        text = task_section(BEHAVIOR_LOG, heading)
+        task_text = task_section(BEHAVIOR_LOG, heading)
+        text, found, _ = task_text.partition(
+            "\n### Post-review GREEN: same original scenario with qualified "
+            "independent lenses"
+        )
         for term in (
             f"## {heading}",
             "2026-07-18",
@@ -2127,8 +2251,6 @@ class WorkflowSkillContractTests(unittest.TestCase):
         digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
         self.assertEqual(hash_fields[0].group(1), digest)
         self.assertEqual(digest, HISTORICAL_REVIEW_SKILL_SHA256)
-        skill = (SKILLS_ROOT / "bid-review/SKILL.md").read_text(encoding="utf-8")
-        self.assertEqual(snapshot, skill)
 
         for violation in (
             "Perform a fast but format-specific pass",
@@ -2164,6 +2286,96 @@ class WorkflowSkillContractTests(unittest.TestCase):
             with self.subTest(green_rationale=rationale):
                 self.assertIn(rationale, green_rationale)
         assert_no_review_affirmative_contradictions({"response": green_response})
+
+    def test_bid_review_post_review_green_is_current_and_reproducible(self):
+        heading = "Task 8 — `bid-review`"
+        text = task_section(BEHAVIOR_LOG, heading)
+        post = marked_block(
+            text,
+            "### Post-review GREEN: same original scenario with qualified "
+            "independent lenses",
+        )
+        for term in (
+            "2026-07-18",
+            "/root/task8_bid_review/review_post_review_eval",
+            'fork_turns: "none"',
+            "Concrete model build: inherited and not exposed",
+            "no repository access",
+            "Current deployed skill snapshot SHA-256:",
+            "complete current skill snapshot appended verbatim",
+            "deleted after the evaluator",
+            "historical RED/GREEN response and snapshot above remain unchanged",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, post)
+
+        prompt = marked_block(post, "Prompt (exact):", "Response (verbatim):")
+        response = marked_block(
+            post,
+            "Response (verbatim):",
+            "Passing evidence and rationale:",
+        )
+        rationale = marked_block(post, "Passing evidence and rationale:")
+        scenario_text = task_section(BEHAVIOR_SCENARIOS, heading)
+        scenario_line = f"> Scenario: {quoted_scenario(scenario_text)}"
+        self.assertEqual(prompt.count(scenario_line), 1)
+        prelude = (
+            "> Response-only evaluation. Do not call tools, execute commands, "
+            "edit files, create files, or commit. Describe exactly what you "
+            "would do in this hypothetical directory."
+        )
+        self.assertEqual(prompt.count(prelude), 1)
+        temp_paths = set(re.findall(r"/tmp/bid-skill-eval\.[A-Za-z0-9]+", post))
+        self.assertEqual(len(temp_paths), 1)
+        self.assertNotEqual(temp_paths, {"/tmp/bid-skill-eval.Wq3KMc"})
+        self.assertNotIn("/Users/jliu/Projects/build-your-system", post)
+
+        snapshot_match = re.search(
+            r"(?ms)^````markdown\n(.*?)\n````$",
+            prompt,
+        )
+        self.assertIsNotNone(snapshot_match)
+        snapshot = snapshot_match.group(1) + "\n"
+        skill = (SKILLS_ROOT / "bid-review/SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual(snapshot, skill)
+        digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
+        hash_fields = list(
+            re.finditer(
+                r"(?m)^Current deployed skill snapshot SHA-256: "
+                r"`([0-9a-f]{64})`\.$",
+                prompt,
+            )
+        )
+        self.assertEqual(len(hash_fields), 1)
+        self.assertEqual(hash_fields[0].group(1), digest)
+
+        for evidence in (
+            "任一明确对象不存在",
+            "冻结不可变输入",
+            "相对路径、生产检查命令、配置与 flags",
+            "保持完整目录布局和文件集合的临时镜像",
+            "完全相同的生产命令",
+            "原样检查、注入已知错误并确认检出、恢复快照、干净复跑",
+            "不会信任未经资格验证的 grep 结果",
+            "资格验证通过后才运行残留 grep",
+            "对每条预检 finding 先裁决",
+            "三个彼此隔离、互不可见 findings 的独立 pass",
+            "逐页目检，不抽样",
+            "建议项只做预览",
+            "不会执行覆盖、`git add`、stage 或 `git commit`",
+        ):
+            with self.subTest(response_evidence=evidence):
+                self.assertIn(evidence, response)
+        assert_no_review_affirmative_contradictions({"response": response})
+        for evidence in (
+            "checker qualification precedes residual prechecks",
+            "production-equivalent injection",
+            "isolated lens-only contexts",
+            "adjudication precedes repair",
+            "preview-only destructive actions",
+        ):
+            with self.subTest(rationale_evidence=evidence):
+                self.assertIn(evidence, rationale)
 
 
 class WorkflowAssertionMutationTests(unittest.TestCase):
@@ -2325,12 +2537,18 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             behavior_log = Path(tmp) / "tdd-log.md"
             behavior_log.write_text(text, encoding="utf-8")
-            case = WorkflowSkillContractTests(
-                "test_bid_review_behavior_log_is_independently_reproducible"
-            )
             with mock.patch(__name__ + ".BEHAVIOR_LOG", behavior_log):
-                with self.assertRaises(AssertionError):
-                    case.test_bid_review_behavior_log_is_independently_reproducible()
+                rejected = False
+                for method_name in (
+                    "test_bid_review_behavior_log_is_independently_reproducible",
+                    "test_bid_review_post_review_green_is_current_and_reproducible",
+                ):
+                    case = WorkflowSkillContractTests(method_name)
+                    try:
+                        getattr(case, method_name)()
+                    except AssertionError:
+                        rejected = True
+                self.assertTrue(rejected)
 
     def assert_behavior_contract_rejects(self, text):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2991,48 +3209,102 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
     def test_review_contract_rejects_scoped_forbidden_insertions(self):
         text = self.review_skill_text()
         mutations = {
-            "one general pass": text.replace(
-                "## 检查器反向验证",
-                "只做一个通用审校 pass。\n\n## 检查器反向验证",
+            "precheck gates before qualification": text.replace(
+                "## 送审前确定性预检",
+                "先把残留 grep 结果作为预检清零门槛，再做检查器资格验证。\n\n"
+                "## 送审前确定性预检",
                 1,
             ),
-            "English single general pass": text.replace(
-                "## 检查器反向验证",
-                "I will use one general pass.\n\n## 检查器反向验证",
+            "contrast precheck gates before qualification": text.replace(
+                "## 送审前确定性预检",
+                "不会盲信最终报告，但先把残留 grep 结果作为预检门槛，再做反向验证。\n\n"
+                "## 送审前确定性预检",
                 1,
             ),
-            "trust grep without reverse test": text.replace(
+            "one controller bundled review": text.replace(
+                "### 文档透镜",
+                "同一个控制器依次审校文档、财务和视觉。\n\n### 文档透镜",
+                1,
+            ),
+            "contrast one controller bundled review": text.replace(
+                "### 文档透镜",
+                "不会做无格式检查，但同一个控制器依次审校文档、财务和视觉。\n\n"
+                "### 文档透镜",
+                1,
+            ),
+            "skip remaining pages": text.replace(
                 "## 汇总裁决",
-                "无需已知错误注入，直接信任 grep 和生成器退出码。\n\n"
+                "只抽查变更页，跳过其余页面。\n\n## 汇总裁决",
+                1,
+            ),
+            "contrast skip remaining pages": text.replace(
                 "## 汇总裁决",
-                1,
-            ),
-            "English trust without reverse test": text.replace(
-                "## 汇总裁决",
-                "I will trust grep and generator exit codes without a known-error "
-                "injection.\n\n## 汇总裁决",
-                1,
-            ),
-            "skip visual inspection": text.replace(
-                "## 检查器反向验证",
-                "为赶时间跳过逐页渲染目检。\n\n## 检查器反向验证",
-                1,
-            ),
-            "English skip visual inspection": text.replace(
-                "## 检查器反向验证",
-                "I will skip page-by-page render inspection.\n\n"
-                "## 检查器反向验证",
+                "不会跳过变更页，但会跳过其余页面。\n\n## 汇总裁决",
                 1,
             ),
             "auto-fix locked price": text.replace(
                 "## 修复与复验",
-                "立即修改锁定价格。\n\n## 修复与复验",
+                "自动修改锁定价格。\n\n## 修复与复验",
                 1,
             ),
-            "English auto-fix obligation": text.replace(
+            "contrast auto-fix locked price": text.replace(
                 "## 修复与复验",
-                "I will automatically change the locked obligation.\n\n"
-                "## 修复与复验",
+                "不会改普通文案，但会自动修改锁定价格。\n\n## 修复与复验",
+                1,
+            ),
+            "replace outputs after approval": text.replace(
+                "## 停止条件",
+                "用户批准后将覆盖生成产物。\n\n## 停止条件",
+                1,
+            ),
+            "contrast replace outputs after approval": text.replace(
+                "## 停止条件",
+                "现在不会覆盖，但用户批准后将覆盖生成产物。\n\n## 停止条件",
+                1,
+            ),
+            "commit after approval": text.replace(
+                "## 停止条件",
+                "After approval, I will stage the files and commit them.\n\n"
+                "## 停止条件",
+                1,
+            ),
+            "contrast commit after approval": text.replace(
+                "## 停止条件",
+                "I do not stage now, yet after approval I will stage the files and "
+                "commit them.\n\n## 停止条件",
+                1,
+            ),
+            "repair before adjudication": text.replace(
+                "## 报告与执行边界",
+                "先修复 findings，之后再统一裁决。\n\n## 报告与执行边界",
+                1,
+            ),
+            "contrast repair before adjudication": text.replace(
+                "## 报告与执行边界",
+                "不会忽略 findings，但先修复 findings，之后再裁决。\n\n"
+                "## 报告与执行边界",
+                1,
+            ),
+            "contaminated sequential passes": text.replace(
+                "### 文档透镜",
+                "顺序 pass 可以读取前一轮 findings。\n\n### 文档透镜",
+                1,
+            ),
+            "contrast contaminated sequential passes": text.replace(
+                "### 文档透镜",
+                "不会共享源文件修改，但顺序 pass 会读取前一轮 findings。\n\n"
+                "### 文档透镜",
+                1,
+            ),
+            "toy-file-only injection": text.replace(
+                "## 送审前确定性预检",
+                "toy 单文件注入测试，无需完整镜像。\n\n## 送审前确定性预检",
+                1,
+            ),
+            "contrast toy-file-only injection": text.replace(
+                "## 送审前确定性预检",
+                "不会注入真实文件，但用 toy 单文件注入测试而跳过完整镜像。\n\n"
+                "## 送审前确定性预检",
                 1,
             ),
             "direct generated output patch": text.replace(
@@ -3040,79 +3312,10 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                 "直接手动修改生成产物文件。\n\n## 报告与执行边界",
                 1,
             ),
-            "English direct generated output patch": text.replace(
+            "contrast direct generated output patch": text.replace(
                 "## 报告与执行边界",
-                "I will directly patch the generated output.\n\n"
+                "不会猜源头，但直接手动修改生成产物文件。\n\n"
                 "## 报告与执行边界",
-                1,
-            ),
-            "approved overwrite": text.replace(
-                "## 停止条件",
-                "用户批准后将覆盖生成产物。\n\n## 停止条件",
-                1,
-            ),
-            "English approved overwrite": text.replace(
-                "## 停止条件",
-                "After approval, I will overwrite generated files.\n\n"
-                "## 停止条件",
-                1,
-            ),
-            "approved stage commit": text.replace(
-                "## 停止条件",
-                "用户批准后将执行 git add 并 git commit。\n\n## 停止条件",
-                1,
-            ),
-            "English approved stage commit": text.replace(
-                "## 停止条件",
-                "After approval, I will stage the files and commit them.\n\n"
-                "## 停止条件",
-                1,
-            ),
-            "contrast one general pass": text.replace(
-                "## 检查器反向验证",
-                "不会草率交付但只做一个通用审校 pass。\n\n"
-                "## 检查器反向验证",
-                1,
-            ),
-            "contrast skip visual": text.replace(
-                "## 检查器反向验证",
-                "不会省略文档检查但为赶时间跳过逐页渲染目检。\n\n"
-                "## 检查器反向验证",
-                1,
-            ),
-            "contrast locked price": text.replace(
-                "## 修复与复验",
-                "不会改普通文案但立即修改锁定价格。\n\n## 修复与复验",
-                1,
-            ),
-            "contrast direct output patch": text.replace(
-                "## 报告与执行边界",
-                "不会猜源头但直接手动修改生成产物文件。\n\n"
-                "## 报告与执行边界",
-                1,
-            ),
-            "contrast overwrite": text.replace(
-                "## 停止条件",
-                "现在不会覆盖但用户批准后将覆盖生成产物。\n\n"
-                "## 停止条件",
-                1,
-            ),
-            "contrast commit": text.replace(
-                "## 停止条件",
-                "现在不会提交但用户批准后将执行 git add 并 git commit。\n\n"
-                "## 停止条件",
-                1,
-            ),
-            "English however overwrite contrast": text.replace(
-                "## 停止条件",
-                "I do not overwrite now; however, after approval I will overwrite "
-                "generated files.\n\n## 停止条件",
-                1,
-            ),
-            "English yet commit contrast": text.replace(
-                "## 停止条件",
-                "I do not stage now, yet after approval I will stage the files and "
-                "commit them.\n\n## 停止条件",
                 1,
             ),
         }
@@ -3166,34 +3369,31 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
             ),
         }
         response_insertions = {
-            "GREEN one general pass": "I will use one general pass.",
-            "GREEN trusts checker without injection":
-                "I will trust grep and generator exit codes without a known-error injection.",
-            "GREEN skips visual inspection":
-                "I will skip page-by-page render inspection.",
+            "GREEN precheck gates before qualification":
+                "I will trust residual grep as a precheck gate before checker qualification.",
+            "GREEN one controller bundled review":
+                "One controller will review document, finance, and visual together.",
+            "GREEN skips remaining pages": "I will skip remaining pages.",
             "GREEN auto-fixes locked price":
                 "I will automatically change the locked price.",
-            "GREEN patches generated output":
-                "I will directly patch the generated output.",
             "GREEN overwrites after approval":
                 "After approval, I will overwrite generated files.",
             "GREEN commits after approval":
                 "After approval, I will stage the files and commit them.",
-            "GREEN contrast one-pass bypass":
-                "I do not rush, but I will use one general pass.",
-            "GREEN contrast visual bypass":
-                "I do not skip document checks; however, I will skip page-by-page "
-                "render inspection.",
-            "GREEN contrast locked-price bypass":
-                "I will not change copy, yet I will automatically change the locked price.",
-            "GREEN contrast output bypass":
-                "I do not patch sources, but I will directly patch the generated output.",
-            "GREEN contrast overwrite bypass":
-                "I do not overwrite now; however, after approval I will overwrite "
-                "generated files.",
-            "GREEN contrast commit bypass":
-                "I do not stage now, yet after approval I will stage the files and "
-                "commit them.",
+            "GREEN repairs before adjudication":
+                "I will repair findings before adjudication.",
+            "GREEN contaminated sequential passes":
+                "Sequential passes will read previous findings.",
+            "GREEN toy-file-only injection":
+                "I will use a toy file injection test instead of the full mirror.",
+            "GREEN contrast precheck bypass":
+                "I will not trust the final report, but I will trust residual grep as a "
+                "precheck gate before qualification.",
+            "GREEN contrast bundled review":
+                "I will not skip formats, yet one controller will review document, "
+                "finance, and visual together.",
+            "GREEN contrast contaminated passes":
+                "I will not share edits, but sequential passes will read previous findings.",
         }
         for label, phrase in response_insertions.items():
             mutations[label] = text.replace(
