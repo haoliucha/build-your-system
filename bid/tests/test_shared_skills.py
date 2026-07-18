@@ -19,9 +19,74 @@ DOMAIN_SKILLS = {
 
 SKILLS_ROOT = BID_ROOT / "skills"
 HOST_ADAPTATION = SKILLS_ROOT / "bid-playbook/references/host-adaptation.md"
+HOST_ADAPTATION_LINK = "../bid-playbook/references/host-adaptation.md"
+HOST_ORCHESTRATED_SKILLS = {"adversarial-review", "bid-research"}
 SCRIPT_PATH_RULE = (
     "路径约定：先定位本 SKILL.md 所在目录，再从该目录解析 `scripts/...`；"
     "不要相对于进程 CWD 解析。"
+)
+EXPECTED_SKILL_SCRIPTS = {
+    "adversarial-review": {"check-residuals.sh"},
+    "bid-costing": {"discount-check.cjs"},
+    "bid-research": {"extract-frames.sh"},
+    "bid-scheduling": {"level.cjs"},
+    "deai-writing": {"aiflavor-scan.cjs"},
+    "diagram-pdf-pipeline": {"add-outline.cjs"},
+    "prototype-handoff": {"extract-frames.sh"},
+    "single-source-sync": {"xlsx-dump.cjs"},
+}
+SCRIPT_PATH_COMPONENT = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?"
+CONCRETE_SCRIPT_REFERENCE = re.compile(
+    rf"(?<![\w/.-])scripts/((?!\.\.\.){SCRIPT_PATH_COMPONENT}"
+    rf"(?:/{SCRIPT_PATH_COMPONENT})*)"
+)
+FORBIDDEN_HOST_PATTERNS = (
+    (
+        "braced Claude plugin root",
+        re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}"),
+        "${CLAUDE_PLUGIN_ROOT}",
+        True,
+    ),
+    (
+        "unbraced Claude plugin root",
+        re.compile(r"(?<!\{)\$?CLAUDE_PLUGIN_ROOT\b(?!\})"),
+        "$CLAUDE_PLUGIN_ROOT",
+        True,
+    ),
+    (
+        "braced Codex plugin root",
+        re.compile(r"\$\{CODEX_PLUGIN_ROOT\}"),
+        "${CODEX_PLUGIN_ROOT}",
+        True,
+    ),
+    (
+        "unbraced Codex plugin root",
+        re.compile(r"(?<!\{)\$?CODEX_PLUGIN_ROOT\b(?!\})"),
+        "$CODEX_PLUGIN_ROOT",
+        True,
+    ),
+    ("Read tool", re.compile(r"\bRead\b"), "Read", False),
+    ("Write tool", re.compile(r"\bWrite\b"), "Write", False),
+    ("Edit tool", re.compile(r"\bEdit\b"), "Edit", False),
+    ("Glob tool", re.compile(r"\bGlob\b"), "Glob", False),
+    ("Bash tool", re.compile(r"\bBash\b"), "Bash", False),
+    ("Task tool", re.compile(r"\bTask\s+tool\b"), "Task tool", False),
+    ("Agent tool", re.compile(r"\bAgent\s+tool\b"), "Agent tool", False),
+    ("Skill tool", re.compile(r"\bSkill\s+tool\b"), "Skill tool", False),
+    ("TaskOutput tool", re.compile(r"\bTaskOutput\b"), "TaskOutput", False),
+    (
+        "AskUserQuestion tool",
+        re.compile(r"\bAskUserQuestion\b"),
+        "AskUserQuestion",
+        False,
+    ),
+    ("SendMessage tool", re.compile(r"\bSendMessage\b"), "SendMessage", False),
+    (
+        "Claude Code orchestrator assumption",
+        re.compile(r"Claude Code 编排者"),
+        "Claude Code 编排者",
+        False,
+    ),
 )
 
 
@@ -42,29 +107,23 @@ class SharedSkillPortabilityTests(unittest.TestCase):
                 self.assertEqual(data["name"], skill)
                 self.assertTrue(data["description"].startswith("Use when"))
 
-    def test_shared_markdown_has_no_plugin_root_placeholders(self):
-        for path in self.skill_markdown():
-            with self.subTest(path=path.relative_to(BID_ROOT)):
-                text = path.read_text(encoding="utf-8")
-                self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", text)
-                self.assertNotIn("${CODEX_PLUGIN_ROOT}", text)
+    def test_forbidden_host_pattern_fixtures_are_effective(self):
+        for label, pattern, fixture, _ in FORBIDDEN_HOST_PATTERNS:
+            with self.subTest(label=label):
+                self.assertIsNotNone(pattern.search(fixture))
 
-    def test_shared_markdown_has_no_standalone_claude_tool_instructions(self):
-        branded_instruction = re.compile(
-            r"\b(?:Read|Write|Edit|Glob|Bash|TaskOutput|AskUserQuestion)\b"
-            r"|\bTask\s+tool\b"
-            r"|Claude Code 编排者"
-        )
+    def test_shared_markdown_has_no_forbidden_host_tokens(self):
         for path in self.skill_markdown():
-            if path == HOST_ADAPTATION:
-                continue
-            with self.subTest(path=path.relative_to(BID_ROOT)):
-                text = path.read_text(encoding="utf-8")
-                match = branded_instruction.search(text)
-                self.assertIsNone(
-                    match,
-                    f"host-specific instruction {match.group(0)!r}" if match else None,
-                )
+            text = path.read_text(encoding="utf-8")
+            for label, pattern, _, forbidden_in_host_adaptation in FORBIDDEN_HOST_PATTERNS:
+                if path == HOST_ADAPTATION and not forbidden_in_host_adaptation:
+                    continue
+                with self.subTest(path=path.relative_to(BID_ROOT), token=label):
+                    match = pattern.search(text)
+                    self.assertIsNone(
+                        match,
+                        f"host-specific token {match.group(0)!r}" if match else None,
+                    )
 
     def test_host_adaptation_reference_maps_both_hosts(self):
         self.assertTrue(HOST_ADAPTATION.is_file())
@@ -89,14 +148,44 @@ class SharedSkillPortabilityTests(unittest.TestCase):
             with self.subTest(term=term):
                 self.assertIn(term, text)
 
-    def test_script_paths_are_resolved_from_the_owning_skill(self):
+    def test_host_orchestrated_skills_link_the_central_adaptation(self):
+        actual = set()
         for skill in DOMAIN_SKILLS:
             path = SKILLS_ROOT / skill / "SKILL.md"
             text = path.read_text(encoding="utf-8")
-            if "scripts/" not in text:
-                continue
+            if HOST_ADAPTATION_LINK in text:
+                actual.add(skill)
+        self.assertEqual(actual, HOST_ORCHESTRATED_SKILLS)
+        for skill in HOST_ORCHESTRATED_SKILLS:
+            path = SKILLS_ROOT / skill / "SKILL.md"
+            target = path.parent / HOST_ADAPTATION_LINK
             with self.subTest(skill=skill):
+                self.assertTrue(target.is_file())
+
+    def test_script_inventory_and_owner_path_rules_are_exact(self):
+        actual = {}
+        for path in SKILLS_ROOT.glob("*/scripts/*"):
+            if path.is_file():
+                actual.setdefault(path.parents[1].name, set()).add(path.name)
+        self.assertEqual(actual, EXPECTED_SKILL_SCRIPTS)
+        for skill, scripts in EXPECTED_SKILL_SCRIPTS.items():
+            path = SKILLS_ROOT / skill / "SKILL.md"
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(skill=skill, rule="path resolution"):
                 self.assertIn(SCRIPT_PATH_RULE, text)
+            for script in scripts:
+                with self.subTest(skill=skill, script=script):
+                    self.assertIn(f"scripts/{script}", text)
+
+    def test_concrete_markdown_script_references_exist_under_their_owner(self):
+        for path in self.skill_markdown():
+            owner = path.relative_to(SKILLS_ROOT).parts[0]
+            text = path.read_text(encoding="utf-8")
+            for match in CONCRETE_SCRIPT_REFERENCE.finditer(text):
+                reference = f"scripts/{match.group(1)}"
+                target = SKILLS_ROOT / owner / reference
+                with self.subTest(path=path.relative_to(BID_ROOT), reference=reference):
+                    self.assertTrue(target.is_file(), f"missing owned script: {target}")
 
 
 if __name__ == "__main__":
