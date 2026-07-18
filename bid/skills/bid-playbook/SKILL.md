@@ -29,18 +29,18 @@ command 是流程动作,skill 是方法论。
 | 阶段 | 用什么 | 何时用 |
 |---|---|---|
 | 总纲 | `bid-playbook` | 本文:节奏/目录/岔路口治理 |
-| 立项 | `/bid:init` | 目录脚手架+P0 问题清单+memory 初始化 |
+| 立项 | `bid-init`（`/bid:init` / `$bid:bid-init`） | 目录脚手架+P0 问题清单+memory 初始化 |
 | 调研 | `bid-research` | 竞品/对标实证、选型证据链、license 穿透 |
 | 谈判设计 | `presales-tactics` | 体量摸底、分档锚定、砍价预案、谈判红线 |
 | 成本 | `bid-costing` | 数字算得可辩护:价格阶梯/依据分级/区间口径 |
 | 排期 | `bid-scheduling` | 资源平衡器排包、利用率口径、工期压缩 |
 | 写作 | `deai-writing` | 对外文稿去 AI 味,零信息损失只改外壳 |
 | 出图/出版 | `diagram-pdf-pipeline` | 架构图生成、中文 PDF 导出(CJK 字体/嵌图) |
-| 原型移交 | `prototype-handoff` + `/bid:handoff` | 先吃透接收工具输入模型,再定交接包形态 |
-| 改口径 | `single-source-sync` + `/bid:sync` | 改任何已锁定数字/措辞:改源→重生成→级联→grep 残留。macOS+WPS 环境下重生成 xlsx 前先 lsof 查写句柄 |
-| 审校 | `adversarial-review` + `/bid:review` | 口径改写后多透镜审校、财务表算术配平、交付前收口 |
-| 会议 | `/bid:meeting` | 会前出准备包五件套;会后归档纪要+口径变更落 memory |
-| 速查 | `/bid:status` | 锁定口径表+红线清单+遗留待办 |
+| 原型移交 | `prototype-handoff` + `bid-handoff`（`/bid:handoff` / `$bid:bid-handoff`） | 先吃透接收工具输入模型,再定交接包形态 |
+| 改口径 | `single-source-sync` + `bid-sync`（`/bid:sync` / `$bid:bid-sync`） | 改任何已锁定数字/措辞:改源→重生成→级联→grep 残留。macOS+WPS 环境下重生成 xlsx 前先 lsof 查写句柄 |
+| 审校 | `adversarial-review` + `bid-review`（`/bid:review` / `$bid:bid-review`） | 口径改写后多透镜审校、财务表算术配平、交付前收口 |
+| 会议 | `bid-meeting`（`/bid:meeting` / `$bid:bid-meeting`） | 会前出准备包五件套;会后归档纪要+口径变更落 memory |
+| 速查 | `bid-status`（`/bid:status` / `$bid:bid-status`） | 锁定口径表+红线清单+遗留待办 |
 
 ## 节奏纪律
 
