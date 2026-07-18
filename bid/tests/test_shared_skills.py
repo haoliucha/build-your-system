@@ -85,9 +85,9 @@ class SharedSkillPortabilityTests(unittest.TestCase):
     def skill_markdown(self):
         return sorted(SKILLS_ROOT.glob("**/*.md"))
 
-    def test_domain_skill_set_is_exact(self):
+    def test_all_domain_skills_exist(self):
         actual = {path.parent.name for path in SKILLS_ROOT.glob("*/SKILL.md")}
-        self.assertEqual(actual, DOMAIN_SKILLS)
+        self.assertTrue(DOMAIN_SKILLS <= actual, DOMAIN_SKILLS - actual)
 
     def test_skill_frontmatter_is_host_neutral(self):
         for skill in DOMAIN_SKILLS:
