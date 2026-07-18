@@ -22,6 +22,7 @@ BID_ENTRY = {
     "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
     "category": "Productivity",
 }
+REAL_CODEX_ORPHAN_LIST_FIXTURE = '{"installed": [], "available": []}'
 
 
 class InstallerTests(unittest.TestCase):
@@ -64,17 +65,46 @@ def is_installed():
 
 
 def exit_130(_signum, _frame):
+    signal_file = os.environ.get("CODEX_CHILD_SIGNAL_FILE")
+    if signal_file:
+        Path(signal_file).write_text("signaled", encoding="utf-8")
     raise SystemExit(130)
+
+
+def exit_on_term(_signum, _frame):
+    term_file = os.environ.get("CODEX_CHILD_TERM_FILE")
+    if term_file:
+        Path(term_file).write_text("terminated", encoding="utf-8")
+    term_installed = os.environ.get("CODEX_CHILD_TERM_INSTALLED")
+    if term_installed is not None:
+        set_installed(term_installed == "1")
+    if os.environ.get("CODEX_CHILD_IGNORE_TERM") == "1":
+        return
+    raise SystemExit(int(os.environ.get("CODEX_CHILD_TERM_EXIT", "143")))
 
 
 if action == "list":
     returncode = int(os.environ.get("CODEX_LIST_EXIT", "0"))
     if returncode == 0:
         if "CODEX_LIST_JSON" in os.environ:
-            print(os.environ["CODEX_LIST_JSON"])
+            output = os.environ["CODEX_LIST_JSON"]
         else:
             installed = []
-            if is_installed():
+            marketplace_has_bid = True
+            if os.environ.get("CODEX_LIST_REQUIRE_BID_ENTRY") == "1":
+                try:
+                    marketplace = json.loads(
+                        Path(os.environ["MARKETPLACE_FILE"]).read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                    marketplace_has_bid = any(
+                        isinstance(plugin, dict) and plugin.get("name") == "bid"
+                        for plugin in marketplace.get("plugins", [])
+                    )
+                except (FileNotFoundError, json.JSONDecodeError, AttributeError):
+                    marketplace_has_bid = False
+            if is_installed() and marketplace_has_bid:
                 installed.append(
                     {
                         "pluginId": "bid@local-build-your-system",
@@ -89,7 +119,25 @@ if action == "list":
                         },
                     }
                 )
-            print(json.dumps({"installed": installed, "available": []}))
+            output = json.dumps({"installed": installed, "available": []})
+        list_call = sum(
+            line == "plugin list --json"
+            for line in Path(os.environ["CODEX_LOG"]).read_text(
+                encoding="utf-8"
+            ).splitlines()
+        )
+        effect_call = int(os.environ.get("CODEX_LIST_EFFECT_CALL", str(list_call)))
+        if list_call == effect_call:
+            list_effect = os.environ.get("CODEX_LIST_EFFECT", "")
+            if list_effect == "mutate-marketplace":
+                Path(os.environ["MARKETPLACE_FILE"]).write_bytes(
+                    Path(os.environ["CONCURRENT_MARKETPLACE_FILE"]).read_bytes()
+                )
+            elif list_effect == "swap-source":
+                source = Path(os.environ["SOURCE_ROOT"])
+                source.unlink()
+                source.symlink_to(Path(os.environ["OTHER_SOURCE"]))
+        print(output)
     raise SystemExit(returncode)
 
 effect = os.environ.get(f"CODEX_{action.upper()}_EFFECT", "")
@@ -151,26 +199,49 @@ returncode = os.environ.get(
     f"CODEX_{action.upper()}_EXIT", os.environ.get("CODEX_EXIT_CODE", "0")
 )
 returncode = int(returncode)
-if (
-    action == "remove"
-    and returncode == 0
-    and os.environ.get("CODEX_REMOVE_MUTATE_BEFORE_BLOCK") == "1"
-):
-    set_installed(False)
 
-if os.environ.get(f"CODEX_{action.upper()}_BLOCK") == "1":
-    signal.signal(signal.SIGINT, exit_130)
-    Path(os.environ[f"CODEX_{action.upper()}_READY"]).write_text(
-        "ready", encoding="utf-8"
-    )
-    while True:
-        time.sleep(1)
 
-if returncode == 0:
+def commit_action():
     if action == "add":
         set_installed(True)
     elif action == "remove":
         set_installed(False)
+
+
+commit_before_block = (
+    os.environ.get(f"CODEX_{action.upper()}_COMMIT_BEFORE_BLOCK") == "1"
+    or (
+        action == "remove"
+        and os.environ.get("CODEX_REMOVE_MUTATE_BEFORE_BLOCK") == "1"
+    )
+)
+if returncode == 0 and commit_before_block:
+    commit_action()
+
+action_call = sum(
+    line == " ".join(args)
+    for line in Path(os.environ["CODEX_LOG"]).read_text(
+        encoding="utf-8"
+    ).splitlines()
+)
+block_call = int(
+    os.environ.get(f"CODEX_{action.upper()}_BLOCK_CALL", str(action_call))
+)
+if (
+    os.environ.get(f"CODEX_{action.upper()}_BLOCK") == "1"
+    and action_call == block_call
+):
+    signal.signal(signal.SIGINT, exit_130)
+    signal.signal(signal.SIGTERM, exit_on_term)
+    Path(os.environ[f"CODEX_{action.upper()}_READY"]).write_text(
+        "ready", encoding="utf-8"
+    )
+    release_file = Path(os.environ[f"CODEX_{action.upper()}_RELEASE"])
+    while not release_file.exists():
+        time.sleep(0.01)
+
+if returncode == 0 and not commit_before_block:
+    commit_action()
 raise SystemExit(returncode)
 """,
             encoding="utf-8",
@@ -212,8 +283,15 @@ raise SystemExit(returncode)
 
     def run_installer_and_interrupt(self, action, *args):
         ready_file = self.home / f"codex-{action}-ready"
+        release_file = self.home / f"codex-{action}-release"
+        child_signal_file = self.home / f"codex-{action}-child-signaled"
+        child_term_file = self.home / f"codex-{action}-child-terminated"
         self.env[f"CODEX_{action.upper()}_BLOCK"] = "1"
+        self.env[f"CODEX_{action.upper()}_BLOCK_CALL"] = "1"
         self.env[f"CODEX_{action.upper()}_READY"] = str(ready_file)
+        self.env[f"CODEX_{action.upper()}_RELEASE"] = str(release_file)
+        self.env["CODEX_CHILD_SIGNAL_FILE"] = str(child_signal_file)
+        self.env["CODEX_CHILD_TERM_FILE"] = str(child_term_file)
         process = subprocess.Popen(
             ["zsh", str(INSTALLER), *args],
             cwd=BID_ROOT,
@@ -236,7 +314,7 @@ raise SystemExit(returncode)
                     self.fail(f"timed out waiting for blocked codex {action}")
                 time.sleep(0.01)
             os.killpg(process.pid, signal.SIGINT)
-            stdout, stderr = process.communicate(timeout=5)
+            stdout, stderr = process.communicate(timeout=8)
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -244,6 +322,12 @@ raise SystemExit(returncode)
         return subprocess.CompletedProcess(
             process.args, process.returncode, stdout, stderr
         )
+
+    def child_received_sigint(self, action):
+        return (self.home / f"codex-{action}-child-signaled").exists()
+
+    def child_received_sigterm(self, action):
+        return (self.home / f"codex-{action}-child-terminated").exists()
 
     def write_marketplace(self, data):
         self.marketplace_file.parent.mkdir(parents=True, exist_ok=True)
@@ -277,6 +361,78 @@ raise SystemExit(returncode)
         concurrent_file = self.home / "concurrent-marketplace.json"
         concurrent_file.write_bytes(data)
         self.env["CONCURRENT_MARKETPLACE_FILE"] = str(concurrent_file)
+
+    def assert_unsafe_marketplace_compensation_is_blocked(self, plugins):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        concurrent = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Concurrent"},
+            "plugins": plugins,
+        }
+        concurrent_bytes = (
+            json.dumps(concurrent, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        self.set_concurrent_marketplace(concurrent_bytes)
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        self.env["CODEX_REMOVE_EFFECT"] = "mutate-marketplace"
+
+        result = self.run_installer("--uninstall")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("partial", result.stderr.lower())
+        self.assertIn("not run", result.stderr.lower())
+        self.assertIn("marketplace", result.stderr.lower())
+        self.assertFalse(self.codex_is_installed())
+        self.assertEqual(
+            self.codex_calls(), ["plugin remove bid@local-build-your-system"]
+        )
+        self.assertEqual(self.marketplace_file.read_bytes(), concurrent_bytes)
+        self.assertTrue(self.source_root.is_symlink())
+        self.assertEqual(self.source_root.readlink(), BID_ROOT)
+
+    def assert_interrupted_remove_compensation_is_blocked(self, plugins):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        concurrent = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Concurrent"},
+            "plugins": plugins,
+        }
+        concurrent_bytes = (
+            json.dumps(concurrent, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        self.set_concurrent_marketplace(concurrent_bytes)
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        self.set_codex_installed(True)
+        self.env["CODEX_LIST_REQUIRE_BID_ENTRY"] = "1"
+        self.env["CODEX_REMOVE_EFFECT"] = "mutate-marketplace"
+        self.env["CODEX_REMOVE_COMMIT_BEFORE_BLOCK"] = "1"
+
+        result = self.run_installer_and_interrupt("remove", "--uninstall")
+
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertIn("partial", result.stderr.lower())
+        self.assertIn("marketplace", result.stderr.lower())
+        self.assertIn("not run", result.stderr.lower())
+        self.assertFalse(self.codex_is_installed())
+        self.assertFalse(self.child_received_sigint("remove"))
+        self.assertTrue(self.child_received_sigterm("remove"))
+        self.assertEqual(
+            self.codex_calls(), ["plugin remove bid@local-build-your-system"]
+        )
+        self.assertEqual(self.marketplace_file.read_bytes(), concurrent_bytes)
+        self.assertTrue(self.source_root.is_symlink())
 
     def read_effect_state(self):
         return json.loads(self.effect_state.read_text(encoding="utf-8"))
@@ -497,6 +653,29 @@ raise SystemExit(returncode)
         self.assertFalse(self.source_root.exists())
         self.assertFalse(self.source_root.is_symlink())
         self.assertEqual(self.codex_calls(), ["plugin add bid@local-build-your-system"])
+
+    def test_install_prestate_discovery_requires_stable_local_contract(self):
+        concurrent = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Concurrent"},
+            "plugins": [],
+        }
+        concurrent_bytes = (
+            json.dumps(concurrent, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        self.set_concurrent_marketplace(concurrent_bytes)
+        self.set_codex_installed(False)
+        self.env["CODEX_LIST_EFFECT"] = "mutate-marketplace"
+        self.env["CODEX_LIST_EFFECT_CALL"] = "1"
+
+        result = self.run_installer()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("concurrent", result.stderr.lower())
+        self.assertEqual(self.marketplace_file.read_bytes(), concurrent_bytes)
+        self.assertFalse(self.source_root.exists())
+        self.assertFalse(self.codex_is_installed())
+        self.assertEqual(self.codex_calls(), [])
 
     def test_symlinked_marketplace_is_rejected_before_any_mutation(self):
         existing = {
@@ -777,6 +956,20 @@ raise SystemExit(returncode)
         self.assertEqual(self.source_root.lstat().st_ino, source_inode)
         self.assertEqual(self.source_root.readlink(), BID_ROOT)
 
+    def test_uninstall_compensation_refuses_concurrent_bid_entry_removal(self):
+        self.assert_unsafe_marketplace_compensation_is_blocked([])
+
+    def test_uninstall_compensation_refuses_concurrent_bid_entry_replacement(self):
+        replacement = {**BID_ENTRY, "category": "Concurrent replacement"}
+        self.assert_unsafe_marketplace_compensation_is_blocked([replacement])
+
+    def test_uninstall_compensation_refuses_concurrent_bid_entry_retarget(self):
+        retargeted = {
+            **BID_ENTRY,
+            "source": {"source": "local", "path": "./plugins/not-bid"},
+        }
+        self.assert_unsafe_marketplace_compensation_is_blocked([retargeted])
+
     def test_uninstall_same_target_source_replacement_blocks_compensation_add(self):
         existing = {
             "name": "local-build-your-system",
@@ -965,13 +1158,17 @@ raise SystemExit(returncode)
         result = self.run_installer("--uninstall")
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("already", result.stdout.lower())
+        self.assertIn("absent", result.stdout.lower())
         self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
         self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
         self.assertFalse(self.source_root.exists())
-        self.assertEqual(self.all_codex_calls(), ["plugin list --json"])
+        self.assertEqual(
+            self.all_codex_calls(), ["plugin remove bid@local-build-your-system"]
+        )
 
-    def test_uninstall_local_absent_and_codex_installed_removes_codex_state(self):
+    def test_uninstall_local_absent_and_list_omits_orphan_still_removes_codex_state(
+        self,
+    ):
         existing = {
             "name": "local-build-your-system",
             "interface": {"displayName": "Keep"},
@@ -982,17 +1179,14 @@ raise SystemExit(returncode)
         original_bytes = self.marketplace_file.read_bytes()
         original_inode = self.marketplace_file.stat().st_ino
         self.set_codex_installed(True)
+        self.env["CODEX_LIST_JSON"] = REAL_CODEX_ORPHAN_LIST_FIXTURE
 
         result = self.run_installer("--uninstall")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.codex_is_installed())
         self.assertEqual(
-            self.all_codex_calls(),
-            [
-                "plugin list --json",
-                "plugin remove bid@local-build-your-system",
-            ],
+            self.codex_calls(), ["plugin remove bid@local-build-your-system"]
         )
         self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
         self.assertEqual(stat.S_IMODE(self.marketplace_file.stat().st_mode), 0o640)
@@ -1021,9 +1215,15 @@ raise SystemExit(returncode)
         self.assertEqual(stat.S_IMODE(self.marketplace_file.stat().st_mode), 0o640)
         self.assertFalse(self.source_root.exists())
         self.assertFalse(self.codex_is_installed())
-        self.assertEqual(self.all_codex_calls(), ["plugin list --json"])
+        self.assertEqual(
+            self.all_codex_calls(),
+            [
+                "plugin list --json",
+                "plugin remove bid@local-build-your-system",
+            ],
+        )
 
-    def test_uninstall_fails_without_mutation_when_codex_list_query_fails(self):
+    def test_uninstall_local_absent_does_not_consult_failing_discovery(self):
         existing = {
             "name": "local-build-your-system",
             "interface": {"displayName": "Keep"},
@@ -1036,14 +1236,15 @@ raise SystemExit(returncode)
 
         result = self.run_installer("--uninstall")
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("plugin list", result.stderr.lower())
-        self.assertIn("17", result.stderr)
-        self.assertEqual(self.all_codex_calls(), ["plugin list --json"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.codex_is_installed())
+        self.assertEqual(
+            self.all_codex_calls(), ["plugin remove bid@local-build-your-system"]
+        )
         self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
         self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
 
-    def test_uninstall_fails_without_mutation_on_malformed_codex_list_json(self):
+    def test_uninstall_local_absent_does_not_consult_malformed_discovery(self):
         existing = {
             "name": "local-build-your-system",
             "interface": {"displayName": "Keep"},
@@ -1056,15 +1257,87 @@ raise SystemExit(returncode)
 
         result = self.run_installer("--uninstall")
 
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.codex_is_installed())
+        self.assertEqual(
+            self.all_codex_calls(), ["plugin remove bid@local-build-your-system"]
+        )
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
+
+    def test_uninstall_local_present_stops_if_discovery_query_fails(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        original_bytes = self.marketplace_file.read_bytes()
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        source_inode = self.source_root.lstat().st_ino
+        self.env["CODEX_LIST_EXIT"] = "17"
+
+        result = self.run_installer("--uninstall")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("plugin list", result.stderr.lower())
+        self.assertIn("17", result.stderr)
+        self.assertEqual(self.all_codex_calls(), ["plugin list --json"])
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(self.source_root.lstat().st_ino, source_inode)
+
+    def test_uninstall_local_present_stops_if_discovery_json_is_malformed(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        original_bytes = self.marketplace_file.read_bytes()
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        source_inode = self.source_root.lstat().st_ino
+        self.env["CODEX_LIST_JSON"] = '{"installed": {}}'
+
+        result = self.run_installer("--uninstall")
+
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("installed", result.stderr.lower())
         self.assertIn("list", result.stderr.lower())
         self.assertEqual(self.all_codex_calls(), ["plugin list --json"])
         self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
-        self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
+        self.assertEqual(self.source_root.lstat().st_ino, source_inode)
 
-    def test_sigint_during_add_rolls_back_local_state_and_releases_lock(self):
+    def test_uninstall_prestate_discovery_requires_stable_source_contract(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        original_bytes = self.marketplace_file.read_bytes()
+        other_source = self.home / "other-source"
+        other_source.mkdir()
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        self.set_codex_installed(True)
+        self.env["OTHER_SOURCE"] = str(other_source)
+        self.env["CODEX_LIST_EFFECT"] = "swap-source"
+        self.env["CODEX_LIST_EFFECT_CALL"] = "1"
+
+        result = self.run_installer("--uninstall")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("source", result.stderr.lower())
+        self.assertTrue(self.codex_is_installed())
+        self.assertEqual(self.all_codex_calls(), ["plugin list --json"])
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(self.source_root.readlink(), other_source)
+
+    def test_sigint_after_add_commits_removes_codex_state_before_local_rollback(self):
         self.set_codex_installed(False)
+        self.env["CODEX_ADD_COMMIT_BEFORE_BLOCK"] = "1"
 
         result = self.run_installer_and_interrupt("add")
 
@@ -1074,7 +1347,15 @@ raise SystemExit(returncode)
         self.assertFalse(self.marketplace_file.exists())
         self.assertFalse(self.source_root.exists())
         self.assertFalse(self.codex_is_installed())
-        self.assertEqual(self.codex_calls(), ["plugin add bid@local-build-your-system"])
+        self.assertFalse(self.child_received_sigint("add"))
+        self.assertTrue(self.child_received_sigterm("add"))
+        self.assertEqual(
+            self.codex_calls(),
+            [
+                "plugin add bid@local-build-your-system",
+                "plugin remove bid@local-build-your-system",
+            ],
+        )
         lock_fd = os.open(self.lifecycle_lock_file, os.O_RDWR)
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1082,7 +1363,139 @@ raise SystemExit(returncode)
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             os.close(lock_fd)
 
-    def test_sigint_during_remove_restores_installed_and_local_state(self):
+    def test_sigint_after_add_commit_directly_removes_orphan_if_marketplace_changed(
+        self,
+    ):
+        concurrent = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Concurrent"},
+            "plugins": [],
+        }
+        concurrent_bytes = (
+            json.dumps(concurrent, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        self.set_concurrent_marketplace(concurrent_bytes)
+        self.set_codex_installed(False)
+        self.env["CODEX_ADD_EFFECT"] = "mutate-marketplace"
+        self.env["CODEX_ADD_COMMIT_BEFORE_BLOCK"] = "1"
+
+        result = self.run_installer_and_interrupt("add")
+
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertIn("partial", result.stderr.lower())
+        self.assertFalse(self.codex_is_installed())
+        self.assertFalse(self.child_received_sigint("add"))
+        self.assertTrue(self.child_received_sigterm("add"))
+        self.assertEqual(
+            self.codex_calls(),
+            [
+                "plugin add bid@local-build-your-system",
+                "plugin remove bid@local-build-your-system",
+            ],
+        )
+        self.assertEqual(self.marketplace_file.read_bytes(), concurrent_bytes)
+        self.assertFalse(self.source_root.exists())
+
+    def test_interrupted_install_refuses_add_if_contract_changes_during_requery(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        retargeted = {
+            **BID_ENTRY,
+            "source": {"source": "local", "path": "./plugins/not-bid"},
+        }
+        concurrent = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Concurrent"},
+            "plugins": [retargeted],
+        }
+        concurrent_bytes = (
+            json.dumps(concurrent, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        self.set_concurrent_marketplace(concurrent_bytes)
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        self.set_codex_installed(True)
+        self.env["CODEX_CHILD_TERM_INSTALLED"] = "0"
+        self.env["CODEX_LIST_EFFECT"] = "mutate-marketplace"
+        self.env["CODEX_LIST_EFFECT_CALL"] = "2"
+
+        result = self.run_installer_and_interrupt("add")
+
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertIn("partial", result.stderr.lower())
+        self.assertFalse(self.codex_is_installed())
+        self.assertEqual(self.codex_calls(), ["plugin add bid@local-build-your-system"])
+        self.assertEqual(self.marketplace_file.read_bytes(), concurrent_bytes)
+        self.assertEqual(self.source_root.readlink(), BID_ROOT)
+
+    def test_sigint_escalates_to_sigkill_if_isolated_child_ignores_sigterm(self):
+        self.set_codex_installed(False)
+        self.env["CODEX_CHILD_IGNORE_TERM"] = "1"
+
+        result = self.run_installer_and_interrupt("add")
+
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertIn("sigkill", result.stderr.lower())
+        self.assertFalse(self.child_received_sigint("add"))
+        self.assertTrue(self.child_received_sigterm("add"))
+        self.assertFalse(self.codex_is_installed())
+        self.assertFalse(self.marketplace_file.exists())
+        self.assertFalse(self.source_root.exists())
+
+    def test_sigint_before_remove_commits_does_not_run_unneeded_add(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        self.set_codex_installed(True)
+        self.env["CODEX_REMOVE_EXIT"] = "130"
+
+        result = self.run_installer_and_interrupt("remove", "--uninstall")
+
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertIn("interrupt", result.stderr.lower())
+        self.assertTrue(self.codex_is_installed())
+        self.assertFalse(self.child_received_sigint("remove"))
+        self.assertTrue(self.child_received_sigterm("remove"))
+        self.assertEqual(
+            self.codex_calls(), ["plugin remove bid@local-build-your-system"]
+        )
+        self.assertTrue(self.source_root.is_symlink())
+        self.assertEqual(self.source_root.readlink(), BID_ROOT)
+
+    def test_local_absent_interrupted_remove_retries_even_if_child_exits_zero(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [],
+        }
+        self.write_marketplace(existing)
+        self.set_codex_installed(True)
+        self.env["CODEX_CHILD_TERM_EXIT"] = "0"
+
+        result = self.run_installer_and_interrupt("remove", "--uninstall")
+
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertFalse(self.codex_is_installed())
+        self.assertFalse(self.child_received_sigint("remove"))
+        self.assertTrue(self.child_received_sigterm("remove"))
+        self.assertEqual(
+            self.codex_calls(),
+            [
+                "plugin remove bid@local-build-your-system",
+                "plugin remove bid@local-build-your-system",
+            ],
+        )
+
+    def test_sigint_after_remove_commits_restores_installed_and_local_state(self):
         existing = {
             "name": "local-build-your-system",
             "interface": {"displayName": "Keep"},
@@ -1096,7 +1509,7 @@ raise SystemExit(returncode)
         self.source_root.symlink_to(BID_ROOT)
         source_inode = self.source_root.lstat().st_ino
         self.set_codex_installed(True)
-        self.env["CODEX_REMOVE_MUTATE_BEFORE_BLOCK"] = "1"
+        self.env["CODEX_REMOVE_COMMIT_BEFORE_BLOCK"] = "1"
 
         result = self.run_installer_and_interrupt("remove", "--uninstall")
 
@@ -1104,11 +1517,14 @@ raise SystemExit(returncode)
         self.assertIn("interrupt", result.stderr.lower())
         self.assertIn("restored", result.stderr.lower())
         self.assertTrue(self.codex_is_installed())
+        self.assertFalse(self.child_received_sigint("remove"))
+        self.assertTrue(self.child_received_sigterm("remove"))
         self.assertEqual(
             self.all_codex_calls(),
             [
                 "plugin list --json",
                 "plugin remove bid@local-build-your-system",
+                "plugin list --json",
                 "plugin add bid@local-build-your-system",
             ],
         )
@@ -1124,6 +1540,24 @@ raise SystemExit(returncode)
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             os.close(lock_fd)
 
+    def test_sigint_after_remove_commit_refuses_add_if_marketplace_entry_changed(self):
+        self.assert_interrupted_remove_compensation_is_blocked([])
+
+    def test_sigint_after_remove_commit_refuses_add_if_marketplace_entry_replaced(
+        self,
+    ):
+        replacement = {**BID_ENTRY, "category": "Concurrent replacement"}
+        self.assert_interrupted_remove_compensation_is_blocked([replacement])
+
+    def test_sigint_after_remove_commit_refuses_add_if_marketplace_entry_retargeted(
+        self,
+    ):
+        retargeted = {
+            **BID_ENTRY,
+            "source": {"source": "local", "path": "./plugins/not-bid"},
+        }
+        self.assert_interrupted_remove_compensation_is_blocked([retargeted])
+
     def test_uninstall_documentation_distinguishes_deleted_and_preserved_state(self):
         text = README.read_text(encoding="utf-8")
 
@@ -1133,7 +1567,9 @@ raise SystemExit(returncode)
         self.assertIn("`.marketplace.json.lock`", text)
         self.assertIn("补偿安装不会执行", text)
         self.assertIn("codex plugin list --json", text)
-        self.assertIn("不能只凭本地条目和链接缺失", text)
+        self.assertIn("不会把 list 的空结果当作已卸载证据", text)
+        self.assertIn("幂等的 `codex plugin remove", text)
+        self.assertIn("SIGKILL", text)
         stale_claim = "Codex/Claude cache 和项目内 `.claude/memory/` 永不删除"
         self.assertNotIn(stale_claim, text)
 
