@@ -1,10 +1,12 @@
 import ast
 import fcntl
+import importlib.util
 import json
 import os
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -208,6 +210,9 @@ def commit_action():
         set_installed(False)
 
 
+commit_before_exit = (
+    os.environ.get(f"CODEX_{action.upper()}_COMMIT_BEFORE_EXIT") == "1"
+)
 commit_before_block = (
     os.environ.get(f"CODEX_{action.upper()}_COMMIT_BEFORE_BLOCK") == "1"
     or (
@@ -215,7 +220,8 @@ commit_before_block = (
         and os.environ.get("CODEX_REMOVE_MUTATE_BEFORE_BLOCK") == "1"
     )
 )
-if returncode == 0 and commit_before_block:
+commit_early = commit_before_exit or commit_before_block
+if (returncode == 0 or commit_before_exit) and commit_early:
     commit_action()
 
 action_call = sum(
@@ -234,13 +240,14 @@ if (
     signal.signal(signal.SIGINT, exit_130)
     signal.signal(signal.SIGTERM, exit_on_term)
     Path(os.environ[f"CODEX_{action.upper()}_READY"]).write_text(
-        "ready", encoding="utf-8"
+        json.dumps({"pid": os.getpid(), "pgid": os.getpgrp()}),
+        encoding="utf-8",
     )
     release_file = Path(os.environ[f"CODEX_{action.upper()}_RELEASE"])
     while not release_file.exists():
         time.sleep(0.01)
 
-if returncode == 0 and not commit_before_block:
+if returncode == 0 and not commit_early:
     commit_action()
 raise SystemExit(returncode)
 """,
@@ -281,6 +288,32 @@ raise SystemExit(returncode)
             timeout=10,
         )
 
+    def terminate_test_child_group(self, child_pid):
+        try:
+            child_pgid = os.getpgid(child_pid)
+        except ProcessLookupError:
+            return
+        command = subprocess.run(
+            ["ps", "-p", str(child_pid), "-o", "command="],
+            text=True,
+            capture_output=True,
+            check=False,
+        ).stdout.strip()
+        if child_pgid != child_pid or "fake-bin/codex plugin" not in command:
+            self.fail(
+                f"refusing to kill unexpected test child pid={child_pid} "
+                f"pgid={child_pgid} command={command!r}"
+            )
+        os.killpg(child_pgid, signal.SIGKILL)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.01)
+        self.fail(f"test child process group {child_pid} was not reaped")
+
     def run_installer_and_interrupt(self, action, *args):
         ready_file = self.home / f"codex-{action}-ready"
         release_file = self.home / f"codex-{action}-release"
@@ -301,9 +334,10 @@ raise SystemExit(returncode)
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
+        child_pid = None
         deadline = time.monotonic() + 5
         try:
-            while not ready_file.exists():
+            while child_pid is None:
                 if process.poll() is not None:
                     stdout, stderr = process.communicate()
                     self.fail(
@@ -312,6 +346,13 @@ raise SystemExit(returncode)
                     )
                 if time.monotonic() >= deadline:
                     self.fail(f"timed out waiting for blocked codex {action}")
+                if ready_file.exists():
+                    try:
+                        child_pid = json.loads(
+                            ready_file.read_text(encoding="utf-8")
+                        )["pid"]
+                    except (json.JSONDecodeError, KeyError):
+                        pass
                 time.sleep(0.01)
             os.killpg(process.pid, signal.SIGINT)
             stdout, stderr = process.communicate(timeout=8)
@@ -319,6 +360,77 @@ raise SystemExit(returncode)
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait(timeout=5)
+            if child_pid is not None:
+                self.terminate_test_child_group(child_pid)
+        return subprocess.CompletedProcess(
+            process.args, process.returncode, stdout, stderr
+        )
+
+    def run_installer_and_parent_sigterm(self, action, *args):
+        ready_file = self.home / f"codex-{action}-parent-term-ready"
+        self.env[f"CODEX_{action.upper()}_BLOCK"] = "1"
+        self.env[f"CODEX_{action.upper()}_BLOCK_CALL"] = "1"
+        self.env[f"CODEX_{action.upper()}_READY"] = str(ready_file)
+        self.env[f"CODEX_{action.upper()}_RELEASE"] = str(
+            self.home / f"codex-{action}-parent-term-release"
+        )
+        self.env["CODEX_CHILD_SIGNAL_FILE"] = str(
+            self.home / f"codex-{action}-parent-term-child-signaled"
+        )
+        self.env["CODEX_CHILD_TERM_FILE"] = str(
+            self.home / f"codex-{action}-parent-term-child-terminated"
+        )
+        process = subprocess.Popen(
+            ["zsh", str(INSTALLER), *args],
+            cwd=BID_ROOT,
+            env=self.env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        child_pid = None
+        child_alive_after_parent = False
+        deadline = time.monotonic() + 8
+        try:
+            while child_pid is None:
+                if process.poll() is not None:
+                    stdout, stderr = process.communicate()
+                    self.fail(
+                        f"installer exited before {action} was ready: "
+                        f"{process.returncode}\nstdout={stdout}\nstderr={stderr}"
+                    )
+                if time.monotonic() >= deadline:
+                    self.fail(f"timed out waiting for blocked codex {action}")
+                if ready_file.exists():
+                    try:
+                        child_pid = json.loads(
+                            ready_file.read_text(encoding="utf-8")
+                        )["pid"]
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+                time.sleep(0.01)
+            os.kill(process.pid, signal.SIGTERM)
+            while process.poll() is None:
+                if time.monotonic() >= deadline:
+                    self.fail("timed out waiting for parent SIGTERM handling")
+                time.sleep(0.01)
+            try:
+                os.kill(child_pid, 0)
+                child_alive_after_parent = True
+            except ProcessLookupError:
+                pass
+            if child_alive_after_parent:
+                self.terminate_test_child_group(child_pid)
+            stdout, stderr = process.communicate(timeout=2)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+            if child_pid is not None:
+                self.terminate_test_child_group(child_pid)
+        self.last_parent_sigterm_child_pid = child_pid
+        self.last_parent_sigterm_child_alive = child_alive_after_parent
         return subprocess.CompletedProcess(
             process.args, process.returncode, stdout, stderr
         )
@@ -598,6 +710,108 @@ raise SystemExit(returncode)
         self.assertFalse(self.source_root.is_symlink())
         self.assertEqual(self.codex_calls(), ["plugin add bid@local-build-your-system"])
 
+    def test_add_commit_then_nonzero_restores_preoperation_installed_state(self):
+        self.set_codex_installed(False)
+        self.env["CODEX_ADD_EXIT"] = "23"
+        self.env["CODEX_ADD_COMMIT_BEFORE_EXIT"] = "1"
+
+        result = self.run_installer()
+
+        self.assertEqual(result.returncode, 23, result.stderr)
+        self.assertFalse(self.codex_is_installed())
+        self.assertFalse(self.marketplace_file.exists())
+        self.assertFalse(self.source_root.exists())
+        self.assertEqual(
+            self.codex_calls(),
+            [
+                "plugin add bid@local-build-your-system",
+                "plugin remove bid@local-build-your-system",
+            ],
+        )
+
+    def test_add_nonzero_failed_compensation_preserves_trusted_local_contract(self):
+        self.set_codex_installed(False)
+        self.env["CODEX_ADD_EXIT"] = "23"
+        self.env["CODEX_ADD_COMMIT_BEFORE_EXIT"] = "1"
+        self.env["CODEX_REMOVE_EXIT"] = "31"
+
+        result = self.run_installer()
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("partial", result.stderr.lower())
+        self.assertTrue(self.codex_is_installed())
+        self.assertTrue(self.marketplace_file.exists())
+        marketplace = json.loads(self.marketplace_file.read_text(encoding="utf-8"))
+        self.assertEqual(marketplace["plugins"], [BID_ENTRY])
+        self.assertTrue(self.source_root.is_symlink())
+        self.assertEqual(self.source_root.readlink(), BID_ROOT)
+        self.assertEqual(
+            self.codex_calls(),
+            [
+                "plugin add bid@local-build-your-system",
+                "plugin remove bid@local-build-your-system",
+            ],
+        )
+
+    def test_sigterm_after_child_reap_is_recorded_before_handler_restore(self):
+        module_name = "bid_lifecycle_signal_race_test"
+        spec = importlib.util.spec_from_file_location(module_name, LIFECYCLE)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        lifecycle = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = lifecycle
+        self.addCleanup(sys.modules.pop, module_name, None)
+        lifecycle_source = LIFECYCLE.read_text(encoding="utf-8")
+        definitions = lifecycle_source.rsplit(
+            "\ntry:\n    raise SystemExit(main())", 1
+        )[0]
+        exec(compile(definitions, LIFECYCLE, "exec"), lifecycle.__dict__)
+
+        installed_handlers = {signal.SIGTERM: signal.SIG_DFL}
+
+        def fake_getsignal(signum):
+            return installed_handlers[signum]
+
+        def fake_signal(signum, handler):
+            previous = installed_handlers[signum]
+            if handler is signal.SIG_DFL and callable(previous):
+                previous(signal.SIGTERM, None)
+            installed_handlers[signum] = handler
+            return previous
+
+        class ReapedProcess:
+            pid = 424242
+
+            def __init__(self):
+                self.returncode = None
+
+            def wait(self, timeout=None):
+                self.returncode = 0
+                return 0
+
+        original_getsignal = lifecycle.signal.getsignal
+        original_signal = lifecycle.signal.signal
+        original_popen = lifecycle.subprocess.Popen
+        lifecycle.signal.getsignal = fake_getsignal
+        lifecycle.signal.signal = fake_signal
+        lifecycle.subprocess.Popen = lambda *args, **kwargs: ReapedProcess()
+        self.addCleanup(setattr, lifecycle.signal, "getsignal", original_getsignal)
+        self.addCleanup(setattr, lifecycle.signal, "signal", original_signal)
+        self.addCleanup(setattr, lifecycle.subprocess, "Popen", original_popen)
+
+        escaped = False
+        result = None
+        try:
+            result = lifecycle.LocalLifecycle.run_codex("add")
+        except KeyboardInterrupt:
+            escaped = True
+
+        self.assertFalse(escaped, "post-reap SIGTERM escaped run_codex")
+        self.assertIsNotNone(result)
+        self.assertTrue(result.interrupted)
+        self.assertEqual(result.returncode, 0)
+        self.assertIs(installed_handlers[signal.SIGTERM], signal.SIG_DFL)
+
     def test_codex_failure_restores_exact_preexisting_marketplace_and_symlink(self):
         first_plugin = {
             "name": "first",
@@ -851,6 +1065,35 @@ raise SystemExit(returncode)
         self.assertEqual(
             self.codex_calls(), ["plugin remove bid@local-build-your-system"]
         )
+
+    def test_remove_commit_then_nonzero_restores_preoperation_installed_state(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        original_bytes = self.marketplace_file.read_bytes()
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        source_inode = self.source_root.lstat().st_ino
+        self.set_codex_installed(True)
+        self.env["CODEX_REMOVE_EXIT"] = "29"
+        self.env["CODEX_REMOVE_COMMIT_BEFORE_EXIT"] = "1"
+
+        result = self.run_installer("--uninstall")
+
+        self.assertEqual(result.returncode, 29, result.stderr)
+        self.assertTrue(self.codex_is_installed())
+        self.assertEqual(
+            self.codex_calls(),
+            [
+                "plugin remove bid@local-build-your-system",
+                "plugin add bid@local-build-your-system",
+            ],
+        )
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(self.source_root.lstat().st_ino, source_inode)
 
     def test_uninstall_marketplace_write_failure_compensates_codex_remove(self):
         original_bytes = (
@@ -1363,6 +1606,31 @@ raise SystemExit(returncode)
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             os.close(lock_fd)
 
+    def test_parent_sigterm_during_add_before_commit_reconciles_and_reaps_child(self):
+        self.set_codex_installed(False)
+
+        result = self.run_installer_and_parent_sigterm("add")
+
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertFalse(self.last_parent_sigterm_child_alive)
+        self.assertTrue(Path(self.env["CODEX_CHILD_TERM_FILE"]).exists())
+        self.assertFalse(self.codex_is_installed())
+        self.assertFalse(self.marketplace_file.exists())
+        self.assertFalse(self.source_root.exists())
+
+    def test_parent_sigterm_during_add_after_commit_reconciles_and_reaps_child(self):
+        self.set_codex_installed(False)
+        self.env["CODEX_ADD_COMMIT_BEFORE_BLOCK"] = "1"
+
+        result = self.run_installer_and_parent_sigterm("add")
+
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertFalse(self.last_parent_sigterm_child_alive)
+        self.assertTrue(Path(self.env["CODEX_CHILD_TERM_FILE"]).exists())
+        self.assertFalse(self.codex_is_installed())
+        self.assertFalse(self.marketplace_file.exists())
+        self.assertFalse(self.source_root.exists())
+
     def test_sigint_after_add_commit_directly_removes_orphan_if_marketplace_changed(
         self,
     ):
@@ -1471,6 +1739,53 @@ raise SystemExit(returncode)
         self.assertTrue(self.source_root.is_symlink())
         self.assertEqual(self.source_root.readlink(), BID_ROOT)
 
+    def test_parent_sigterm_during_remove_before_commit_reconciles_and_reaps_child(
+        self,
+    ):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        original_bytes = self.marketplace_file.read_bytes()
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        self.set_codex_installed(True)
+
+        result = self.run_installer_and_parent_sigterm("remove", "--uninstall")
+
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertFalse(self.last_parent_sigterm_child_alive)
+        self.assertTrue(Path(self.env["CODEX_CHILD_TERM_FILE"]).exists())
+        self.assertTrue(self.codex_is_installed())
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertTrue(self.source_root.is_symlink())
+
+    def test_parent_sigterm_during_remove_after_commit_reconciles_and_reaps_child(
+        self,
+    ):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        original_bytes = self.marketplace_file.read_bytes()
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        self.set_codex_installed(True)
+        self.env["CODEX_REMOVE_COMMIT_BEFORE_BLOCK"] = "1"
+
+        result = self.run_installer_and_parent_sigterm("remove", "--uninstall")
+
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertFalse(self.last_parent_sigterm_child_alive)
+        self.assertTrue(Path(self.env["CODEX_CHILD_TERM_FILE"]).exists())
+        self.assertTrue(self.codex_is_installed())
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertTrue(self.source_root.is_symlink())
+
     def test_local_absent_interrupted_remove_retries_even_if_child_exits_zero(self):
         existing = {
             "name": "local-build-your-system",
@@ -1570,6 +1885,8 @@ raise SystemExit(returncode)
         self.assertIn("不会把 list 的空结果当作已卸载证据", text)
         self.assertIn("幂等的 `codex plugin remove", text)
         self.assertIn("SIGKILL", text)
+        self.assertIn("SIGINT 或 SIGTERM", text)
+        self.assertIn("CLI 返回非零也不被当作", text)
         stale_claim = "Codex/Claude cache 和项目内 `.claude/memory/` 永不删除"
         self.assertNotIn(stale_claim, text)
 

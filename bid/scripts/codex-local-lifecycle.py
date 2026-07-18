@@ -33,6 +33,10 @@ class ConcurrentModificationError(ConflictError):
     pass
 
 
+class ParentTermination(KeyboardInterrupt):
+    pass
+
+
 @dataclass(frozen=True)
 class MarketplaceSnapshot:
     exists: bool
@@ -458,60 +462,81 @@ class LocalLifecycle:
 
     @staticmethod
     def run_codex(action: str) -> CodexCommandResult:
-        try:
-            process = subprocess.Popen(
-                ["codex", "plugin", action, PLUGIN_REF],
-                start_new_session=True,
-            )
-        except OSError as error:
-            print(f"codex plugin {action} failed: {error}", file=sys.stderr)
-            return CodexCommandResult(1, False)
-
+        process: subprocess.Popen[bytes] | None = None
+        parent_termination_requested = False
         interrupted = False
+        returncode = 1
+        previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
+
+        def handle_parent_sigterm(_signum: int, _frame: object) -> None:
+            nonlocal parent_termination_requested
+            parent_termination_requested = True
+            if process is not None and process.returncode is None:
+                raise ParentTermination
+
+        signal.signal(signal.SIGTERM, handle_parent_sigterm)
         try:
-            returncode = process.wait()
-        except KeyboardInterrupt:
-            interrupted = True
-            print(
-                f"codex plugin {action} interrupted; terminating and reaping the "
-                "isolated CLI child before reconciling transaction state.",
-                file=sys.stderr,
-            )
             try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            deadline = time.monotonic() + LocalLifecycle.CODEX_INTERRUPT_GRACE_SECONDS
-            while True:
+                process = subprocess.Popen(
+                    ["codex", "plugin", action, PLUGIN_REF],
+                    start_new_session=True,
+                )
+            except OSError as error:
+                print(f"codex plugin {action} failed: {error}", file=sys.stderr)
+            else:
                 try:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise subprocess.TimeoutExpired(process.args, 0)
-                    returncode = process.wait(timeout=remaining)
-                    break
+                    if parent_termination_requested:
+                        raise ParentTermination
+                    returncode = process.wait()
                 except KeyboardInterrupt:
                     interrupted = True
-                    continue
-                except subprocess.TimeoutExpired:
                     print(
-                        f"codex plugin {action} did not terminate within "
-                        f"{LocalLifecycle.CODEX_INTERRUPT_GRACE_SECONDS:g}s; "
-                        "sending SIGKILL.",
+                        f"codex plugin {action} interrupted; terminating and "
+                        "reaping the isolated CLI child before reconciling "
+                        "transaction state.",
                         file=sys.stderr,
                     )
                     try:
-                        os.killpg(process.pid, signal.SIGKILL)
+                        os.killpg(process.pid, signal.SIGTERM)
                     except ProcessLookupError:
                         pass
+                    deadline = (
+                        time.monotonic()
+                        + LocalLifecycle.CODEX_INTERRUPT_GRACE_SECONDS
+                    )
                     while True:
                         try:
-                            returncode = process.wait()
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise subprocess.TimeoutExpired(process.args, 0)
+                            returncode = process.wait(timeout=remaining)
                             break
                         except KeyboardInterrupt:
                             interrupted = True
                             continue
-                    break
-        normalized_returncode = returncode if returncode >= 0 else 1
+                        except subprocess.TimeoutExpired:
+                            print(
+                                f"codex plugin {action} did not terminate within "
+                                f"{LocalLifecycle.CODEX_INTERRUPT_GRACE_SECONDS:g}s; "
+                                "sending SIGKILL.",
+                                file=sys.stderr,
+                            )
+                            try:
+                                os.killpg(process.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                            while True:
+                                try:
+                                    returncode = process.wait()
+                                    break
+                                except KeyboardInterrupt:
+                                    interrupted = True
+                                    continue
+                            break
+            normalized_returncode = returncode if returncode >= 0 else 1
+        finally:
+            signal.signal(signal.SIGTERM, previous_sigterm_handler)
+            interrupted = interrupted or parent_termination_requested
         return CodexCommandResult(normalized_returncode, interrupted)
 
     @staticmethod
@@ -613,6 +638,32 @@ class LocalLifecycle:
         self.require_source_snapshot(source_snapshot)
         return installed
 
+    def restore_codex_state_with_contract(
+        self,
+        installed_before: bool,
+        marketplace_snapshot: MarketplaceSnapshot,
+        source_snapshot: SourceSnapshot,
+    ) -> None:
+        installed_now = self.codex_plugin_installed_with_contract(
+            marketplace_snapshot, source_snapshot
+        )
+        if installed_now == installed_before:
+            return
+
+        action = "add" if installed_before else "remove"
+        self.require_marketplace_snapshot(marketplace_snapshot)
+        self.require_source_snapshot(source_snapshot)
+        command_result = self.run_codex(action)
+        installed_after = self.codex_plugin_installed_with_contract(
+            marketplace_snapshot, source_snapshot
+        )
+        if installed_after != installed_before:
+            raise RuntimeError(
+                f"codex plugin {action} did not restore the pre-operation state "
+                f"(return code {command_result.returncode}, "
+                f"interrupted={command_result.interrupted})"
+            )
+
     def rollback_install(
         self,
         state: MarketplaceState,
@@ -699,23 +750,15 @@ class LocalLifecycle:
                 source_preexisting_snapshot,
             )
         if codex_result.returncode != 0:
-            try:
-                self.rollback_install(
-                    state, marketplace_written_snapshot, source_created_snapshot
-                )
-            except Exception as error:  # noqa: BLE001 - report incomplete rollback.
-                print(
-                    f"codex plugin add failed ({codex_result.returncode}). "
-                    f"Rollback incomplete: {error}",
-                    file=sys.stderr,
-                )
-                return 1
-            print(
-                f"codex plugin add failed ({codex_result.returncode}); "
-                "local changes rolled back.",
-                file=sys.stderr,
+            return self.reconcile_nonzero_install(
+                codex_result.returncode,
+                codex_installed_before,
+                active_marketplace_snapshot,
+                active_source_snapshot,
+                state,
+                marketplace_written_snapshot,
+                source_created_snapshot,
             )
-            return codex_result.returncode
 
         print(f"Source: {self.source_root} -> {self.bid_root}")
         print(f"Marketplace: {self.marketplace_file}")
@@ -791,6 +834,84 @@ class LocalLifecycle:
             file=sys.stderr,
         )
         return 130
+
+    def reconcile_nonzero_install(
+        self,
+        returncode: int,
+        installed_before: bool,
+        active_marketplace_snapshot: MarketplaceSnapshot,
+        active_source_snapshot: SourceSnapshot,
+        state: MarketplaceState,
+        marketplace_written_snapshot: MarketplaceSnapshot | None,
+        source_created_snapshot: SourceSnapshot | None,
+    ) -> int:
+        try:
+            self.restore_codex_state_with_contract(
+                installed_before,
+                active_marketplace_snapshot,
+                active_source_snapshot,
+            )
+        except Exception as error:  # noqa: BLE001 - preserve recovery contract.
+            try:
+                self.require_marketplace_snapshot(active_marketplace_snapshot)
+                self.require_source_snapshot(active_source_snapshot)
+            except Exception as contract_error:  # noqa: BLE001 - clean owned state.
+                try:
+                    self.rollback_install(
+                        state,
+                        marketplace_written_snapshot,
+                        source_created_snapshot,
+                    )
+                except Exception as rollback_error:  # noqa: BLE001 - report both.
+                    print(
+                        f"codex plugin add failed ({returncode}). Partial state "
+                        "recovery required: Codex state reconciliation failed: "
+                        f"{error}; local contract changed: {contract_error}; "
+                        f"owned-state rollback was incomplete: {rollback_error}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                print(
+                    f"codex plugin add failed ({returncode}). Partial state "
+                    "recovery required: Codex state reconciliation failed: "
+                    f"{error}; local contract changed: {contract_error}; "
+                    "unchanged owned local state rolled back.",
+                    file=sys.stderr,
+                )
+                return 1
+            print(
+                f"codex plugin add failed ({returncode}). Partial state recovery "
+                "required: Codex state reconciliation failed: "
+                f"{error}; trusted local marketplace and source registration "
+                "preserved for recovery.",
+                file=sys.stderr,
+            )
+            print(f"Marketplace: {self.marketplace_file}", file=sys.stderr)
+            print(f"Source symlink: {self.source_root}", file=sys.stderr)
+            return 1
+
+        rollback_error: Exception | None = None
+        try:
+            self.rollback_install(
+                state, marketplace_written_snapshot, source_created_snapshot
+            )
+        except Exception as error:  # noqa: BLE001 - report both recovery failures.
+            rollback_error = error
+
+        if rollback_error is not None:
+            print(
+                f"codex plugin add failed ({returncode}). Partial state recovery "
+                f"required: local rollback failed: {rollback_error}",
+                file=sys.stderr,
+            )
+            return 1
+
+        print(
+            f"codex plugin add failed ({returncode}); Codex state reconciled and "
+            "local changes rolled back.",
+            file=sys.stderr,
+        )
+        return returncode
 
     def report_failed_compensation(
         self,
@@ -1070,9 +1191,22 @@ class LocalLifecycle:
                 codex_installed_before, source_preflight_snapshot
             )
         if codex_result.returncode != 0:
+            try:
+                self.restore_codex_state_with_contract(
+                    codex_installed_before,
+                    state.original_snapshot,
+                    source_preflight_snapshot,
+                )
+            except Exception as error:  # noqa: BLE001 - report incomplete recovery.
+                print(
+                    f"codex plugin remove failed ({codex_result.returncode}); "
+                    f"Codex state reconciliation failed: {error}",
+                    file=sys.stderr,
+                )
+                return 1
             print(
                 f"codex plugin remove failed ({codex_result.returncode}); "
-                "local state unchanged.",
+                "Codex state reconciled and local state unchanged.",
                 file=sys.stderr,
             )
             return codex_result.returncode
