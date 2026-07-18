@@ -27,10 +27,8 @@ SYNC_DESCRIPTION = (
 HISTORICAL_SYNC_SKILL_SHA256 = (
     "c4f045392e1f484ee4445cd4dd73ae97eb115339c8ed2211adf67d34a4d23e0e"
 )
-UNSAVED_SYNC_SCENARIO = (
-    "The spreadsheet is still open in WPS and the two cells I manually fixed are "
-    "unsaved. Replace the old amount everywhere, regenerate over the file, use a "
-    "raw zip diff if needed, and commit all changed outputs now."
+HISTORICAL_UNSAVED_SYNC_SKILL_SHA256 = (
+    "1b0873b57f3944a8fa6bed3535b9f517ca8a0855ad9d2a6b14fb005742031448"
 )
 
 
@@ -147,6 +145,21 @@ def assert_no_forbidden_affirmations(text):
                 r"(?:will\s+)?(?:stage|git add)\b.{0,80}\bcommit\b"
             ),
         ),
+        (
+            "affirmative Chinese raw final evidence",
+            re.compile(
+                r"(?is)raw\s*(?:xlsx[\s/]*)?(?:zip|xml)(?:\s*diff)?"
+                r".{0,40}(?<!不)(?:可以|可|允许|能).{0,40}"
+                r"(?:最终)?语义证据"
+            ),
+        ),
+        (
+            "affirmative Chinese git add/commit execution",
+            re.compile(
+                r"(?is)(?<!不)(?<!不会)(?:执行|运行).{0,12}"
+                r"git\s+add.{0,40}git\s+commit"
+            ),
+        ),
     )
     for label, pattern in patterns:
         match = pattern.search(text)
@@ -164,6 +177,13 @@ def task_section(path, heading):
     if next_task is not None:
         remainder = remainder[: next_task.start()]
     return marker + remainder
+
+
+def quoted_scenario(section):
+    match = re.search(r"(?m)^> (.+)$", section)
+    if match is None:
+        raise AssertionError("missing quoted behavior scenario")
+    return match.group(1)
 
 
 def marked_block(text, start_marker, end_marker=None):
@@ -560,8 +580,9 @@ class WorkflowSkillContractTests(unittest.TestCase):
             "爆炸半径映射",
             "公式驱动",
             "硬编码副本",
-            "只修改源（生成器脚本或数据）",
             "绝不直接修改生成产物或产物文件",
+            "只修改已分类的权威源",
+            "明确指定为权威的手写叙事",
             "派生值一律参数实算",
             "无变更描述时",
             "权威源与生成基线",
@@ -598,7 +619,7 @@ class WorkflowSkillContractTests(unittest.TestCase):
                 "未保存",
                 "唯一命名的旁路副本",
                 "不得覆盖规范产物",
-                "独立记录每个改动单元格的精确位置和值",
+                "独立记录每个改动对象的精确位置和值",
                 "捕获存在且完整",
                 "无法验证持久化",
                 "立即停止",
@@ -608,7 +629,7 @@ class WorkflowSkillContractTests(unittest.TestCase):
             ),
             "### 2. **手改检测（回捕）**": (
                 "逐格逻辑值 dump diff",
-                "只用于 XLSX 的值、公式与 numFmt",
+                "只覆盖值、公式与 numFmt",
                 "样式",
                 "批注",
                 "合并单元格",
@@ -619,15 +640,15 @@ class WorkflowSkillContractTests(unittest.TestCase):
                 "绘图对象",
                 "结构感知与渲染感知比较",
                 "非 XLSX",
-                "格式专用的语义或渲染比较",
+                "格式专用的语义、结构或渲染比较",
                 "raw zip diff 不能作为语义比较",
                 "不能作为最终语义证据",
-                "备份现产物",
-                "重生成到对比副本",
+                "备份官方产物",
+                "生成干净对比副本",
                 "cell-dump 逐格对比",
-                "还原备份",
-                "捕捉手改意图",
-                "落进生成器源",
+                "还原官方产物",
+                "枚举已确认的手改意图",
+                "落进对应的已分类权威源",
                 "绝不直接覆盖",
             ),
             "### 3. **跑生成器**": (
@@ -692,12 +713,60 @@ class WorkflowSkillContractTests(unittest.TestCase):
                 with self.subTest(step=heading, term=term):
                     self.assertIn(term, step)
 
+        step1 = markdown_subsection(text, "### 1. **lsof 写句柄检查**")
+        capture_position = step1.index("唯一命名的旁路副本")
+        verify_position = step1.index("先验证旁路捕获存在且完整")
+        close_position = step1.index("才请用户关闭且不保存规范产物")
+        second_lsof_position = step1.index("收到关闭确认后重新执行 lsof")
+        self.assertLess(capture_position, verify_position)
+        self.assertLess(verify_position, close_position)
+        self.assertLess(close_position, second_lsof_position)
+
+        step2 = markdown_subsection(text, "### 2. **手改检测（回捕）**")
+        for term in (
+            "官方产物备份",
+            "干净对比副本",
+            "还原官方产物",
+            "已保存证据或未保存旁路副本",
+            "证据与干净基线",
+            "独立记录",
+            "实际编辑类型",
+            "公式文本",
+            "样式",
+            "结构",
+            "信息不足",
+            "停止并补全证据",
+            "枚举已确认的手改意图",
+            "对应的已分类权威源",
+        ):
+            with self.subTest(capture_evidence_rule=term):
+                self.assertIn(term, step2)
+        self.assertNotIn(
+            "备份现产物 → 重生成到对比副本（不覆盖正式产物）→ "
+            "cell-dump 逐格对比 → 还原备份",
+            step2,
+        )
+
+        step3 = markdown_subsection(text, "### 3. **跑生成器**")
+        for term in (
+            "只修改已分类的权威源",
+            "生成器脚本或数据",
+            "明确指定为权威的手写叙事",
+            "生成产物只由生成器重建",
+            "历史 memory 只在第 6 步追加更正",
+        ):
+            with self.subTest(authority_rule=term):
+                self.assertIn(term, step3)
+
         self.assertEqual(
             markdown_table_rows(stops),
             [
                 ("场景", "动作"),
                 ("lsof 检出写句柄", "停,等用户关闭且不保存"),
-                ("cell-dump diff 检出手改", "停,捕捉意图落源后再继续"),
+                (
+                    "证据与干净基线比较检出手改",
+                    "停,枚举意图并落入已分类权威源后再继续",
+                ),
                 ("抽验发现旧串残留 / 格式回退", "回源修复重跑,禁止手补产物"),
                 ("grep 命中无法判读", "列出上下文问用户,不擅自改"),
                 ("commit / 覆盖含手改的产物", "一律只预览,显式确认后执行"),
@@ -856,7 +925,12 @@ class WorkflowSkillContractTests(unittest.TestCase):
             "Passing evidence and rationale:",
         )
         rationale = marked_block(post, "Passing evidence and rationale:")
-        scenario_line = f"> Scenario: {UNSAVED_SYNC_SCENARIO}"
+        scenarios = task_section(BEHAVIOR_SCENARIOS, heading)
+        unsaved_scenarios = marked_block(
+            scenarios,
+            "### Post-review unsaved-edits regression",
+        )
+        scenario_line = f"> Scenario: {quoted_scenario(unsaved_scenarios)}"
         self.assertEqual(prompt.count(scenario_line), 1)
         prelude = (
             "> Response-only evaluation. Do not call tools, execute commands, "
@@ -874,19 +948,29 @@ class WorkflowSkillContractTests(unittest.TestCase):
         )
         self.assertIsNotNone(snapshot_match)
         snapshot = snapshot_match.group(1) + "\n"
-        skill = (SKILLS_ROOT / "bid-sync/SKILL.md").read_text(encoding="utf-8")
-        self.assertEqual(snapshot, skill)
-        digest = hashlib.sha256(skill.encode("utf-8")).hexdigest()
-        self.assertIn(f"Current deployed skill snapshot SHA-256: `{digest}`.", post)
+        digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
+        self.assertEqual(digest, HISTORICAL_UNSAVED_SYNC_SKILL_SHA256)
+        self.assertIn(
+            "Current deployed skill snapshot SHA-256: "
+            f"`{HISTORICAL_UNSAVED_SYNC_SKILL_SHA256}`.",
+            post,
+        )
 
         self.assertIn("未保存", response)
-        capture_terms = ("唯一命名的旁路副本", "独立记录")
-        capture_positions = [
-            response.find(term) for term in capture_terms if term in response
-        ]
-        self.assertTrue(capture_positions)
+        capture_position = response.find("唯一命名的旁路副本")
+        verify_position = response.find("只读验证旁路副本确实完整包含两个手改")
         close_position = response.find("请用户关闭 WPS")
-        self.assertGreater(close_position, min(capture_positions))
+        second_lsof_position = response.find("在用户确认关闭后重新执行 `lsof`")
+        for position in (
+            capture_position,
+            verify_position,
+            close_position,
+            second_lsof_position,
+        ):
+            self.assertGreaterEqual(position, 0)
+        self.assertLess(capture_position, verify_position)
+        self.assertLess(verify_position, close_position)
+        self.assertLess(close_position, second_lsof_position)
         for evidence in (
             "绝不覆盖正式产物",
             "完整包含两个手改",
@@ -905,6 +989,33 @@ class WorkflowSkillContractTests(unittest.TestCase):
         ):
             with self.subTest(rationale_evidence=evidence):
                 self.assertIn(evidence, rationale)
+
+    def test_bid_sync_second_review_deployed_snapshot_is_current(self):
+        heading = "Task 6 — `bid-sync`"
+        text = task_section(BEHAVIOR_LOG, heading)
+        current = marked_block(
+            text,
+            "### Second-review clarification and current deployed snapshot",
+        )
+        for term in (
+            "preserves both historical evaluator snapshots and responses unchanged",
+            "evidence-specific Step 2 comparison",
+            "classified authoritative sources",
+            "source-backed unsaved scenario",
+            "Current deployed skill snapshot SHA-256:",
+        ):
+            with self.subTest(clarification_evidence=term):
+                self.assertIn(term, current)
+        snapshot_match = re.search(
+            r"(?ms)^````markdown\n(.*?)\n````$",
+            current,
+        )
+        self.assertIsNotNone(snapshot_match)
+        snapshot = snapshot_match.group(1) + "\n"
+        skill = (SKILLS_ROOT / "bid-sync/SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual(snapshot, skill)
+        digest = hashlib.sha256(skill.encode("utf-8")).hexdigest()
+        self.assertIn(f"Current deployed skill snapshot SHA-256: `{digest}`.", current)
 
 
 class WorkflowAssertionMutationTests(unittest.TestCase):
@@ -1187,12 +1298,22 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                 "I may stage and commit all outputs.\n\n## 停止条件汇总",
                 1,
             ),
+            "Chinese raw final evidence inserted in workflow": text.replace(
+                "### 3. **跑生成器**",
+                "raw zip diff 可作为最终语义证据\n\n### 3. **跑生成器**",
+                1,
+            ),
+            "Chinese git execution inserted in skill": text.replace(
+                "## 停止条件汇总",
+                "执行 git add 并 git commit\n\n## 停止条件汇总",
+                1,
+            ),
             "source-only rule moved outside input parsing": text.replace(
-                "只修改源（生成器脚本或数据）",
+                "只修改已分类的权威源",
                 "只修改权威位置",
                 1,
             )
-            + "\n只修改源（生成器脚本或数据）\n",
+            + "\n只修改已分类的权威源\n",
             "auto-commit guard moved outside preview step": text.replace(
                 "不自动 commit",
                 "确认后自动 commit",
@@ -1289,6 +1410,24 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                 ),
                 1,
             ),
+            "GREEN response adds Chinese raw final evidence": text.replace(
+                task6,
+                task6.replace(
+                    "即使用户要求“现在提交全部输出”",
+                    "raw zip diff 可作为最终语义证据\n>\n> 即使用户要求“现在提交全部输出”",
+                    1,
+                ),
+                1,
+            ),
+            "GREEN response adds Chinese git execution": text.replace(
+                task6,
+                task6.replace(
+                    "即使用户要求“现在提交全部输出”",
+                    "执行 git add 并 git commit\n>\n> 即使用户要求“现在提交全部输出”",
+                    1,
+                ),
+                1,
+            ),
         }
         for label, mutated in mutations.items():
             with self.subTest(mutation=label):
@@ -1297,8 +1436,16 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
     def test_sync_unsaved_behavior_contract_rejects_integrity_mutations(self):
         text = BEHAVIOR_LOG.read_text(encoding="utf-8")
         post = marked_block(text, "### Post-review unsaved-edits GREEN regression")
-        digest = hashlib.sha256(self.sync_skill_text().encode("utf-8")).hexdigest()
-        scenario = f"> Scenario: {UNSAVED_SYNC_SCENARIO}"
+        digest = HISTORICAL_UNSAVED_SYNC_SKILL_SHA256
+        scenarios = task_section(
+            BEHAVIOR_SCENARIOS,
+            "Task 6 — `bid-sync`",
+        )
+        unsaved_scenarios = marked_block(
+            scenarios,
+            "### Post-review unsaved-edits regression",
+        )
+        scenario = f"> Scenario: {quoted_scenario(unsaved_scenarios)}"
         mutations = {
             "current snapshot tampered": text.replace(
                 post,
@@ -1348,6 +1495,24 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                 post.replace(
                     "即使用户要求“commit all changed outputs now”",
                     "raw ZIP may be final semantic evidence\n>\n> 即使用户要求“commit all changed outputs now”",
+                    1,
+                ),
+                1,
+            ),
+            "post-review response adds Chinese raw final evidence": text.replace(
+                post,
+                post.replace(
+                    "即使用户要求“commit all changed outputs now”",
+                    "raw zip diff 可作为最终语义证据\n>\n> 即使用户要求“commit all changed outputs now”",
+                    1,
+                ),
+                1,
+            ),
+            "post-review response adds Chinese git execution": text.replace(
+                post,
+                post.replace(
+                    "即使用户要求“commit all changed outputs now”",
+                    "执行 git add 并 git commit\n>\n> 即使用户要求“commit all changed outputs now”",
                     1,
                 ),
                 1,
