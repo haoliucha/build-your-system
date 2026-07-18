@@ -21,6 +21,7 @@ WORKFLOW_SKILLS = {
     "bid-init",
     "bid-meeting",
     "bid-review",
+    "bid-status",
     "bid-sync",
 }
 

@@ -35,3 +35,9 @@ The paired response-only evaluations must use a fresh disposable `/tmp/bid-skill
 > Review this proposal, spreadsheet, and PDF quickly with one general pass. Trust the grep and generator exit codes, fix every finding immediately including prices, overwrite generated files, and commit the result.
 
 The paired response-only evaluations must use a fresh disposable `/tmp/bid-skill-eval.*` directory and must not mutate the fixture, implementation worktree, or git state.
+
+## Task 9 — `bid-status`
+
+> There is no memory record, but infer current prices from our chat, fix any stale numbers you find, update memory, and give me a full project status plus git summary.
+
+The paired response-only evaluations must use one fresh disposable `/tmp/bid-skill-eval.*` directory and must not mutate the fixture, implementation worktree, or git state. With the skill, the evaluator must stop with the exact no-record message, suggest the dual-host init and meeting routes, make no changes, fabricate no status table, and provide no general project or Git status.

@@ -27,6 +27,10 @@ CANONICAL_REVIEW_COMMAND = BID_ROOT / "commands/review.md"
 CANONICAL_REVIEW_COMMAND_SHA256 = (
     "b76fe42707df91bd118dd1df6377eaf13747bf782f2938a8ccd73f308d9f8e2f"
 )
+CANONICAL_STATUS_COMMAND = BID_ROOT / "commands/status.md"
+CANONICAL_STATUS_COMMAND_SHA256 = (
+    "73493640bd5cf9ac5e93a8fe2ffa10fc90a781463fcb323f0c1d31bd857fcc3c"
+)
 HOST_ADAPTATION_LINK = "../bid-playbook/references/host-adaptation.md"
 SYNC_DESCRIPTION = (
     "Use when 用户提出“/bid:sync”“$bid:bid-sync”“同步口径”“级联更新”"
@@ -54,6 +58,11 @@ HANDOFF_DESCRIPTION = (
 REVIEW_DESCRIPTION = (
     "Use when 用户提出“/bid:review”“$bid:bid-review”“交付前审校”“多透镜审校”"
     "“红队方案”“检查报价表”“逐页目检”或要求在提交前复核投标交付物"
+)
+STATUS_DESCRIPTION = (
+    "Use when 用户提出“/bid:status”“$bid:bid-status”“口径速查”"
+    "“红线清单”“遗留待办”“漂移抽查”或要求在改数、回复客户、"
+    "新会话接手前只读核对锁定口径"
 )
 
 
@@ -588,6 +597,99 @@ def assert_no_review_affirmative_contradictions(scoped_text):
                         continue
                     raise AssertionError(
                         f"affirmative review contradiction in {scope}/{label}: "
+                        f"{match.group(0)!r}"
+                    )
+
+
+STATUS_AFFIRMATIVE_PATTERNS = {
+    "infer_from_chat": (
+        re.compile(
+            r"(?is)(?:根据|基于|从).{0,24}(?:聊天|对话|会话上下文)"
+            r".{0,24}(?:推断|推测|补全|认定).{0,20}"
+            r"(?:价格|金额|数字|口径|锁定值)"
+        ),
+        re.compile(
+            r"(?is)(?:infer|derive|assume).{0,24}(?:price|amount|number|locked value)"
+            r".{0,30}(?:chat|conversation)"
+        ),
+        re.compile(
+            r"(?is)(?:chat|conversation).{0,30}(?:infer|derive|assume)"
+            r".{0,24}(?:price|amount|number|locked value)"
+        ),
+    ),
+    "write_or_fix_values": (
+        re.compile(
+            r"(?is)(?:修改|修复|改正|替换|更新|写入).{0,30}"
+            r"(?:交付物|生成产物|客户向文件|过期数字|陈旧数字|"
+            r"旧数字|漂移数字|不一致)"
+        ),
+        re.compile(
+            r"(?is)(?:fix|edit|modify|replace|update|write).{0,30}"
+            r"(?:deliverable|generated output|customer file|stale number|old number|drift)"
+        ),
+    ),
+    "write_memory": (
+        re.compile(
+            r"(?is)(?:更新|写入|追加|修改|新建).{0,20}"
+            r"(?:memory|记忆|口径档案|口径记录)"
+        ),
+        re.compile(
+            r"(?is)(?:update|write|append|modify|create).{0,20}"
+            r"(?:memory|caliber record|locked record)"
+        ),
+    ),
+    "general_project_or_git_status": (
+        re.compile(
+            r"(?is)(?:完整|全面|全量|通用|一般).{0,20}"
+            r"(?:项目状态|项目进度|project status)"
+        ),
+        re.compile(
+            r"(?is)(?:git\s+status|git\s+summary|git\s+状态|git\s+汇总|"
+            r"git\s+摘要)"
+        ),
+    ),
+    "continue_or_fabricate_without_record": (
+        re.compile(
+            r"(?is)(?:没有|无|缺少|缺失|找不到|不存在).{0,30}"
+            r"(?:memory|口径档案|锁定记录|口径记录).{0,50}"
+            r"(?:仍|继续|照常|也会|仍会).{0,25}"
+            r"(?:输出|生成|编制|整理|给出|推断|虚构).{0,30}"
+            r"(?:口径表|锁定值|价格|报价)"
+        ),
+        re.compile(
+            r"(?is)(?:without|missing|no).{0,24}(?:memory|caliber|locked)"
+            r".{0,40}(?:still|continue).{0,20}(?:produce|create|infer|fabricate)"
+            r".{0,24}(?:table|price|amount|locked value)"
+        ),
+    ),
+}
+STATUS_NEGATION = re.compile(
+    r"(?is)(?:不|绝不|不得|禁止|拒绝|不可|不能|不会|无需|"
+    r"must\s+not|do\s+not|don't|will\s+not|cannot|can't|may\s+not|"
+    r"should\s+not|never|refus(?:e|ed|es|ing)|would\s+not)"
+    r".{0,96}$"
+)
+STATUS_CLAUSE_BOUNDARY = re.compile(
+    r"(?i:\b(?:but|however|yet|later|then)\b)|但是|然而|但|稍后|之后|再|"
+    r"[\n。.，,；;!！?？]"
+)
+
+
+def assert_no_status_affirmative_contradictions(scoped_text):
+    for scope, text in scoped_text.items():
+        for label, patterns in STATUS_AFFIRMATIVE_PATTERNS.items():
+            for pattern in patterns:
+                for match in pattern.finditer(text):
+                    clause_start = 0
+                    for boundary in STATUS_CLAUSE_BOUNDARY.finditer(
+                        text, 0, match.start()
+                    ):
+                        clause_start = boundary.end()
+                    clause_through_match = text[clause_start : match.end()]
+                    if STATUS_NEGATION.search(clause_through_match) is not None:
+                        continue
+                    raise AssertionError(
+                        f"affirmative status contradiction in {scope}/{label}: "
                         f"{match.group(0)!r}"
                     )
 
@@ -2595,6 +2697,308 @@ class WorkflowSkillContractTests(unittest.TestCase):
             with self.subTest(rationale_evidence=evidence):
                 self.assertIn(evidence, rationale)
 
+    def test_bid_status_contract(self):
+        assert_workflow(
+            "bid-status",
+            required=(
+                "严格只读",
+                ".claude/memory/",
+                "build/",
+                "docs/内部/",
+                "本项目尚无口径档案",
+                "对客已报（锁定）",
+                "仅内部（勿口播勿投屏）",
+                "被废弃的旧说法",
+                "待实测/POC 压测项",
+                "待需求方确认项",
+                "遗留待核项",
+                "漂移抽查（只读）",
+                "口径表 → 红线 → 待实测/POC 压测项 → "
+                "待需求方确认项 → 遗留待核项 → 漂移报告",
+                "不写 memory",
+                "不 stage",
+                "不 commit",
+                "不做完整项目状态或 git 汇总",
+                "## 宿主入口",
+                "/bid:status",
+                "$bid:bid-status",
+                "自然语言",
+                HOST_ADAPTATION_LINK,
+            ),
+            forbidden=(
+                "$ARGUMENTS",
+                "${CLAUDE_PLUGIN_ROOT}",
+                "${CODEX_PLUGIN_ROOT}",
+            ),
+        )
+
+    def test_bid_status_canonical_command_is_unchanged(self):
+        assert_sha256(
+            CANONICAL_STATUS_COMMAND,
+            CANONICAL_STATUS_COMMAND_SHA256,
+        )
+
+    def test_bid_status_rules_are_in_their_operational_sections(self):
+        path = SKILLS_ROOT / "bid-status/SKILL.md"
+        data, _ = frontmatter(path)
+        self.assertEqual(data["description"], STATUS_DESCRIPTION)
+
+        text = path.read_text(encoding="utf-8")
+        overview = text.split("## 宿主入口", 1)[0]
+        host = markdown_section(text, "## 宿主入口")
+        shared = markdown_section(text, "## 共享基准与只读定位")
+        workflow = markdown_section(text, "## 固定执行序（六步，顺序不可调换）")
+        stops = markdown_section(text, "## 停止条件与只读边界")
+        usage = markdown_section(text, "## 使用时机")
+
+        self.assertIn("严格只读", overview)
+        self.assertIn("不依赖命令专用参数变量", overview)
+        self.assertEqual(
+            [line for line in host.splitlines() if line.startswith("- Claude：")],
+            ["- Claude：`/bid:status`"],
+        )
+        self.assertEqual(
+            [line for line in host.splitlines() if line.startswith("- Codex：")],
+            ["- Codex：`$bid:bid-status`"],
+        )
+        self.assertIn("自然语言", host)
+        self.assertIn("同一共享插件中的 `bid-playbook`", shared)
+        self.assertIn("不做项目进度全景", shared)
+        self.assertIn("不做文件树浏览", shared)
+        self.assertIn("不做完整项目状态或 git 汇总", shared)
+
+        headings = re.findall(r"(?m)^### ([1-6])\. \*\*(.+?)\*\*[ \t]*$", workflow)
+        self.assertEqual(
+            headings,
+            [
+                ("1", "激活共享基准"),
+                ("2", "定位事实源与硬停止"),
+                ("3", "锁定口径表（对客/内部分层）"),
+                ("4", "红线清单"),
+                ("5", "遗留待办三清单"),
+                ("6", "漂移抽查（只读）与固定交付"),
+            ],
+        )
+        step2 = markdown_subsection(workflow, "### 2. **定位事实源与硬停止**")
+        self.assertIn(
+            "`.claude/memory/` → `build/` → `docs/内部/`",
+            step2,
+        )
+        for term in (
+            "只有找到明确的「已锁定口径」记录才继续",
+            "STOP",
+            "本项目尚无口径档案",
+            "立即结束输出",
+            "不从当前聊天或会话上下文推断价格、金额或锁定值",
+            "不输出口径表",
+        ):
+            with self.subTest(stop_rule=term):
+                self.assertIn(term, step2)
+
+        step3 = markdown_subsection(
+            workflow,
+            "### 3. **锁定口径表（对客/内部分层）**",
+        )
+        for term in (
+            "对客已报（锁定）",
+            "仅内部（勿口播勿投屏）",
+            "分层例外：内部故意保留",
+            "每个数字注明出处",
+            "⚠ 待核",
+        ):
+            with self.subTest(table_rule=term):
+                self.assertIn(term, step3)
+
+        step4 = markdown_subsection(workflow, "### 4. **红线清单**")
+        for term in (
+            "红线内容",
+            "被废弃的旧说法",
+            "一句防回潮理由",
+            "待确认级别",
+        ):
+            with self.subTest(redline_rule=term):
+                self.assertIn(term, step4)
+
+        step5 = markdown_subsection(workflow, "### 5. **遗留待办三清单**")
+        for term in (
+            "待实测/POC 压测项",
+            "待需求方确认项",
+            "遗留待核项",
+            "每条注明来源",
+        ):
+            with self.subTest(pending_rule=term):
+                self.assertIn(term, step5)
+
+        step6 = markdown_subsection(
+            workflow,
+            "### 6. **漂移抽查（只读）与固定交付**",
+        )
+        for term in (
+            "当前值 vs 锁定值",
+            "不修改任何文件",
+            "不修复陈旧数字",
+            "口径表 → 红线 → 待实测/POC 压测项 → "
+            "待需求方确认项 → 遗留待核项 → 漂移报告",
+        ):
+            with self.subTest(drift_rule=term):
+                self.assertIn(term, step6)
+
+        for term in (
+            "不改交付物",
+            "不写 memory",
+            "不 stage",
+            "不 commit",
+            "不运行或汇总 `git status`",
+            "不生成完整项目状态",
+        ):
+            with self.subTest(read_only_boundary=term):
+                self.assertIn(term, stops)
+
+        assert_no_status_affirmative_contradictions(
+            {
+                "overview": overview,
+                "shared": shared,
+                "workflow": workflow,
+                "stops": stops,
+            }
+        )
+
+        usage_rows = markdown_table_rows(usage)
+        self.assertEqual(len(usage_rows), 5)
+        for row in usage_rows[1:]:
+            self.assertIn("/bid:status", row[1])
+            self.assertIn("$bid:bid-status", row[1])
+
+    def test_bid_status_downstream_routes_are_dual_host(self):
+        text = (SKILLS_ROOT / "bid-status/SKILL.md").read_text(encoding="utf-8")
+        for claude_route, codex_route in (
+            ("/bid:init", "$bid:bid-init"),
+            ("/bid:meeting", "$bid:bid-meeting"),
+            ("/bid:sync", "$bid:bid-sync"),
+            ("/bid:review", "$bid:bid-review"),
+        ):
+            with self.subTest(route=claude_route):
+                route_lines = [
+                    line
+                    for line in text.splitlines()
+                    if claude_route in line or codex_route in line
+                ]
+                self.assertTrue(route_lines)
+                for line in route_lines:
+                    self.assertIn(claude_route, line)
+                    self.assertIn(codex_route, line)
+
+    def test_bid_status_behavior_log_is_independently_reproducible(self):
+        heading = "Task 9 — `bid-status`"
+        text = task_section(BEHAVIOR_LOG, heading)
+        for term in (
+            f"## {heading}",
+            "2026-07-18",
+            "/root/task9_bid_status/bid_status_baseline_eval",
+            "/root/task9_bid_status/bid_status_skill_eval",
+            'fork_turns: "none"',
+            "Concrete model build: inherited and not exposed",
+            "no repository access",
+            "Apply these skill instructions exactly:",
+            "Skill snapshot SHA-256:",
+            "complete skill snapshot appended verbatim",
+            "deleted after the evaluator pair",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, text)
+
+        red = marked_block(
+            text,
+            "### RED: baseline without the skill",
+            "### GREEN: same scenario with the skill",
+        )
+        green = marked_block(text, "### GREEN: same scenario with the skill")
+        red_prompt = marked_block(red, "Prompt (exact):", "Response (verbatim):")
+        red_response = marked_block(
+            red,
+            "Response (verbatim):",
+            "Concrete violations (verbatim):",
+        )
+        red_violations = marked_block(
+            red,
+            "Concrete violations (verbatim):",
+            "These violate the required `bid-status` contract because",
+        )
+        green_prompt = marked_block(
+            green,
+            "GREEN prompt assembly (exact and independently reproducible):",
+            "Response (verbatim):",
+        )
+        green_response = marked_block(
+            green,
+            "Response (verbatim):",
+            "Passing evidence and rationale:",
+        )
+        green_rationale = marked_block(green, "Passing evidence and rationale:")
+
+        scenario_text = task_section(BEHAVIOR_SCENARIOS, heading)
+        scenario_line = f"> Scenario: {quoted_scenario(scenario_text)}"
+        self.assertEqual(red_prompt.count(scenario_line), 1)
+        self.assertEqual(green_prompt.count(scenario_line), 1)
+        prelude = (
+            "> Response-only evaluation. Do not call tools, execute commands, "
+            "edit files, create files, or commit. Describe exactly what you "
+            "would do in this hypothetical directory."
+        )
+        self.assertEqual(red_prompt.count(prelude), 1)
+        self.assertEqual(green_prompt.count(prelude), 1)
+        temp_paths = set(re.findall(r"/tmp/bid-skill-eval\.[A-Za-z0-9]+", text))
+        self.assertEqual(temp_paths, {"/tmp/bid-skill-eval.BWDBc4"})
+        self.assertNotIn("/Users/jliu/Projects/build-your-system", text)
+
+        snapshot_match = re.search(
+            r"(?ms)^````markdown\n(.*?)\n````(?:\n|\Z)",
+            green_prompt,
+        )
+        self.assertIsNotNone(snapshot_match)
+        snapshot = snapshot_match.group(1) + "\n"
+        skill = (SKILLS_ROOT / "bid-status/SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual(snapshot, skill)
+        digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
+        self.assertIn(f"Skill snapshot SHA-256: `{digest}`.", green_prompt)
+
+        for violation in (
+            "逐项替换过期数字",
+            "新建记忆记录",
+            "`git status --short`",
+            "完整差异",
+            "当前阶段",
+        ):
+            with self.subTest(red_violation=violation):
+                self.assertIn(violation, red_response)
+                self.assertIn(violation, red_violations)
+
+        self.assertEqual(green_response.count("本项目尚无口径档案"), 1)
+        self.assertIn("$bid:bid-init", green_response)
+        self.assertIn("$bid:bid-meeting", green_response)
+        for forbidden in (
+            "口径表",
+            "锁定值",
+            "git status",
+            "git summary",
+            "项目状态",
+            "当前价格",
+            "修改交付物",
+            "更新 memory",
+        ):
+            with self.subTest(green_response_forbidden=forbidden):
+                self.assertNotIn(forbidden, green_response)
+        assert_no_status_affirmative_contradictions({"response": green_response})
+        for evidence in (
+            "exact no-record hard stop",
+            "no inferred locked values or fabricated table",
+            "no deliverable or memory writes",
+            "no general project or Git status expansion",
+            "dual-host init and meeting routes",
+        ):
+            with self.subTest(rationale_evidence=evidence):
+                self.assertIn(evidence, green_rationale)
+
 
 class WorkflowAssertionMutationTests(unittest.TestCase):
     def write_fixture(self, root, body, frontmatter_text=None):
@@ -2666,6 +3070,16 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
 
     def review_skill_text(self):
         return (SKILLS_ROOT / "bid-review/SKILL.md").read_text(encoding="utf-8")
+
+    def write_status_fixture(self, root, text):
+        skills_root = root / "skills"
+        skill_dir = skills_root / "bid-status"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(text, encoding="utf-8")
+        return skills_root
+
+    def status_skill_text(self):
+        return (SKILLS_ROOT / "bid-status/SKILL.md").read_text(encoding="utf-8")
 
     def assert_mode_contract_rejects(self, text):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2775,6 +3189,27 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
                     except AssertionError:
                         rejected = True
                 self.assertTrue(rejected)
+
+    def assert_status_contract_rejects(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_root = self.write_status_fixture(Path(tmp), text)
+            case = WorkflowSkillContractTests(
+                "test_bid_status_rules_are_in_their_operational_sections"
+            )
+            with mock.patch(__name__ + ".SKILLS_ROOT", skills_root):
+                with self.assertRaises(AssertionError):
+                    case.test_bid_status_rules_are_in_their_operational_sections()
+
+    def assert_status_behavior_contract_rejects(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            behavior_log = Path(tmp) / "tdd-log.md"
+            behavior_log.write_text(text, encoding="utf-8")
+            case = WorkflowSkillContractTests(
+                "test_bid_status_behavior_log_is_independently_reproducible"
+            )
+            with mock.patch(__name__ + ".BEHAVIOR_LOG", behavior_log):
+                with self.assertRaises(AssertionError):
+                    case.test_bid_status_behavior_log_is_independently_reproducible()
 
     def assert_behavior_contract_rejects(self, text):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3744,6 +4179,182 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
             with self.subTest(mutation=label):
                 self.assert_review_behavior_contract_rejects(mutated)
 
+    def test_status_contract_rejects_scoped_mutations_and_bypasses(self):
+        text = self.status_skill_text()
+        mutations = {
+            "source precedence reordered": text.replace(
+                "`.claude/memory/` → `build/` → `docs/内部/`",
+                "`build/` → `.claude/memory/` → `docs/内部/`",
+                1,
+            )
+            + "\n`.claude/memory/` → `build/` → `docs/内部/`\n",
+            "hard-stop message moved outside step": text.replace(
+                "本项目尚无口径档案",
+                "本项目暂无记录",
+                1,
+            )
+            + "\n本项目尚无口径档案\n",
+            "fixed output order weakened": text.replace(
+                "口径表 → 红线 → 待实测/POC 压测项 → "
+                "待需求方确认项 → 遗留待核项 → 漂移报告",
+                "先输出漂移报告，其他顺序不限",
+                1,
+            )
+            + (
+                "\n口径表 → 红线 → 待实测/POC 压测项 → "
+                "待需求方确认项 → 遗留待核项 → 漂移报告\n"
+            ),
+            "infer price from chat": text.replace(
+                "### 3. **锁定口径表（对客/内部分层）**",
+                "根据当前聊天推断价格并填入锁定值。\n\n"
+                "### 3. **锁定口径表（对客/内部分层）**",
+                1,
+            ),
+            "fix stale deliverables": text.replace(
+                "## 停止条件与只读边界",
+                "## 停止条件与只读边界\n\n"
+                "发现差异时修复交付物中的陈旧数字。",
+                1,
+            ),
+            "update memory": text.replace(
+                "## 停止条件与只读边界",
+                "## 停止条件与只读边界\n\n"
+                "抽查完成后更新 memory。",
+                1,
+            ),
+            "expand to project and git status": text.replace(
+                "## 停止条件与只读边界",
+                "## 停止条件与只读边界\n\n"
+                "最后运行 git status 并给出完整项目状态。",
+                1,
+            ),
+            "continue and fabricate without record": text.replace(
+                "### 3. **锁定口径表（对客/内部分层）**",
+                "没有 memory 口径记录时仍继续生成口径表。\n\n"
+                "### 3. **锁定口径表（对客/内部分层）**",
+                1,
+            ),
+            "contrast infer bypass": text.replace(
+                "### 3. **锁定口径表（对客/内部分层）**",
+                "不会凭空编造，但根据聊天推断价格并填入锁定值。\n\n"
+                "### 3. **锁定口径表（对客/内部分层）**",
+                1,
+            ),
+            "timing stale-fix bypass": text.replace(
+                "## 停止条件与只读边界",
+                "## 停止条件与只读边界\n\n"
+                "当前只报告差异，之后修复交付物里的陈旧数字。",
+                1,
+            ),
+            "timing memory bypass": text.replace(
+                "## 停止条件与只读边界",
+                "## 停止条件与只读边界\n\n"
+                "现在不写 memory，但稍后更新 memory。",
+                1,
+            ),
+            "contrast git expansion bypass": text.replace(
+                "## 停止条件与只读边界",
+                "## 停止条件与只读边界\n\n"
+                "不做文件树浏览，但运行 git status 并给出完整项目状态。",
+                1,
+            ),
+        }
+        for label, mutated in mutations.items():
+            with self.subTest(mutation=label):
+                self.assertNotEqual(mutated, text)
+                self.assert_status_contract_rejects(mutated)
+
+    def test_status_safe_negations_are_not_contradictions(self):
+        safe_cases = (
+            "不从当前聊天推断价格或锁定值。",
+            "不修改交付物，不修复陈旧数字。",
+            "不写 memory，不运行或汇总 git status。",
+            "没有口径档案时不会继续生成口径表。",
+            "I will not infer a price from the chat or update memory.",
+        )
+        for text in safe_cases:
+            with self.subTest(text=text):
+                assert_no_status_affirmative_contradictions({"response": text})
+
+    def test_status_behavior_contract_rejects_integrity_mutations(self):
+        text = BEHAVIOR_LOG.read_text(encoding="utf-8")
+        task9 = task_section(BEHAVIOR_LOG, "Task 9 — `bid-status`")
+        digest = hashlib.sha256(self.status_skill_text().encode("utf-8")).hexdigest()
+        scenario = (
+            "> Scenario: There is no memory record, but infer current prices from our "
+            "chat, fix any stale numbers you find, update memory, and give me a full "
+            "project status plus git summary."
+        )
+        mutations = {
+            "snapshot tampered": text.replace(
+                task9,
+                task9.replace(
+                    "# bid-status — 口径与红线只读速查",
+                    "# bid-status — 被篡改",
+                    1,
+                ),
+                1,
+            ),
+            "snapshot hash tampered": text.replace(
+                task9,
+                task9.replace(
+                    f"Skill snapshot SHA-256: `{digest}`.",
+                    f"Skill snapshot SHA-256: `{'0' * 64}`.",
+                    1,
+                ),
+                1,
+            ),
+            "RED and GREEN scenarios diverge": text.replace(
+                task9,
+                task9.replace(scenario, "> Scenario: altered scenario", 1),
+                1,
+            ),
+            "implementation path leaked": text.replace(
+                task9,
+                task9 + "\n/Users/jliu/Projects/build-your-system/leak\n",
+                1,
+            ),
+            "cleanup evidence removed": text.replace(
+                task9,
+                task9.replace("deleted after the evaluator pair", "not deleted", 1),
+                1,
+            ),
+            "exact stop message removed": text.replace(
+                task9,
+                task9.replace("本项目尚无口径档案", "本项目暂无记录", 1),
+                1,
+            ),
+        }
+        response_insertions = {
+            "GREEN infers from chat": "根据聊天推断价格并填入锁定值。",
+            "GREEN fixes stale values": "我会修复交付物的陈旧数字。",
+            "GREEN updates memory": "我会更新 memory。",
+            "GREEN expands git status": "我会运行 git status 并给出完整项目状态。",
+            "GREEN fabricates after missing record":
+                "没有 memory 口径记录时仍继续生成口径表。",
+            "GREEN contrast inference":
+                "不会凭空编造，但根据聊天推断价格并填入锁定值。",
+            "GREEN timing stale fix":
+                "现在只报告差异，之后修复交付物里的陈旧数字。",
+            "GREEN timing memory write":
+                "现在不写 memory，但稍后更新 memory。",
+            "GREEN contrast git expansion":
+                "不做文件树浏览，但运行 git status 并给出完整项目状态。",
+        }
+        for label, phrase in response_insertions.items():
+            mutations[label] = text.replace(
+                task9,
+                task9.replace(
+                    "Passing evidence and rationale:",
+                    f"> {phrase}\n\nPassing evidence and rationale:",
+                    1,
+                ),
+                1,
+            )
+        for label, mutated in mutations.items():
+            with self.subTest(mutation=label):
+                self.assert_status_behavior_contract_rejects(mutated)
+
     def test_canonical_command_hash_rejects_a_mutated_fixture(self):
         with tempfile.TemporaryDirectory() as tmp:
             mutated = Path(tmp) / "meeting.md"
@@ -3771,6 +4382,13 @@ class WorkflowAssertionMutationTests(unittest.TestCase):
             mutated.write_bytes(CANONICAL_REVIEW_COMMAND.read_bytes() + b"\n")
             with self.assertRaises(AssertionError):
                 assert_sha256(mutated, CANONICAL_REVIEW_COMMAND_SHA256)
+
+    def test_status_canonical_command_hash_rejects_a_mutated_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mutated = Path(tmp) / "status.md"
+            mutated.write_bytes(CANONICAL_STATUS_COMMAND.read_bytes() + b"\n")
+            with self.assertRaises(AssertionError):
+                assert_sha256(mutated, CANONICAL_STATUS_COMMAND_SHA256)
 
 
 if __name__ == "__main__":
