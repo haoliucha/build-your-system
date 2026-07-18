@@ -36,7 +36,6 @@ Status: Approved for specification review
 
 ```text
 build-your-system/
-├── .agents/plugins/marketplace.json
 └── bid/
     ├── .claude-plugin/plugin.json
     ├── .codex-plugin/plugin.json
@@ -47,6 +46,8 @@ build-your-system/
     ├── README.md
     └── CHANGELOG.md
 ```
+
+仓库内已有 `.agents/plugins/marketplace.json` 不属于本次安装路径，本次不修改。当前 Codex 安装只使用用户级 personal marketplace：`~/.agents/plugins/marketplace.json`。
 
 不采用独立 Codex target 的原因：
 
@@ -101,7 +102,13 @@ build-your-system/
 
 ## 5. Host Adaptation
 
-新增共享宿主适配 reference，集中描述差异：
+新增且只新增一份共享宿主适配 reference：
+
+```text
+bid/skills/bid-playbook/references/host-adaptation.md
+```
+
+所有 workflow skills 与需要宿主映射的专项 skills 都引用这一个文件，不复制映射表。该文件集中描述差异：
 
 | 意图 | Claude Code | Codex |
 |---|---|---|
@@ -113,6 +120,21 @@ build-your-system/
 | 用户输入 | Claude 原生交互 | Codex 原生交互 |
 
 共享 skills 描述“动作与约束”，宿主 reference 描述“用哪个工具完成”。宿主专属工具名不得散落成未解释的强依赖。
+
+### 5.1 Bundled Resource Resolution
+
+共享 skill 不使用 `${CLAUDE_PLUGIN_ROOT}`、`${CODEX_PLUGIN_ROOT}` 或其他宿主环境变量定位附带资源。
+
+所有 `references/` 与 `scripts/` 路径都相对“拥有该资源的 `SKILL.md` 所在目录”解析。例如：
+
+```text
+bid/skills/deai-writing/SKILL.md
+bid/skills/deai-writing/scripts/aiflavor-scan.cjs
+```
+
+`deai-writing` 中的扫描器路径写成 `scripts/aiflavor-scan.cjs`，执行者先定位已加载的 `deai-writing/SKILL.md`，再拼出同目录脚本的绝对路径后执行。引用文件中的相对路径同样回到所属 skill 根目录解析，而不是按当前工作目录解析。
+
+现有 `${CLAUDE_PLUGIN_ROOT}` 用法全部改为这个规则。验收扫描必须确认共享技能中不再依赖宿主专属 plugin-root 环境变量。
 
 ## 6. Project Memory Compatibility
 
@@ -141,6 +163,7 @@ Codex 不假设该目录会自动注入上下文；`bid-init`、`bid-meeting`、
 - `skills` 指向 `./skills/`。
 - 提供 Codex UI 所需的 interface metadata。
 - 不声明不存在的 apps、MCP 或 hooks。
+- 本次首次 Codex 版本固定为 `0.1.0`，与当前 Claude manifest 的基础版本一致。
 
 本机安装流程：
 
@@ -149,7 +172,24 @@ Codex 不假设该目录会自动注入上下文；`bid-init`、`bid-meeting`、
 3. 运行 `codex plugin add bid@local-build-your-system`。
 4. 用新 Codex task 验证技能索引刷新。
 
-`scripts/install-codex-local.sh` 必须幂等，并保留 marketplace 中所有无关条目。若同名路径或条目指向其他来源，脚本停止并报告，不覆盖未知目标。
+`scripts/install-codex-local.sh` 是首次安装与相同版本重复注册入口。它必须幂等，并保留 personal marketplace 中所有无关条目：
+
+- `~/plugins/bid` 不存在时才创建 symlink。
+- symlink 已指向当前 `bid/` 时视为成功。
+- 同名路径不是 symlink，或指向其他位置时停止。
+- personal marketplace 没有 `bid` 时追加；已有完全相同条目时保持不变；同名条目来源不同时停止。
+- 缓存的创建、替换与启用只交给 `codex plugin add`，安装脚本不直接删除或 rsync `~/.codex/plugins/cache/`。
+
+### 7.1 Local Update Contract
+
+首次安装后，源码有实质修改时采用 Codex local-plugin cachebuster 流程：
+
+1. 用 `plugin-creator/scripts/update_plugin_cachebuster.py` 更新 `bid/.codex-plugin/plugin.json`，得到 `<base>+codex.local-<timestamp>`。
+2. 再运行 `codex plugin add bid@local-build-your-system`。
+3. 由 Codex CLI 创建新版本缓存；旧缓存不由插件脚本删除。
+4. 新开 Codex task 验证更新后的 skill 索引。
+
+基础版本始终保留 `0.1.0`，cachebuster 只替换 `+codex.*` 后缀。README 必须分别说明“首次安装”和“本地更新”，不能把重复执行旧版本安装脚本描述成刷新已修改源码。
 
 ## 8. Runtime Flow
 
@@ -194,12 +234,20 @@ flowchart LR
 
 新增测试验证：
 
-- Claude 与 Codex manifest 名称、版本和共享 skills 路径一致。
+- Claude 与 Codex manifest 名称、基础版本和共享 skills 路径一致；Codex 允许附加 `+codex.<cachebuster>` build metadata。
 - 16 个 skill 目录完整，frontmatter 可解析且无非法字段。
 - 6 个 Claude commands 分别路由到正确 workflow skill。
 - 所有 workflow skill 都包含关键护栏与专项 skill 依赖。
 - 未映射的 Claude 专属语法扫描为零。
-- 四个附带计算/扫描脚本可执行其现有 self-test 或最小 smoke test。
+- 8 个附带脚本都执行适合其依赖边界的验证：
+  - `adversarial-review/scripts/check-residuals.sh`：内置 selftest。
+  - `bid-scheduling/scripts/level.cjs`：`--selftest`。
+  - `bid-costing/scripts/discount-check.cjs`：最小算术 smoke test。
+  - `deai-writing/scripts/aiflavor-scan.cjs`：最小文本 fixture smoke test。
+  - `bid-research/scripts/extract-frames.sh`：shell syntax/help 检查；有依赖时再跑媒体 fixture。
+  - `prototype-handoff/scripts/extract-frames.sh`：shell syntax/help 检查；有依赖时再跑媒体 fixture。
+  - `diagram-pdf-pipeline/scripts/add-outline.cjs`：Node syntax 检查；有 `playwright-core` 与 Chrome 时再跑 PDF smoke test。
+  - `single-source-sync/scripts/xlsx-dump.cjs`：Node syntax 检查；有 `exceljs` 时再跑 xlsx fixture。
 - 安装脚本在临时 HOME fixture 中可重复运行且不破坏其他 marketplace 条目。
 
 ### 10.3 Integration Checks
@@ -220,6 +268,7 @@ flowchart LR
 - 附带脚本依赖与 macOS 环境说明。
 - 项目 memory 仍位于 `.claude/memory/` 的兼容性说明。
 - 更新、卸载和“新 task 才会刷新技能索引”的说明。
+- 首次安装使用 `0.1.0`；本地更新使用 cachebuster + 重新 `codex plugin add`，不手工管理缓存目录。
 
 ## 12. Non-Goals
 
