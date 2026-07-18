@@ -16,6 +16,7 @@ DOMAIN_SKILLS = {
     "prototype-handoff",
     "single-source-sync",
 }
+WORKFLOW_SKILLS = {"bid-init"}
 
 SKILLS_ROOT = BID_ROOT / "skills"
 HOST_ADAPTATION = SKILLS_ROOT / "bid-playbook/references/host-adaptation.md"
@@ -85,9 +86,9 @@ class SharedSkillPortabilityTests(unittest.TestCase):
     def skill_markdown(self):
         return sorted(SKILLS_ROOT.glob("**/*.md"))
 
-    def test_all_domain_skills_exist(self):
+    def test_skill_inventory_is_exact(self):
         actual = {path.parent.name for path in SKILLS_ROOT.glob("*/SKILL.md")}
-        self.assertTrue(DOMAIN_SKILLS <= actual, DOMAIN_SKILLS - actual)
+        self.assertEqual(actual, DOMAIN_SKILLS | WORKFLOW_SKILLS)
 
     def test_skill_frontmatter_is_host_neutral(self):
         for skill in DOMAIN_SKILLS:
