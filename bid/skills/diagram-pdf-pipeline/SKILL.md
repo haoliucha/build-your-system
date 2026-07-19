@@ -1,7 +1,6 @@
 ---
 name: diagram-pdf-pipeline
-description: This skill should be used when producing diagrams for To-B bid/delivery documents and exporting them as Chinese-language PDFs — covers diagram toolchain selection (mermaid is banned with root cause), spec-driven single-source SVG/PNG generation, headless Chrome PDF export with CJK-first font stacks, inline 2x PNG embedding, bookmark/outline injection, and page-by-page visual acceptance. Triggers on phrases like "出架构图", "交付物配图", "画流程图/分层图", "导出 PDF", "PDF 中文丢字/标点错乱", "PDF 加书签大纲", "mermaid 中文丢失", "图表管线".
-version: 0.1.0
+description: Use when producing diagrams for To-B bid/delivery documents and exporting them as Chinese-language PDFs — covers diagram toolchain selection (mermaid is banned with root cause), spec-driven single-source SVG/PNG generation, headless Chrome PDF export with CJK-first font stacks, inline 2x PNG embedding, bookmark/outline injection, and page-by-page visual acceptance. Triggers on phrases like "出架构图", "交付物配图", "画流程图/分层图", "导出 PDF", "PDF 中文丢字/标点错乱", "PDF 加书签大纲", "mermaid 中文丢失", "图表管线".
 ---
 
 # diagram-pdf-pipeline — 交付物图表与中文 PDF 导出管线
@@ -12,7 +11,7 @@ To-B 投标/交付物的配图与中文 PDF 导出是强耦合的一条管线:CJ
 
 **锁方案前先全网对比调研,取优胜者。**
 - 反模式:直接 fork 自己熟悉的既有生成器铺开全量。某 To-B 投标项目中曾被叫停,要求重新调研;结论反直觉——风格层已达标,问题只在布局层。
-- 正确做法:列出外部候选与内部方案,逐项对比能力/风险/丢失项 → 取优胜者或 Hybrid → 先在最复杂的一张图上端到端试点(spec → 渲染 → 嵌入 → PDF 页),通过再批量。批量后仍逐张 Read 核验(曾抓出一张拓扑被画成串行链)。
+- 正确做法:列出外部候选与内部方案,逐项对比能力/风险/丢失项 → 取优胜者或 Hybrid → 先在最复杂的一张图上端到端试点(spec → 渲染 → 嵌入 → PDF 页),通过再批量。批量后仍逐张打开并检查(曾抓出一张拓扑被画成串行链)。
 
 **把图的质量拆成风格层与布局层两个独立问题。** 连线交叉/重叠是布局问题,换自动布局引擎(如 elkjs)即可根治,不必整体换工具丢掉已验证的 CJK/矢量/多页能力。流程图走自动布局;分层/分区图按 band 手摆(构造上零重叠)。
 
@@ -34,8 +33,10 @@ To-B 投标/交付物的配图与中文 PDF 导出是强耦合的一条管线:CJ
 
 **长文档 PDF 默认带书签大纲**(Chrome 打印引擎天然不写 outline),用本 skill 的导出脚本并固化进构建链:
 
+路径约定：先定位本 SKILL.md 所在目录，再从该目录解析 `scripts/...`；不要相对于进程 CWD 解析。
+
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/skills/diagram-pdf-pipeline/scripts/add-outline.cjs" <input.html> <output.pdf>
+node scripts/add-outline.cjs <input.html> <output.pdf>
 ```
 
 依赖 playwright-core + 本机 Chrome,`page.pdf({ outline: true, tagged: true })` 从 h1-h6 自动生成层级书签。若需为已有 PDF 按文本搜索注入书签:用只前进的有序游标,防目录同页与正文交叉引用错锚(短标题如「附录」最易撞)。

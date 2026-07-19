@@ -6,6 +6,8 @@
 
 macOS,`brew install ffmpeg imagemagick`(需 ImageMagick 7 的 `magick` 命令)。配套脚本:`scripts/extract-frames.sh`。
 
+这里的 `scripts/...` 相对于上级 prototype-handoff 的 SKILL.md 所在目录解析,不是相对于本 reference 文件或进程 CWD。
+
 ## 第 1 步:索素材,附拍摄清单
 
 向用户索要录屏时**随附拍摄清单**,一次录全,避免多轮补拍。清单模板(按需增删):
@@ -37,7 +39,7 @@ bash scripts/extract-frames.sh sheet frames/ sheets/
 1. 通读全部 sheet 建全局地图,记下关注帧的编号;
 2. 只对文字密集/关键界面帧回原图放大细读。
 
-直接逐帧 Read 上百张原图会烧穿上下文;sheet 先过滤能把细读量压到十几帧。
+直接逐帧读取上百张原图会烧穿上下文;sheet 先过滤能把细读量压到十几帧。
 
 ## 第 4 步:像素取样,校正视觉结论
 

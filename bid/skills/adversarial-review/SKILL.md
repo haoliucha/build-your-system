@@ -1,7 +1,6 @@
 ---
 name: adversarial-review
-description: This skill should be used when a To-B bid or client deliverable needs pre-delivery adversarial review — after positioning/wording rewrites, cross-file financial number cascades, multi-agent synthesis drafts, or regenerated visual artifacts (diagrams/PDF/slides). Orchestrates parallel independent review lenses (consistency, cross-document claim provenance, desensitization, overclaim, freshness, arithmetic balancing, page-by-page visual inspection), verifies the checkers themselves against injected known errors, and adjudicates findings before commit. Triggers on phrases like "对抗审校", "多透镜审校", "红队一下这份方案", "交付前审校", "数字级联校验", "脱敏检查", "审一下这份交付物", "adversarial review".
-version: 0.1.0
+description: Use when a To-B bid or client deliverable needs pre-delivery adversarial review — after positioning/wording rewrites, cross-file financial number cascades, multi-agent synthesis drafts, or regenerated visual artifacts (diagrams/PDF/slides). Orchestrates parallel independent review lenses (consistency, cross-document claim provenance, desensitization, overclaim, freshness, arithmetic balancing, page-by-page visual inspection), verifies the checkers themselves against injected known errors, and adjudicates findings before commit. Triggers on phrases like "对抗审校", "多透镜审校", "红队一下这份方案", "交付前审校", "数字级联校验", "脱敏检查", "审一下这份交付物", "adversarial review".
 ---
 
 # adversarial-review — 交付前对抗审校
@@ -53,6 +52,8 @@ version: 0.1.0
 
 ## 工作流实施(多 agent 编排)
 
+并行执行单元的宿主映射见 [宿主适配](../bid-playbook/references/host-adaptation.md)。
+
 1. **子代理简报四件套**:锁定不许改的基线常量、严格输出 schema、来源优先级(官方>一手实测>社区>代理商)、反编造纪律条款。结果质量由简报质量决定。
 2. **schema 属性键只用 ASCII**:中文键会被 API 以 400 拒绝(Property keys should match pattern),中文语义放 description/值里。
 3. **锚点样例先行**:批量生产同构产物时先手写少量锚点样例锁死全部约定(结构/命名/引用方式),再作模板喂并行 agent 按 author→verify 生产其余,最后统一集成跑真实验证。
@@ -65,10 +66,12 @@ version: 0.1.0
 
 残留词/敏感词清零校验(退出码可信、缺文件报错不算通过):
 
+路径约定：先定位本 SKILL.md 所在目录，再从该目录解析 `scripts/...`；不要相对于进程 CWD 解析。
+
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/skills/adversarial-review/scripts/check-residuals.sh" scan <词表.txt> <文件...>
+bash scripts/check-residuals.sh scan <词表.txt> <文件...>
 # 退出码: 0=清零 / 1=有命中(人工分类) / 2=检查本身报错(不算通过)
-bash "${CLAUDE_PLUGIN_ROOT}/skills/adversarial-review/scripts/check-residuals.sh" selftest
+bash scripts/check-residuals.sh selftest
 # 注入已知脏词反向验证检查器本身有效
 ```
 

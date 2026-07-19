@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # extract-frames.sh — 长录屏固定节奏抽帧 + 编号 contact sheet + 像素取样
 # 依赖: ffmpeg + ImageMagick 7 (magick/montage)。macOS: brew install ffmpeg imagemagick
+# macOS 下 montage 可能没有默认字体配置;可用 FONT=/path/to/font 显式覆盖。
 # 方法背景见 ../references/screencast-frame-sampling.md
 set -euo pipefail
 
@@ -29,15 +30,24 @@ case "$cmd" in
     while IFS= read -r f; do files+=("$f"); done < <(find "$framesdir" -name 'f*.jpg' | sort)
     total=${#files[@]}
     [ "$total" -gt 0 ] || { echo "错误: $framesdir 下没有 f*.jpg 帧" >&2; exit 1; }
+    font="${FONT:-}"
+    if [ -z "$font" ]; then
+      for candidate in "/System/Library/Fonts/Helvetica.ttc" \
+                       "/System/Library/Fonts/Supplemental/Arial.ttf" \
+                       "/System/Library/Fonts/PingFang.ttc"; do
+        if [ -f "$candidate" ]; then font="$candidate"; break; fi
+      done
+    fi
+    [ -n "$font" ] || { echo "找不到系统字体,请传 FONT=/path/to/font" >&2; exit 1; }
     sheet=1
     for ((i = 0; i < total; i += per_sheet)); do
       chunk=("${files[@]:i:per_sheet}")
-      montage -label '%f' "${chunk[@]}" -tile "${cols}x" -geometry '320x+4+4' \
+      montage -font "$font" -label '%f' "${chunk[@]}" -tile "${cols}x" -geometry '320x+4+4' \
         "$outdir/sheet-$(printf '%02d' "$sheet").png"
       sheet=$((sheet + 1))
     done
     echo "contact sheet 完成: $((sheet - 1)) 张 → $outdir"
-    echo "阅读纪律: 先通读 sheet 定位关注帧编号,再回原帧放大细读(勿逐帧 Read 全部原图)"
+    echo "阅读纪律: 先通读 sheet 定位关注帧编号,再回原帧放大细读(勿逐帧打开全部原图)"
     ;;
 
   pixel)

@@ -57,8 +57,8 @@
     {
       "name": "x",
       "source": "./x",
-      "description": "X (Twitter) 增长工具集 - 精准批量关注(x-follow)+ 关注卫生取关未回关(x-unfollow)+ 文章封面一键生成(cover:codex/gpt-image-2 直出 2.5:1 含中文整张 + 门禁 + QC)。参数化筛选 + 4 层 anti-风控。基于真实 campaign 与封面流水线实战提炼。",
-      "version": "1.0.2",
+      "description": "X (Twitter) 工具集：x-follow、x-unfollow，以及 x-image `/x:image` 封面和 article illustrations。图片任务经 Codex Rescue 交给原生 Codex，以 one-call ImageGen 完整生成且无后处理。",
+      "version": "2.0.0",
       "category": "productivity",
       "homepage": "https://github.com/haoliucha/build-your-system/tree/main/x"
     }

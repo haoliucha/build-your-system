@@ -1,0 +1,28 @@
+{
+  "name": "bid",
+  "version": "0.1.0",
+  "description": "To-B bid and client-deliverable workflows for evidence, costing, scheduling, review, synchronization, and handoff.",
+  "author": {
+    "name": "haoliucha",
+    "url": "https://github.com/haoliucha"
+  },
+  "homepage": "https://github.com/haoliucha/build-your-system/tree/main/bid",
+  "repository": "https://github.com/haoliucha/build-your-system",
+  "license": "MIT",
+  "keywords": ["bid", "presales", "costing", "scheduling", "deliverables", "review"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Bid",
+    "shortDescription": "To-B bid and client-deliverable workflows",
+    "longDescription": "Plan and run To-B bid and delivery projects with shared-source documents, defensible costing and schedules, evidence-backed research, adversarial review, and controlled handoff workflows.",
+    "developerName": "haoliucha",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "defaultPrompt": [
+      "初始化一个新的 To-B 投标项目",
+      "检查这套交付物的锁定口径和红线",
+      "对这份投标方案做交付前审校"
+    ],
+    "brandColor": "#9A3412"
+  }
+}

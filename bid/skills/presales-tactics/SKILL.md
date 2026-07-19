@@ -1,7 +1,6 @@
 ---
 name: presales-tactics
-description: This skill should be used when drafting or reviewing To-B presales pricing and negotiation materials — sizing question lists, tiered quote anchors, concession fallback plans, negotiation red lines, three-layer price framing, or trust-building talk tracks for bid projects. Covers volume-based anchoring (scale × frequency × headcount, same requirement can differ 10-50x), three-tier coherence, cut-scope-not-magnitude concessions, and compliance/data-custody terms that never enter bargaining. Triggers on phrases like "报价怎么定", "报价分档", "三档报价", "砍价预案", "降价策略", "谈判红线", "摸底清单", "售前话术", "报价口径", "第0期", "presales pricing", "quote tiers".
-version: 0.1.0
+description: Use when drafting or reviewing To-B presales pricing and negotiation materials — sizing question lists, tiered quote anchors, concession fallback plans, negotiation red lines, three-layer price framing, or trust-building talk tracks for bid projects. Covers volume-based anchoring (scale × frequency × headcount, same requirement can differ 10-50x), three-tier coherence, cut-scope-not-magnitude concessions, and compliance/data-custody terms that never enter bargaining. Triggers on phrases like "报价怎么定", "报价分档", "三档报价", "砍价预案", "降价策略", "谈判红线", "摸底清单", "售前话术", "报价口径", "第0期", "presales pricing", "quote tiers".
 ---
 
 # presales-tactics — To-B 报价与谈判的结构设计

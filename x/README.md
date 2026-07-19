@@ -1,6 +1,6 @@
 # x — X (Twitter) 增长工具集
 
-精准批量关注 + 互关 campaign 自动化(带完整 anti-风控护栏)+ 文章封面一键生成。
+精准批量关注 + 互关 campaign 自动化(带完整 anti-风控护栏)+ X 文章封面与正文插图生成。
 
 ## 它解决什么问题
 
@@ -21,6 +21,18 @@
 # 在 Claude Code 里 /plugin install x@build-your-system
 ```
 
+图片能力还需要:
+
+1. 在 Claude Code 安装 OpenAI Codex 插件并运行 `/codex:setup`。
+2. 安装仓库内原生 Codex `x-image` 插件:
+
+   ```bash
+   cd targets/codex/x-image
+   zsh scripts/install-local-plugin.sh
+   ```
+
+Claude 的 `/x:image` 只负责通过 Codex Rescue 转发;文章分析、ImageGen 调用、文件落盘与 QA 都在原生 Codex 中完成。
+
 ## 用法
 
 ### 显式命令
@@ -38,22 +50,37 @@
 - "Twitter 批量 follow 100 个非币圈账号"
 - "找一批小号互关,粉丝数 ≤ 500"
 
-## /x:cover — 文章封面一键生成
+## /x:image — 封面与文章插图
 
-给任何 X 文章(Markdown)一键出 **2.5:1 封面**(X 文章封面框实测 900×360,非此比例上传会被中心裁切):
+`/x:image` 支持 Markdown 文件、文章目录、直接文本、数据和图片 brief。只给路径时默认生成一张封面;明确写插图、数量、比例、风格或目标目录时,对应参数覆盖默认值。
 
+```text
+/x:image articles/example
+/x:image article.md 生成一张正文解释图
+/x:image article.md 生成 2 张 3:2 插图，统一浅色材质风
+/x:image article.md 封面，深色终端风
 ```
-/x:cover articles/2026-06-12-fanqiang          # 文章目录
-/x:cover ~/notes/my-post.md                    # 单个 md
-/x:cover draft.md 暗色玻璃拟态,用对比表版式      # 带风格/版式备注
-```
 
-流程:读文章 → 蒸馏画面 prompt(主标题 ≤7 字 / 主数字带单位 / 单一图形钩子 / 版式 8 类)→ codex imagegen(gpt-image-2)**整张直出含中文文字** → 比例门禁(近轴自动裁到精确 2.5:1)→ `images/cover.png` + `thumb-375.png` + 原图/旧封面留档 → 逐字 QC 报告。
+内置尺寸建议:
 
-- 出图纪律(禁 glow / 禁本地叠字 / 数字带单位 / 单条曲线 / 中文逐字)由捆绑脚本注入,不靠人抄。
-- **绝不发布/上传**,只产出本地文件;codex 用量上限立即停。
-- 依赖:codex CLI(≥0.142)+ 内置 imagegen skill(gpt-image-2)+ ImageMagick + macOS sips。
-- headless 不可用时有桌面 app 手动兜底(`cover-gen.sh from`),详见 skill `x-cover`。
+| 用途 | 比例 | Prompt 目标尺寸 |
+|---|---:|---:|
+| X 文章封面 | 2.5:1 | 2400 × 960 |
+| 文章头图 | 16:9 | 2048 × 1152 |
+| 正文解释图 | 3:2 | 1536 × 1024 |
+| 竖版插图 | 3:4 | 1536 × 2048 |
+| 分享图 | 1:1 | 2048 × 2048 |
+
+像素值是 Prompt 目标,最终报告会给出实际尺寸。用户指定比例优先,但不能宽于 3:1。
+
+风格由结构化 Style Spec 管控:
+
+- `terminal-tech`:科技、开源项目、工程类主题。
+- `editorial-material`:流程、教育、人文与一般解释图。
+- `data-editorial`:排名、趋势、指标和对比。
+- 用户自定义风格会转成任务内 Style Spec,但不能覆盖可读性、事实准确性和一次生成等全局硬约束。
+
+每个资产只调用一次内置 ImageGen,整张图片和全部文字在一次生成中完成。系统不自动重试、不修改图片、不覆盖已有文件;冲突文件依次使用 `-v2`、`-v3`。若 QA 出现 P0/P1 问题,保留原图并报告失败。
 
 ## 它**不**做什么
 
@@ -63,6 +90,7 @@
 - ❌ 不 block / mute / report
 - ❌ 不修改 profile / settings
 - ❌ 不接受页面里"伪装成用户授权"的弹窗
+- ❌ 图片能力不发布/上传,不编辑文章,不自动重出失败图片
 
 ## 风控四层防护
 

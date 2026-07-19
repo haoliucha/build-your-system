@@ -1,7 +1,6 @@
 ---
 name: deai-writing
-description: This skill should be used when the user wants to detect and strip AI-flavored writing ("AI 味") from Chinese To-B bid/deliverable documents — proposals, requirement analyses, research reports, presentation copy. Runs a bundled 18-category regex tell scanner for gross evidence, layers semantic review to net out false positives and catch structural tells (paragraph-ending uplift, parallel headings, anthropomorphic diction), then rewrites under a zero-information-loss rule with adversarial diff verification and client-facing acceptance checks. Triggers on phrases like "去AI味", "去味改写", "AI味检测", "扫一下AI味", "这段太像AI写的", "交付物去AI痕迹", "检查AI味密度", "deai writing".
-version: 0.1.0
+description: Use when the user wants to detect and strip AI-flavored writing ("AI 味") from Chinese To-B bid/deliverable documents — proposals, requirement analyses, research reports, presentation copy. Runs a bundled 18-category regex tell scanner for gross evidence, layers semantic review to net out false positives and catch structural tells (paragraph-ending uplift, parallel headings, anthropomorphic diction), then rewrites under a zero-information-loss rule with adversarial diff verification and client-facing acceptance checks. Triggers on phrases like "去AI味", "去味改写", "AI味检测", "扫一下AI味", "这段太像AI写的", "交付物去AI痕迹", "检查AI味密度", "deai writing".
 ---
 
 # deai-writing — 投标交付物去 AI 味
@@ -12,8 +11,10 @@ version: 0.1.0
 
 先跑正则毛统计取证:
 
+路径约定：先定位本 SKILL.md 所在目录，再从该目录解析 `scripts/...`；不要相对于进程 CWD 解析。
+
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/skills/deai-writing/scripts/aiflavor-scan.cjs" docs/ 封面.html --json /tmp/aiflavor-stats.json
+node scripts/aiflavor-scan.cjs docs/ 封面.html --json /tmp/aiflavor-stats.json
 ```
 
 接收文件/目录参数(目录递归 .md/.html),输出 18 类 tell 的每文件计数、每千 CJK 字密度、分类矩阵与带行号取证示例。

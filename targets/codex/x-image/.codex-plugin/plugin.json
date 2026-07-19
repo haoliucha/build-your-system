@@ -1,0 +1,27 @@
+{
+  "name": "x-image",
+  "version": "0.1.0",
+  "description": "Generate complete X article covers and article illustrations with one built-in ImageGen call per asset.",
+  "author": {
+    "name": "J. Liu"
+  },
+  "skills": "./skills",
+  "interface": {
+    "displayName": "X Image",
+    "shortDescription": "One-call covers and article illustrations",
+    "longDescription": "Generate complete X article covers, article heroes, explainers, data visuals, and vertical illustrations. Codex selects ratio, style, and layout, then calls built-in ImageGen exactly once per asset with no image post-processing.",
+    "developerName": "J. Liu",
+    "category": "Productivity",
+    "capabilities": [
+      "Skills",
+      "Image generation",
+      "Article workflow"
+    ],
+    "defaultPrompt": [
+      "给这篇 X 文章生成一张封面",
+      "为这篇文章生成一张正文解释图",
+      "Create two consistent article illustrations from this Markdown file"
+    ],
+    "brandColor": "#1DA1F2"
+  }
+}

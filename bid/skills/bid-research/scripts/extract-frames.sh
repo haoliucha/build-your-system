@@ -62,5 +62,5 @@ magick montage "$OUTDIR/frames/"f*.png \
 S=$(find "$OUTDIR/sheets" -name 'sheet_*.png' | wc -l | tr -d ' ')
 echo "完成: $N 帧 / $S 张 sheet → $OUTDIR"
 echo ""
-echo "下一步(必做): 先 Read 第一张 sheet 自检——帧号标签是否渲染、缩略图能否辨认界面;"
-echo "确认可读后再批量读全部 sheet;关键画面回读 frames/fNNNN.png 全分辨率原帧。"
+echo "下一步(必做): 先打开第一张 sheet 自检——帧号标签是否渲染、缩略图能否辨认界面;"
+echo "确认可读后再批量检查全部 sheet;关键画面回看 frames/fNNNN.png 全分辨率原帧。"

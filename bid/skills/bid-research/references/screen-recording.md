@@ -12,14 +12,16 @@
 
 ## 标准流程
 
+这里的 `scripts/...` 相对于上级 bid-research 的 SKILL.md 所在目录解析,不是相对于本 reference 文件或进程 CWD。
+
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/skills/bid-research/scripts/extract-frames.sh" <录屏.mp4> <输出目录> [fps] [cols]
+bash scripts/extract-frames.sh <录屏.mp4> <输出目录> [fps] [cols]
 ```
 
 产物:`frames/f0001.png ...`(全分辨率原帧)+ `sheets/sheet_00.png ...`(带帧号标签的 contact sheet)。
 
-1. **自检(必做,不可跳)**:Read 第一张 sheet,确认两件事——帧号标签渲染出来了、缩略图分辨率足以辨认界面。任何一项不满足,先修再批量读。
-2. 批量 Read 全部 sheets,建立**分镜表**:帧号区间 → 场景名(如 `f0001–f0012 启动与权限弹窗`)。
+1. **自检(必做,不可跳)**:打开并检查第一张 sheet,确认两件事——帧号标签渲染出来了、缩略图分辨率足以辨认界面。任何一项不满足,先修再批量读取。
+2. 批量读取全部 sheets,建立**分镜表**:帧号区间 → 场景名(如 `f0001–f0012 启动与权限弹窗`)。
 3. 关键场景回读 `frames/fNNNN.png` 全分辨率原帧,锁定精确文案(按钮字样、弹窗全文、价格数字)。
 4. 写拆解,每条结论带帧号引用,格式建议 `f0083 ≈ 82s`(fps=F 时 fNNNN 的 N 对应约 (N-1)/F 秒)。
 
