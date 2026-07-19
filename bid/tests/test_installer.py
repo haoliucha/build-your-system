@@ -345,6 +345,25 @@ raise SystemExit(returncode)
             lifecycle = lifecycle_module.LocalLifecycle(bid_root)
         return lifecycle_module, lifecycle
 
+    def lifecycle_assignment_line(self, function_name, target_name):
+        tree = ast.parse(LIFECYCLE.read_text(encoding="utf-8"))
+        function = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "LocalLifecycle"
+            for node in node.body
+            if isinstance(node, ast.FunctionDef) and node.name == function_name
+        )
+        return next(
+            node.lineno
+            for node in ast.walk(function)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == target_name
+                for target in node.targets
+            )
+        )
+
     def make_source_tree(self):
         source = self.home / "source-checkout/bid"
         (source / ".codex-plugin").mkdir(parents=True)
@@ -423,9 +442,9 @@ raise SystemExit(returncode)
                     self.fail(f"timed out waiting for blocked codex {action}")
                 if ready_file.exists():
                     try:
-                        child_pid = json.loads(
-                            ready_file.read_text(encoding="utf-8")
-                        )["pid"]
+                        child_pid = json.loads(ready_file.read_text(encoding="utf-8"))[
+                            "pid"
+                        ]
                     except (json.JSONDecodeError, KeyError):
                         pass
                 time.sleep(0.01)
@@ -479,9 +498,9 @@ raise SystemExit(returncode)
                     self.fail(f"timed out waiting for blocked codex {action}")
                 if ready_file.exists():
                     try:
-                        child_pid = json.loads(
-                            ready_file.read_text(encoding="utf-8")
-                        )["pid"]
+                        child_pid = json.loads(ready_file.read_text(encoding="utf-8"))[
+                            "pid"
+                        ]
                     except (json.JSONDecodeError, KeyError):
                         pass
                 time.sleep(0.01)
@@ -529,9 +548,7 @@ raise SystemExit(returncode)
         return self.codex_log.read_text(encoding="utf-8").splitlines()
 
     def codex_calls(self):
-        return [
-            call for call in self.all_codex_calls() if call != "plugin list --json"
-        ]
+        return [call for call in self.all_codex_calls() if call != "plugin list --json"]
 
     def set_codex_installed(self, installed):
         self.codex_installed_state.write_text(
@@ -841,6 +858,41 @@ raise SystemExit(returncode)
         self.assertFalse(self.source_root.is_symlink())
         self.assertEqual(self.codex_calls(), [])
 
+    def test_sigterm_at_install_prestate_transition_rolls_back_local_state(self):
+        lifecycle_module, lifecycle = self.new_lifecycle()
+        self.set_codex_installed(False)
+        transition_line = self.lifecycle_assignment_line(
+            "install", "active_source_snapshot"
+        )
+
+        def terminate_at_transition(frame, event, _arg):
+            if (
+                event == "line"
+                and frame.f_code is lifecycle.install.__code__
+                and frame.f_lineno == transition_line
+            ):
+                sys.settrace(None)
+                os.kill(os.getpid(), signal.SIGTERM)
+            return terminate_at_transition
+
+        def raise_parent_termination(_signum, _frame):
+            raise lifecycle_module.ParentTermination
+
+        previous_sigterm = signal.signal(signal.SIGTERM, raise_parent_termination)
+        try:
+            with mock.patch.dict(os.environ, self.env, clear=False):
+                sys.settrace(terminate_at_transition)
+                with self.assertRaises(lifecycle_module.ParentTermination):
+                    lifecycle.install()
+        finally:
+            sys.settrace(None)
+            signal.signal(signal.SIGTERM, previous_sigterm)
+
+        self.assertFalse(self.marketplace_file.exists())
+        self.assertFalse(self.source_root.exists())
+        self.assertFalse(self.codex_is_installed())
+        self.assertEqual(self.codex_calls(), [])
+
     def test_sigint_during_popen_construction_reaps_the_created_child(self):
         lifecycle_module = self.load_lifecycle_module()
         original_popen = lifecycle_module.subprocess.Popen
@@ -1051,6 +1103,48 @@ raise SystemExit(returncode)
         self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
         self.assertEqual(self.source_root.lstat().st_ino, source_inode)
 
+    def test_sigterm_at_uninstall_cleanup_transition_restores_codex_state(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        original_bytes = self.marketplace_file.read_bytes()
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        source_inode = self.source_root.lstat().st_ino
+        self.set_codex_installed(True)
+        lifecycle_module, lifecycle = self.new_lifecycle()
+        transition_line = self.lifecycle_assignment_line("uninstall", "codex_removed")
+
+        def terminate_at_transition(frame, event, _arg):
+            if (
+                event == "line"
+                and frame.f_code is lifecycle.uninstall.__code__
+                and frame.f_lineno == transition_line
+            ):
+                sys.settrace(None)
+                os.kill(os.getpid(), signal.SIGTERM)
+            return terminate_at_transition
+
+        def raise_parent_termination(_signum, _frame):
+            raise lifecycle_module.ParentTermination
+
+        previous_sigterm = signal.signal(signal.SIGTERM, raise_parent_termination)
+        try:
+            with mock.patch.dict(os.environ, self.env, clear=False):
+                sys.settrace(terminate_at_transition)
+                with self.assertRaises(lifecycle_module.ParentTermination):
+                    lifecycle.uninstall()
+        finally:
+            sys.settrace(None)
+            signal.signal(signal.SIGTERM, previous_sigterm)
+
+        self.assertTrue(self.codex_is_installed())
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(self.source_root.lstat().st_ino, source_inode)
+
     def test_add_commit_then_nonzero_restores_preoperation_installed_state(self):
         self.set_codex_installed(False)
         self.env["CODEX_ADD_EXIT"] = "23"
@@ -1184,12 +1278,9 @@ raise SystemExit(returncode)
         self.source_root.symlink_to(source)
         self.set_codex_installed(True)
         lifecycle_module, lifecycle = self.new_lifecycle(source)
-        original_unlink = lifecycle_module.Path.unlink
 
-        def fail_source_unlink(path, *args, **kwargs):
-            if path == lifecycle.source_root:
-                raise OSError("forced source removal failure")
-            return original_unlink(path, *args, **kwargs)
+        def fail_source_removal(_expected_snapshot):
+            raise OSError("forced source removal failure")
 
         direct_env = {
             **self.env,
@@ -1199,7 +1290,7 @@ raise SystemExit(returncode)
         stderr = io.StringIO()
         with mock.patch.dict(os.environ, direct_env, clear=False):
             with mock.patch.object(
-                lifecycle_module.Path, "unlink", fail_source_unlink
+                lifecycle, "remove_owned_source", fail_source_removal
             ):
                 with redirect_stderr(stderr):
                     result = lifecycle.uninstall()
@@ -1216,9 +1307,7 @@ raise SystemExit(returncode)
         lifecycle_module, lifecycle = self.new_lifecycle(source)
         lifecycle.SOURCE_TREE_MAX_ENTRIES = 2
 
-        with self.assertRaisesRegex(
-            lifecycle_module.ConflictError, "entry limit"
-        ):
+        with self.assertRaisesRegex(lifecycle_module.ConflictError, "entry limit"):
             lifecycle.capture_source_tree_snapshot()
 
     def test_source_content_byte_limit_fails_closed_with_diagnostic(self):
@@ -1330,7 +1419,7 @@ raise SystemExit(returncode)
             b'{"name":"local-build-your-system","custom":{"keep":true},'
             b'"plugins":['
             + json.dumps(first_plugin, separators=(",", ":")).encode("utf-8")
-            + b']}\n'
+            + b"]}\n"
         )
         self.marketplace_file.parent.mkdir(parents=True)
         self.marketplace_file.write_bytes(original_bytes)
@@ -1376,6 +1465,310 @@ raise SystemExit(returncode)
         self.assertFalse(self.source_root.exists())
         self.assertFalse(self.source_root.is_symlink())
         self.assertEqual(self.codex_calls(), ["plugin add bid@local-build-your-system"])
+
+    def test_marketplace_install_never_overwrites_final_check_interloper(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "custom": {"before": True},
+            "plugins": [],
+        }
+        self.write_marketplace(existing)
+        lifecycle_module, lifecycle = self.new_lifecycle()
+        self.set_codex_installed(False)
+        original_replace = lifecycle_module.os.replace
+        original_link = lifecycle_module.os.link
+        interloper = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Concurrent"},
+            "custom": {"must_survive": True},
+            "plugins": [],
+        }
+        interloper_bytes = lifecycle.encoded_marketplace(interloper)
+        injected = False
+
+        def place_interloper(destination):
+            nonlocal injected
+            if injected or Path(destination) != lifecycle.marketplace_file:
+                return
+            injected = True
+            temp = lifecycle.marketplace_file.with_name("interloper.json")
+            temp.write_bytes(interloper_bytes)
+            if lifecycle.marketplace_file.exists():
+                original_replace(temp, lifecycle.marketplace_file)
+            else:
+                original_link(temp, lifecycle.marketplace_file)
+                temp.unlink()
+
+        def replace_after_interloper(source, destination, *args, **kwargs):
+            place_interloper(destination)
+            return original_replace(source, destination, *args, **kwargs)
+
+        def link_after_interloper(source, destination, *args, **kwargs):
+            place_interloper(destination)
+            return original_link(source, destination, *args, **kwargs)
+
+        with mock.patch.dict(os.environ, self.env, clear=False):
+            with (
+                mock.patch.object(
+                    lifecycle_module.os, "replace", replace_after_interloper
+                ),
+                mock.patch.object(lifecycle_module.os, "link", link_after_interloper),
+            ):
+                with self.assertRaises(lifecycle_module.ConcurrentModificationError):
+                    lifecycle.install()
+
+        self.assertTrue(injected)
+        self.assertEqual(self.marketplace_file.read_bytes(), interloper_bytes)
+        self.assertFalse(self.source_root.exists())
+        self.assertFalse(self.codex_is_installed())
+
+    def test_absent_marketplace_rollback_never_unlinks_interloper(self):
+        lifecycle_module, lifecycle = self.new_lifecycle()
+        original_state = lifecycle.load_marketplace()
+        written_snapshot = lifecycle.write_marketplace(
+            lifecycle.default_marketplace(), None, original_state.original_snapshot
+        )
+        interloper_bytes = b'{"concurrent":{"must_survive":true}}\n'
+        original_require = lifecycle.require_marketplace_snapshot
+        injected = False
+
+        def replace_after_final_check(expected_snapshot):
+            nonlocal injected
+            original_require(expected_snapshot)
+            if not injected:
+                injected = True
+                temp = self.home / "rollback-interloper.json"
+                temp.write_bytes(interloper_bytes)
+                lifecycle_module.os.replace(temp, self.marketplace_file)
+
+        with mock.patch.object(
+            lifecycle,
+            "require_marketplace_snapshot",
+            side_effect=replace_after_final_check,
+        ):
+            with self.assertRaises(lifecycle_module.ConcurrentModificationError):
+                lifecycle.restore_marketplace(original_state, written_snapshot)
+
+        self.assertTrue(injected)
+        self.assertEqual(self.marketplace_file.read_bytes(), interloper_bytes)
+
+    def test_marketplace_quarantine_replacement_is_never_unlinked(self):
+        lifecycle_module, lifecycle = self.new_lifecycle()
+        original_state = lifecycle.load_marketplace()
+        written_snapshot = lifecycle.write_marketplace(
+            lifecycle.default_marketplace(), None, original_state.original_snapshot
+        )
+        original_capture_at = lifecycle.capture_marketplace_snapshot_at
+        original_unlink = lifecycle_module.Path.unlink
+        interloper_bytes = b'{"quarantine_interloper":true}\n'
+        replaced_quarantine = None
+        validations = 0
+
+        def replace_after_quarantine_validation(path):
+            nonlocal replaced_quarantine, validations
+            snapshot = original_capture_at(path)
+            if (
+                path != lifecycle.marketplace_file
+                and path.name.endswith(".quarantine")
+                and snapshot == written_snapshot
+            ):
+                validations += 1
+                if validations == 2:
+                    replaced_quarantine = path
+                    original_unlink(path)
+                    path.write_bytes(interloper_bytes)
+            return snapshot
+
+        with mock.patch.object(
+            lifecycle,
+            "capture_marketplace_snapshot_at",
+            side_effect=replace_after_quarantine_validation,
+        ):
+            lifecycle.restore_marketplace(original_state, written_snapshot)
+
+        self.assertIsNotNone(replaced_quarantine)
+        self.assertTrue(replaced_quarantine.exists())
+        self.assertEqual(replaced_quarantine.read_bytes(), interloper_bytes)
+        self.assertFalse(self.marketplace_file.exists())
+
+    def test_marketplace_quarantine_is_registered_before_rename_returns(self):
+        lifecycle_module, lifecycle = self.new_lifecycle()
+        self.write_marketplace(lifecycle.default_marketplace())
+        expected_snapshot = lifecycle.capture_marketplace_snapshot()
+        original_rename = lifecycle.rename_exclusive
+        quarantine = None
+
+        def terminate_after_rename(source, destination):
+            nonlocal quarantine
+            original_rename(source, destination)
+            if source == lifecycle.marketplace_file:
+                quarantine = destination
+                raise lifecycle_module.ParentTermination
+
+        with mock.patch.object(
+            lifecycle, "rename_exclusive", side_effect=terminate_after_rename
+        ):
+            with self.assertRaises(lifecycle_module.ParentTermination):
+                lifecycle.quarantine_marketplace(expected_snapshot)
+
+        self.assertIsNotNone(quarantine)
+        self.assertTrue(quarantine.exists())
+        self.assertIn(quarantine, lifecycle.recovery_artifacts)
+
+    def test_marketplace_temp_is_discoverable_when_mkstemp_return_is_interrupted(self):
+        lifecycle_module, lifecycle = self.new_lifecycle()
+        original_mkstemp = lifecycle_module.tempfile.mkstemp
+        created_path = None
+        created_fd = None
+
+        def terminate_after_mkstemp(*args, **kwargs):
+            nonlocal created_path, created_fd
+            created_fd, raw_path = original_mkstemp(*args, **kwargs)
+            created_path = Path(raw_path)
+            raise lifecycle_module.ParentTermination
+
+        try:
+            with mock.patch.object(
+                lifecycle_module.tempfile,
+                "mkstemp",
+                side_effect=terminate_after_mkstemp,
+            ):
+                with self.assertRaises(lifecycle_module.ParentTermination):
+                    lifecycle.install_marketplace_bytes(
+                        b"{}\n",
+                        0o600,
+                        lifecycle_module.MarketplaceSnapshot.absent(),
+                        retain_original=False,
+                    )
+        finally:
+            if created_fd is not None:
+                os.close(created_fd)
+
+        self.assertIsNotNone(created_path)
+        self.assertTrue(created_path.exists())
+        self.assertIn(created_path, lifecycle.recovery_artifacts)
+
+    def test_parent_termination_after_quarantine_finalization_keeps_artifact(self):
+        lifecycle_module, lifecycle = self.new_lifecycle()
+        original_state = lifecycle.load_marketplace()
+        written_snapshot = lifecycle.write_marketplace(
+            lifecycle.default_marketplace(), None, original_state.original_snapshot
+        )
+        original_delete = lifecycle.delete_marketplace_quarantine
+        finalized_quarantine = None
+
+        def terminate_after_finalization(quarantine, expected_snapshot):
+            nonlocal finalized_quarantine
+            finalized_quarantine = quarantine
+            original_delete(quarantine, expected_snapshot)
+            raise lifecycle_module.ParentTermination
+
+        with mock.patch.object(
+            lifecycle,
+            "delete_marketplace_quarantine",
+            side_effect=terminate_after_finalization,
+        ):
+            with self.assertRaises(lifecycle_module.ParentTermination):
+                lifecycle.restore_marketplace(original_state, written_snapshot)
+
+        self.assertIsNotNone(finalized_quarantine)
+        self.assertTrue(finalized_quarantine.exists())
+        self.assertFalse(self.marketplace_file.exists())
+
+    def test_install_rollback_never_unlinks_replacement_source(self):
+        lifecycle_module, lifecycle = self.new_lifecycle()
+        state = lifecycle.load_marketplace()
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        created_snapshot = lifecycle.validate_source()
+        self.assertIsNotNone(created_snapshot)
+        other_source = self.home / "other-source"
+        other_source.mkdir()
+        original_require = lifecycle.require_source_snapshot
+        original_unlink = lifecycle_module.Path.unlink
+        injected = False
+
+        def replace_after_final_check(expected_snapshot):
+            nonlocal injected
+            original_require(expected_snapshot)
+            if not injected:
+                injected = True
+                original_unlink(self.source_root)
+                self.source_root.symlink_to(other_source)
+
+        with mock.patch.object(
+            lifecycle,
+            "require_source_snapshot",
+            side_effect=replace_after_final_check,
+        ):
+            with self.assertRaises(RuntimeError):
+                lifecycle.rollback_install(state, None, created_snapshot)
+
+        self.assertTrue(injected)
+        self.assertTrue(self.source_root.is_symlink())
+        self.assertEqual(self.source_root.readlink(), other_source)
+
+    def test_source_quarantine_replacement_is_never_unlinked(self):
+        lifecycle_module, lifecycle = self.new_lifecycle()
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        expected_snapshot = lifecycle.validate_source()
+        self.assertIsNotNone(expected_snapshot)
+        other_source = self.home / "other-source"
+        other_source.mkdir()
+        original_require_at = lifecycle.require_source_snapshot_at
+        original_unlink = lifecycle_module.Path.unlink
+        validations = 0
+        replaced_quarantine = None
+
+        def replace_after_final_validation(path, snapshot):
+            nonlocal validations, replaced_quarantine
+            original_require_at(path, snapshot)
+            if path != lifecycle.source_root and path.name.endswith(".quarantine"):
+                validations += 1
+                if validations == 2:
+                    replaced_quarantine = path
+                    original_unlink(path)
+                    path.symlink_to(other_source)
+
+        with mock.patch.object(
+            lifecycle,
+            "require_source_snapshot_at",
+            side_effect=replace_after_final_validation,
+        ):
+            lifecycle.remove_owned_source(expected_snapshot)
+
+        self.assertIsNotNone(replaced_quarantine)
+        self.assertTrue(replaced_quarantine.is_symlink())
+        self.assertEqual(replaced_quarantine.readlink(), other_source)
+        self.assertFalse(self.source_root.exists())
+
+    def test_source_quarantine_is_registered_before_rename_returns(self):
+        lifecycle_module, lifecycle = self.new_lifecycle()
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        expected_snapshot = lifecycle.validate_source()
+        self.assertIsNotNone(expected_snapshot)
+        original_rename = lifecycle.rename_exclusive
+        quarantine = None
+
+        def terminate_after_rename(source, destination):
+            nonlocal quarantine
+            original_rename(source, destination)
+            if source == lifecycle.source_root:
+                quarantine = destination
+                raise lifecycle_module.ParentTermination
+
+        with mock.patch.object(
+            lifecycle, "rename_exclusive", side_effect=terminate_after_rename
+        ):
+            with self.assertRaises(lifecycle_module.ParentTermination):
+                lifecycle.quarantine_source(expected_snapshot)
+
+        self.assertIsNotNone(quarantine)
+        self.assertTrue(quarantine.is_symlink())
+        self.assertIn(quarantine, lifecycle.recovery_artifacts)
 
     def test_install_prestate_discovery_requires_stable_local_contract(self):
         concurrent = {
@@ -1662,21 +2055,20 @@ raise SystemExit(returncode)
         self.source_root.symlink_to(BID_ROOT)
         self.set_codex_installed(True)
         lifecycle_module, lifecycle = self.new_lifecycle()
-        original_unlink = lifecycle_module.Path.unlink
+        original_remove_owned_source = lifecycle.remove_owned_source
 
-        def interrupt_after_source_unlink(path, *args, **kwargs):
-            result = original_unlink(path, *args, **kwargs)
-            if path == lifecycle.source_root:
-                os.kill(os.getpid(), signal.SIGINT)
+        def interrupt_after_source_removal(expected_snapshot):
+            result = original_remove_owned_source(expected_snapshot)
+            os.kill(os.getpid(), signal.SIGINT)
             return result
 
         previous_sigint = signal.signal(signal.SIGINT, signal.default_int_handler)
         try:
             with mock.patch.dict(os.environ, self.env, clear=False):
                 with mock.patch.object(
-                    lifecycle_module.Path,
-                    "unlink",
-                    interrupt_after_source_unlink,
+                    lifecycle,
+                    "remove_owned_source",
+                    interrupt_after_source_removal,
                 ):
                     with self.assertRaises(KeyboardInterrupt):
                         lifecycle.uninstall()
@@ -1688,12 +2080,68 @@ raise SystemExit(returncode)
         self.assertTrue(self.source_root.is_symlink())
         self.assertEqual(self.source_root.readlink(), BID_ROOT)
 
+    def test_uninstall_never_unlinks_source_replaced_after_final_check(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [BID_ENTRY],
+        }
+        self.write_marketplace(existing)
+        original_bytes = self.marketplace_file.read_bytes()
+        self.source_root.parent.mkdir(parents=True)
+        self.source_root.symlink_to(BID_ROOT)
+        self.set_codex_installed(True)
+        other_source = self.home / "other-source"
+        other_source.mkdir()
+        lifecycle_module, lifecycle = self.new_lifecycle()
+        original_write = lifecycle.write_marketplace
+        original_require = lifecycle.require_source_snapshot
+        original_unlink = lifecycle_module.Path.unlink
+        marketplace_cleaned = False
+        injected = False
+
+        def mark_marketplace_cleanup(*args, **kwargs):
+            nonlocal marketplace_cleaned
+            result = original_write(*args, **kwargs)
+            marketplace_cleaned = True
+            return result
+
+        def replace_after_final_check(expected_snapshot):
+            nonlocal injected
+            original_require(expected_snapshot)
+            if marketplace_cleaned and not injected:
+                injected = True
+                original_unlink(self.source_root)
+                self.source_root.symlink_to(other_source)
+
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, self.env, clear=False):
+            with (
+                mock.patch.object(
+                    lifecycle, "write_marketplace", side_effect=mark_marketplace_cleanup
+                ),
+                mock.patch.object(
+                    lifecycle,
+                    "require_source_snapshot",
+                    side_effect=replace_after_final_check,
+                ),
+                redirect_stderr(stderr),
+            ):
+                result = lifecycle.uninstall()
+
+        self.assertTrue(injected)
+        self.assertNotEqual(result, 0)
+        self.assertTrue(self.source_root.is_symlink())
+        self.assertEqual(self.source_root.readlink(), other_source)
+        self.assertIn("concurrent", stderr.getvalue().lower())
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+
     def test_uninstall_marketplace_write_failure_compensates_codex_remove(self):
         original_bytes = (
             b'{"name":"local-build-your-system","custom":{"keep":true},'
             b'"plugins":['
             + json.dumps(BID_ENTRY, separators=(",", ":")).encode("utf-8")
-            + b']}\n'
+            + b"]}\n"
         )
         self.marketplace_file.parent.mkdir(parents=True)
         self.marketplace_file.write_bytes(original_bytes)
@@ -1778,7 +2226,7 @@ raise SystemExit(returncode)
             b'{"name":"local-build-your-system","custom":{"keep":true},'
             b'"plugins":['
             + json.dumps(BID_ENTRY, separators=(",", ":")).encode("utf-8")
-            + b']}\n'
+            + b"]}\n"
         )
         self.marketplace_file.parent.mkdir(parents=True)
         self.marketplace_file.write_bytes(original_bytes)
@@ -1819,7 +2267,7 @@ raise SystemExit(returncode)
             b'{"name":"local-build-your-system","custom":{"concurrent":true},'
             b'"plugins":['
             + json.dumps(BID_ENTRY, separators=(",", ":")).encode("utf-8")
-            + b']}\n'
+            + b"]}\n"
         )
         self.set_concurrent_marketplace(concurrent_bytes)
         self.source_root.parent.mkdir(parents=True)
@@ -1881,9 +2329,7 @@ raise SystemExit(returncode)
         self.assertIn("partial", result.stderr.lower())
         self.assertIn("source", result.stderr.lower())
         self.assertIn("not run", result.stderr.lower())
-        self.assertIn(
-            "codex plugin add bid@local-build-your-system", result.stderr
-        )
+        self.assertIn("codex plugin add bid@local-build-your-system", result.stderr)
         self.assertEqual(
             self.codex_calls(), ["plugin remove bid@local-build-your-system"]
         )
@@ -1892,9 +2338,7 @@ raise SystemExit(returncode)
         self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
         self.assertTrue(self.source_root.is_symlink())
         self.assertEqual(self.source_root.readlink(), BID_ROOT)
-        self.assertEqual(
-            self.source_root.lstat().st_ino, effect_state["source"]["ino"]
-        )
+        self.assertEqual(self.source_root.lstat().st_ino, effect_state["source"]["ino"])
 
     def test_uninstall_chmod_only_concurrent_edit_is_not_clobbered(self):
         existing = {
@@ -2003,7 +2447,7 @@ raise SystemExit(returncode)
             b'{"name":"local-build-your-system","custom":{"concurrent":true},'
             b'"plugins":['
             + json.dumps(BID_ENTRY, separators=(",", ":")).encode("utf-8")
-            + b']}\n'
+            + b"]}\n"
         )
         self.set_concurrent_marketplace(concurrent_bytes)
         self.source_root.parent.mkdir(parents=True)
@@ -2015,9 +2459,7 @@ raise SystemExit(returncode)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("partial", result.stderr.lower())
-        self.assertIn(
-            "codex plugin add bid@local-build-your-system", result.stderr
-        )
+        self.assertIn("codex plugin add bid@local-build-your-system", result.stderr)
         self.assertIn(str(self.marketplace_file), result.stderr)
         self.assertIn(str(self.source_root), result.stderr)
         self.assertNotIn("uninstall complete", result.stdout.lower())
@@ -2051,7 +2493,12 @@ raise SystemExit(returncode)
         self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
         self.assertFalse(self.source_root.exists())
         self.assertEqual(
-            self.all_codex_calls(), ["plugin remove bid@local-build-your-system"]
+            self.all_codex_calls(),
+            [
+                "plugin list --json",
+                "plugin remove bid@local-build-your-system",
+                "plugin list --json",
+            ],
         )
 
     def test_uninstall_local_absent_and_list_omits_orphan_still_removes_codex_state(
@@ -2094,11 +2541,57 @@ raise SystemExit(returncode)
         self.assertFalse(self.source_root.exists())
         self.assertEqual(
             self.codex_calls(),
-            [
-                "plugin remove bid@local-build-your-system",
-                "plugin remove bid@local-build-your-system",
-            ],
+            ["plugin remove bid@local-build-your-system"],
         )
+
+    def test_uninstall_local_absent_rejects_stale_zero_remove_poststate(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [],
+        }
+        self.write_marketplace(existing)
+        self.set_codex_installed(True)
+        self.env["CODEX_LIST_REQUIRE_BID_ENTRY"] = "1"
+        self.env["CODEX_REMOVE_SKIP_COMMIT"] = "1"
+
+        result = self.run_installer("--uninstall")
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.codex_is_installed())
+        recovered = json.loads(self.marketplace_file.read_text(encoding="utf-8"))
+        self.assertEqual(recovered["plugins"], [BID_ENTRY])
+        self.assertTrue(self.source_root.is_symlink())
+        self.assertNotIn("state to absent", result.stderr.lower())
+        quarantines = list(
+            self.marketplace_file.parent.glob(
+                f".{self.marketplace_file.name}.*.quarantine"
+            )
+        )
+        self.assertEqual(len(quarantines), 1)
+        self.assertIn(str(quarantines[0]), result.stderr)
+
+    def test_uninstall_local_absent_rejects_nonzero_then_stale_zero_poststate(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [],
+        }
+        self.write_marketplace(existing)
+        self.set_codex_installed(True)
+        self.env["CODEX_LIST_REQUIRE_BID_ENTRY"] = "1"
+        self.env["CODEX_REMOVE_EXIT_CALL_1"] = "29"
+        self.env["CODEX_REMOVE_SKIP_COMMIT_CALL_1"] = "1"
+        self.env["CODEX_REMOVE_SKIP_COMMIT_CALL_2"] = "1"
+
+        result = self.run_installer("--uninstall")
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.codex_is_installed())
+        recovered = json.loads(self.marketplace_file.read_text(encoding="utf-8"))
+        self.assertEqual(recovered["plugins"], [BID_ENTRY])
+        self.assertTrue(self.source_root.is_symlink())
+        self.assertNotIn("converged codex-owned state to absent", result.stderr.lower())
 
     def test_sigterm_during_local_absent_primary_result_dispatch_converges(self):
         lifecycle_module, lifecycle = self.new_lifecycle()
@@ -2138,6 +2631,82 @@ raise SystemExit(returncode)
 
         self.assertFalse(self.codex_is_installed())
         self.assertEqual(remove_calls, 2)
+
+    def test_sigterm_after_transient_marketplace_write_restores_absent_prestate(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [],
+        }
+        self.write_marketplace(existing)
+        original_bytes = self.marketplace_file.read_bytes()
+        original_inode = self.marketplace_file.stat().st_ino
+        lifecycle_module, lifecycle = self.new_lifecycle()
+        original_install_bytes = lifecycle.install_marketplace_bytes
+
+        def terminate_after_transient_write(*args, **kwargs):
+            lease = original_install_bytes(*args, **kwargs)
+            os.kill(os.getpid(), signal.SIGTERM)
+            return lease
+
+        def raise_parent_termination(_signum, _frame):
+            raise lifecycle_module.ParentTermination
+
+        previous_sigterm = signal.signal(signal.SIGTERM, raise_parent_termination)
+        try:
+            with mock.patch.dict(os.environ, self.env, clear=False):
+                with mock.patch.object(
+                    lifecycle,
+                    "install_marketplace_bytes",
+                    side_effect=terminate_after_transient_write,
+                ):
+                    with self.assertRaises(lifecycle_module.ParentTermination):
+                        lifecycle.uninstall()
+        finally:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
+        self.assertFalse(self.source_root.exists())
+        self.assertEqual(self.codex_calls(), [])
+
+    def test_sigterm_at_transient_registration_return_handoff_restores_prestate(self):
+        existing = {
+            "name": "local-build-your-system",
+            "interface": {"displayName": "Keep"},
+            "plugins": [],
+        }
+        self.write_marketplace(existing)
+        original_bytes = self.marketplace_file.read_bytes()
+        original_inode = self.marketplace_file.stat().st_ino
+        lifecycle_module, lifecycle = self.new_lifecycle()
+        original_create = lifecycle.create_transient_local_registration
+
+        def terminate_after_create(state):
+            registration = original_create(state)
+            os.kill(os.getpid(), signal.SIGTERM)
+            return registration
+
+        def raise_parent_termination(_signum, _frame):
+            raise lifecycle_module.ParentTermination
+
+        previous_sigterm = signal.signal(signal.SIGTERM, raise_parent_termination)
+        try:
+            with mock.patch.dict(os.environ, self.env, clear=False):
+                with mock.patch.object(
+                    lifecycle,
+                    "create_transient_local_registration",
+                    side_effect=terminate_after_create,
+                ):
+                    with self.assertRaises(lifecycle_module.ParentTermination):
+                        lifecycle.uninstall()
+        finally:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+
+        self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
+        self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
+        self.assertFalse(self.source_root.exists())
+        self.assertEqual(self.codex_calls(), [])
 
     def test_sigterm_during_local_absent_retry_result_dispatch_converges(self):
         lifecycle_module, lifecycle = self.new_lifecycle()
@@ -2211,7 +2780,7 @@ raise SystemExit(returncode)
             ],
         )
 
-    def test_uninstall_local_absent_does_not_consult_failing_discovery(self):
+    def test_uninstall_local_absent_fails_closed_on_failing_discovery(self):
         existing = {
             "name": "local-build-your-system",
             "interface": {"displayName": "Keep"},
@@ -2224,15 +2793,14 @@ raise SystemExit(returncode)
 
         result = self.run_installer("--uninstall")
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(self.codex_is_installed())
-        self.assertEqual(
-            self.all_codex_calls(), ["plugin remove bid@local-build-your-system"]
-        )
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.codex_is_installed())
+        self.assertEqual(self.all_codex_calls(), ["plugin list --json"])
         self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
         self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
+        self.assertFalse(self.source_root.exists())
 
-    def test_uninstall_local_absent_does_not_consult_malformed_discovery(self):
+    def test_uninstall_local_absent_fails_closed_on_malformed_discovery(self):
         existing = {
             "name": "local-build-your-system",
             "interface": {"displayName": "Keep"},
@@ -2245,13 +2813,12 @@ raise SystemExit(returncode)
 
         result = self.run_installer("--uninstall")
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(self.codex_is_installed())
-        self.assertEqual(
-            self.all_codex_calls(), ["plugin remove bid@local-build-your-system"]
-        )
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.codex_is_installed())
+        self.assertEqual(self.all_codex_calls(), ["plugin list --json"])
         self.assertEqual(self.marketplace_file.read_bytes(), original_bytes)
         self.assertEqual(self.marketplace_file.stat().st_ino, original_inode)
+        self.assertFalse(self.source_root.exists())
 
     def test_uninstall_local_present_stops_if_discovery_query_fails(self):
         existing = {

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import copy
+import ctypes
 import errno
 import fcntl
 import hashlib
 import json
 import os
+import secrets
 import signal
 import stat
 import subprocess
@@ -104,6 +107,12 @@ class MarketplaceState:
     original_snapshot: MarketplaceSnapshot
 
 
+@dataclass(frozen=True)
+class MarketplaceWriteLease:
+    written_snapshot: MarketplaceSnapshot
+    original_quarantine: Path | None
+
+
 TERMINATION_SIGNALS = {signal.SIGINT, signal.SIGTERM}
 
 
@@ -147,6 +156,20 @@ class LocalLifecycle:
         self.lock_file = self.marketplace_file.with_name(
             f".{self.marketplace_file.name}.lock"
         )
+        self.recovery_artifacts: list[Path] = []
+
+    def record_recovery_artifact(self, path: Path) -> None:
+        if path not in self.recovery_artifacts:
+            self.recovery_artifacts.append(path)
+
+    def forget_recovery_artifact(self, path: Path) -> None:
+        if path in self.recovery_artifacts:
+            self.recovery_artifacts.remove(path)
+
+    def report_recovery_artifacts(self) -> None:
+        for path in self.recovery_artifacts:
+            if os.path.lexists(path):
+                print(f"Recovery artifact retained: {path}", file=sys.stderr)
 
     @staticmethod
     def marketplace_stat_fields(
@@ -161,9 +184,9 @@ class LocalLifecycle:
             file_stat.st_size,
         )
 
-    def capture_marketplace_snapshot(self) -> MarketplaceSnapshot:
+    def capture_marketplace_snapshot_at(self, path: Path) -> MarketplaceSnapshot:
         try:
-            path_stat = self.marketplace_file.lstat()
+            path_stat = path.lstat()
         except FileNotFoundError:
             return MarketplaceSnapshot.absent()
 
@@ -181,11 +204,10 @@ class LocalLifecycle:
 
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         try:
-            file_fd = os.open(self.marketplace_file, flags)
+            file_fd = os.open(path, flags)
         except OSError as error:
             raise ConcurrentModificationError(
-                f"cannot capture a stable snapshot of {self.marketplace_file}: "
-                f"{error}"
+                f"cannot capture a stable snapshot of {path}: {error}"
             ) from error
 
         with os.fdopen(file_fd, "rb") as marketplace:
@@ -197,21 +219,19 @@ class LocalLifecycle:
             after_stat
         ):
             raise ConcurrentModificationError(
-                f"concurrent modification detected while reading "
-                f"{self.marketplace_file}"
+                f"concurrent modification detected while reading {path}"
             )
         try:
-            final_path_stat = self.marketplace_file.lstat()
+            final_path_stat = path.lstat()
         except FileNotFoundError as error:
             raise ConcurrentModificationError(
-                f"concurrent modification removed {self.marketplace_file}"
+                f"concurrent modification removed {path}"
             ) from error
-        if self.marketplace_stat_fields(
-            after_stat
-        ) != self.marketplace_stat_fields(final_path_stat):
+        if self.marketplace_stat_fields(after_stat) != self.marketplace_stat_fields(
+            final_path_stat
+        ):
             raise ConcurrentModificationError(
-                f"concurrent replacement detected while reading "
-                f"{self.marketplace_file}"
+                f"concurrent replacement detected while reading {path}"
             )
 
         return MarketplaceSnapshot(
@@ -224,6 +244,9 @@ class LocalLifecycle:
             after_stat.st_size,
             data,
         )
+
+    def capture_marketplace_snapshot(self) -> MarketplaceSnapshot:
+        return self.capture_marketplace_snapshot_at(self.marketplace_file)
 
     @staticmethod
     def source_stat_fields(
@@ -269,9 +292,7 @@ class LocalLifecycle:
                         include_path(path)
                         if is_directory:
                             child_directories.append(path)
-                pending_directories.extend(
-                    sorted(child_directories, reverse=True)
-                )
+                pending_directories.extend(sorted(child_directories, reverse=True))
         except OSError as error:
             raise ConcurrentModificationError(
                 f"cannot enumerate plugin source content at {self.bid_root}: {error}"
@@ -368,9 +389,9 @@ class LocalLifecycle:
             )
         return second
 
-    def capture_source_snapshot(self) -> SourceSnapshot:
+    def capture_source_snapshot_at(self, source_path: Path) -> SourceSnapshot:
         try:
-            before_stat = self.source_root.lstat()
+            before_stat = source_path.lstat()
         except FileNotFoundError:
             return SourceSnapshot.absent()
 
@@ -378,30 +399,29 @@ class LocalLifecycle:
         resolved_target: Path | None = None
         if stat.S_ISLNK(before_stat.st_mode):
             try:
-                raw_target = os.readlink(self.source_root)
-                resolved_target = self.source_root.resolve(strict=True)
+                raw_target = os.readlink(source_path)
+                resolved_target = source_path.resolve(strict=True)
             except (OSError, RuntimeError):
                 resolved_target = None
         try:
-            after_stat = self.source_root.lstat()
+            after_stat = source_path.lstat()
         except FileNotFoundError as error:
             raise ConcurrentModificationError(
-                f"source path changed while inspecting {self.source_root}"
+                f"source path changed while inspecting {source_path}"
             ) from error
         if self.source_stat_fields(before_stat) != self.source_stat_fields(after_stat):
             raise ConcurrentModificationError(
-                f"source path changed while inspecting {self.source_root}"
+                f"source path changed while inspecting {source_path}"
             )
         if stat.S_ISLNK(after_stat.st_mode):
             try:
-                if os.readlink(self.source_root) != raw_target:
+                if os.readlink(source_path) != raw_target:
                     raise ConcurrentModificationError(
-                        "source link target changed while inspecting "
-                        f"{self.source_root}"
+                        f"source link target changed while inspecting {source_path}"
                     )
             except FileNotFoundError as error:
                 raise ConcurrentModificationError(
-                    f"source path changed while inspecting {self.source_root}"
+                    f"source path changed while inspecting {source_path}"
                 ) from error
 
         tree_snapshot = (
@@ -410,25 +430,25 @@ class LocalLifecycle:
             else None
         )
         try:
-            final_stat = self.source_root.lstat()
+            final_stat = source_path.lstat()
         except FileNotFoundError as error:
             raise ConcurrentModificationError(
-                f"source path changed while inspecting {self.source_root}"
+                f"source path changed while inspecting {source_path}"
             ) from error
         if self.source_stat_fields(after_stat) != self.source_stat_fields(final_stat):
             raise ConcurrentModificationError(
-                f"source path changed while inspecting {self.source_root}"
+                f"source path changed while inspecting {source_path}"
             )
         if stat.S_ISLNK(final_stat.st_mode):
             try:
-                final_target = os.readlink(self.source_root)
+                final_target = os.readlink(source_path)
             except FileNotFoundError as error:
                 raise ConcurrentModificationError(
-                    f"source path changed while inspecting {self.source_root}"
+                    f"source path changed while inspecting {source_path}"
                 ) from error
             if final_target != raw_target:
                 raise ConcurrentModificationError(
-                    f"source link target changed while inspecting {self.source_root}"
+                    f"source link target changed while inspecting {source_path}"
                 )
 
         return SourceSnapshot(
@@ -441,6 +461,9 @@ class LocalLifecycle:
             resolved_target,
             tree_snapshot,
         )
+
+    def capture_source_snapshot(self) -> SourceSnapshot:
+        return self.capture_source_snapshot_at(self.source_root)
 
     @contextmanager
     def lifecycle_lock(self):
@@ -478,9 +501,7 @@ class LocalLifecycle:
                 or lock_path_stat.st_ino != lock_stat.st_ino
                 or not stat.S_ISREG(lock_path_stat.st_mode)
             ):
-                raise ConflictError(
-                    f"lifecycle lock path changed: {self.lock_file}"
-                )
+                raise ConflictError(f"lifecycle lock path changed: {self.lock_file}")
             try:
                 yield
             finally:
@@ -509,27 +530,21 @@ class LocalLifecycle:
                 f"cannot parse {self.marketplace_file}: {error}"
             ) from error
         if not isinstance(marketplace, dict):
-            raise ConflictError(
-                f"{self.marketplace_file} must contain a JSON object."
-            )
+            raise ConflictError(f"{self.marketplace_file} must contain a JSON object.")
         if marketplace.get("name") != MARKETPLACE_NAME:
             raise ConflictError(
                 f"{self.marketplace_file} name must be exactly {MARKETPLACE_NAME!r}."
             )
         plugins = marketplace.get("plugins")
         if not isinstance(plugins, list):
-            raise ConflictError(
-                f"{self.marketplace_file} must contain a plugins list."
-            )
+            raise ConflictError(f"{self.marketplace_file} must contain a plugins list.")
 
         bid_entries = [
             plugin
             for plugin in plugins
             if isinstance(plugin, dict) and plugin.get("name") == "bid"
         ]
-        if bid_entries and not (
-            len(bid_entries) == 1 and bid_entries[0] == BID_ENTRY
-        ):
+        if bid_entries and not (len(bid_entries) == 1 and bid_entries[0] == BID_ENTRY):
             raise ConflictError(
                 f"{self.marketplace_file} contains a different bid entry."
             )
@@ -567,19 +582,137 @@ class LocalLifecycle:
                 "changed; refusing to overwrite it"
             )
 
-    def atomic_replace_marketplace(
+    @staticmethod
+    def unique_quarantine_path(path: Path, kind: str) -> Path:
+        while True:
+            candidate = path.with_name(f".{path.name}.{secrets.token_hex(16)}.{kind}")
+            if not os.path.lexists(candidate):
+                return candidate
+
+    @staticmethod
+    def rename_exclusive(source: Path, destination: Path) -> None:
+        libc = ctypes.CDLL(None, use_errno=True)
+        source_bytes = os.fsencode(source)
+        destination_bytes = os.fsencode(destination)
+        if sys.platform == "darwin":
+            rename = libc.renameatx_np
+            rename.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            rename.restype = ctypes.c_int
+            result = rename(-2, source_bytes, -2, destination_bytes, 0x00000004)
+        elif hasattr(libc, "renameat2"):
+            rename = libc.renameat2
+            rename.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            rename.restype = ctypes.c_int
+            result = rename(-100, source_bytes, -100, destination_bytes, 0x1)
+        else:
+            raise ConflictError(
+                "this platform lacks an atomic no-replace rename primitive"
+            )
+        if result != 0:
+            error_number = ctypes.get_errno()
+            raise OSError(
+                error_number,
+                os.strerror(error_number),
+                str(source),
+                str(destination),
+            )
+
+    def restore_quarantine_no_clobber(
+        self, quarantine: Path, destination: Path, description: str
+    ) -> None:
+        try:
+            self.rename_exclusive(quarantine, destination)
+        except OSError as error:
+            raise ConcurrentModificationError(
+                f"could not restore {description} without overwriting concurrent "
+                f"state at {destination}; recovery artifact preserved at "
+                f"{quarantine}: {error}"
+            ) from error
+
+    def quarantine_marketplace(
+        self, expected_snapshot: MarketplaceSnapshot
+    ) -> Path | None:
+        self.require_marketplace_snapshot(expected_snapshot)
+        if not expected_snapshot.exists:
+            return None
+        quarantine = self.unique_quarantine_path(self.marketplace_file, "quarantine")
+        self.record_recovery_artifact(quarantine)
+        try:
+            self.rename_exclusive(self.marketplace_file, quarantine)
+        except OSError as error:
+            if os.path.lexists(self.marketplace_file) or not os.path.lexists(
+                quarantine
+            ):
+                self.forget_recovery_artifact(quarantine)
+            raise ConcurrentModificationError(
+                f"could not atomically quarantine {self.marketplace_file}: {error}"
+            ) from error
+        moved_snapshot = self.capture_marketplace_snapshot_at(quarantine)
+        if moved_snapshot != expected_snapshot:
+            try:
+                self.restore_quarantine_no_clobber(
+                    quarantine, self.marketplace_file, "concurrent marketplace"
+                )
+            except ConcurrentModificationError as restore_error:
+                raise ConcurrentModificationError(
+                    "marketplace changed after final validation; moved state did "
+                    f"not match the owned snapshot; {restore_error}"
+                ) from restore_error
+            raise ConcurrentModificationError(
+                "marketplace changed after final validation; the concurrent "
+                "replacement was restored without being modified"
+            )
+        return quarantine
+
+    def delete_marketplace_quarantine(
+        self, quarantine: Path, expected_snapshot: MarketplaceSnapshot
+    ) -> None:
+        if self.capture_marketplace_snapshot_at(quarantine) != expected_snapshot:
+            self.record_recovery_artifact(quarantine)
+            raise ConcurrentModificationError(
+                "owned marketplace quarantine changed; refusing to delete it; "
+                f"recovery artifact: {quarantine}"
+            )
+        self.record_recovery_artifact(quarantine)
+
+    def install_marketplace_bytes(
         self,
         data: bytes,
         file_mode: int,
         expected_snapshot: MarketplaceSnapshot,
-    ) -> MarketplaceSnapshot:
+        *,
+        retain_original: bool,
+    ) -> MarketplaceWriteLease:
         self.marketplace_file.parent.mkdir(parents=True, exist_ok=True)
-        self.require_marketplace_snapshot(expected_snapshot)
-        temp_fd, temp_name = tempfile.mkstemp(
-            prefix=f".{self.marketplace_file.name}.",
-            suffix=".tmp",
-            dir=self.marketplace_file.parent,
-        )
+        temp_pattern = f".{self.marketplace_file.name}.*.tmp"
+        preexisting_temps = set(self.marketplace_file.parent.glob(temp_pattern))
+        try:
+            with defer_termination_signals():
+                temp_fd, temp_name = tempfile.mkstemp(
+                    prefix=f".{self.marketplace_file.name}.",
+                    suffix=".tmp",
+                    dir=self.marketplace_file.parent,
+                )
+                temp_path = Path(temp_name)
+                self.record_recovery_artifact(temp_path)
+        except BaseException:
+            for candidate in self.marketplace_file.parent.glob(temp_pattern):
+                if candidate not in preexisting_temps:
+                    self.record_recovery_artifact(candidate)
+            raise
+        original_quarantine: Path | None = None
         try:
             with os.fdopen(temp_fd, "wb") as temp_file:
                 os.fchmod(temp_file.fileno(), file_mode)
@@ -597,21 +730,74 @@ class LocalLifecycle:
                     temp_stat.st_size,
                     data,
                 )
-            self.require_marketplace_snapshot(expected_snapshot)
-            os.replace(temp_name, self.marketplace_file)
+            original_quarantine = self.quarantine_marketplace(expected_snapshot)
+            try:
+                os.link(temp_path, self.marketplace_file, follow_symlinks=False)
+            except OSError as error:
+                if (
+                    original_quarantine is not None
+                    and not self.capture_marketplace_snapshot().exists
+                ):
+                    self.restore_quarantine_no_clobber(
+                        original_quarantine,
+                        self.marketplace_file,
+                        "original marketplace",
+                    )
+                    original_quarantine = None
+                artifact = (
+                    f"; original recovery artifact: {original_quarantine}"
+                    if original_quarantine is not None
+                    else ""
+                )
+                raise ConcurrentModificationError(
+                    "marketplace destination was populated concurrently; refusing "
+                    f"to overwrite it{artifact}: {error}"
+                ) from error
             current_snapshot = self.capture_marketplace_snapshot()
             if current_snapshot != written_snapshot:
                 raise ConcurrentModificationError(
                     f"concurrent replacement detected immediately after writing "
-                    f"{self.marketplace_file}"
+                    f"{self.marketplace_file}; original recovery artifact: "
+                    f"{original_quarantine}"
                 )
-            return current_snapshot
-        except BaseException:
-            try:
-                os.unlink(temp_name)
-            except FileNotFoundError:
-                pass
-            raise
+            if original_quarantine is not None and not retain_original:
+                try:
+                    self.delete_marketplace_quarantine(
+                        original_quarantine, expected_snapshot
+                    )
+                except BaseException as cleanup_error:
+                    try:
+                        self.restore_marketplace_lease(
+                            MarketplaceWriteLease(
+                                current_snapshot, original_quarantine
+                            ),
+                            expected_snapshot,
+                        )
+                    except BaseException as restore_error:
+                        raise ConcurrentModificationError(
+                            "new marketplace was installed, but ownership cleanup "
+                            "failed and exact rollback was incomplete: "
+                            f"{cleanup_error}; {restore_error}"
+                        ) from restore_error
+                    raise
+                original_quarantine = None
+            return MarketplaceWriteLease(current_snapshot, original_quarantine)
+        finally:
+            if os.path.lexists(temp_path):
+                self.record_recovery_artifact(temp_path)
+
+    def atomic_replace_marketplace(
+        self,
+        data: bytes,
+        file_mode: int,
+        expected_snapshot: MarketplaceSnapshot,
+    ) -> MarketplaceSnapshot:
+        return self.install_marketplace_bytes(
+            data,
+            file_mode,
+            expected_snapshot,
+            retain_original=False,
+        ).written_snapshot
 
     def write_marketplace(
         self,
@@ -637,8 +823,59 @@ class LocalLifecycle:
             )
             return
 
-        self.require_marketplace_snapshot(expected_written_snapshot)
-        self.marketplace_file.unlink()
+        quarantine = self.quarantine_marketplace(expected_written_snapshot)
+        if quarantine is None:
+            raise ConcurrentModificationError(
+                "owned marketplace disappeared before rollback"
+            )
+        self.delete_marketplace_quarantine(quarantine, expected_written_snapshot)
+        if self.capture_marketplace_snapshot().exists:
+            raise ConcurrentModificationError(
+                "marketplace was recreated concurrently during rollback; the "
+                "concurrent state was preserved"
+            )
+
+    def restore_marketplace_lease(
+        self,
+        lease: MarketplaceWriteLease,
+        original_snapshot: MarketplaceSnapshot,
+    ) -> None:
+        written_quarantine = self.quarantine_marketplace(lease.written_snapshot)
+        if written_quarantine is None:
+            raise ConcurrentModificationError(
+                "transient marketplace disappeared before exact rollback"
+            )
+        if original_snapshot.exists:
+            original_quarantine = lease.original_quarantine
+            if original_quarantine is None:
+                raise RuntimeError("missing original marketplace quarantine")
+            if (
+                self.capture_marketplace_snapshot_at(original_quarantine)
+                != original_snapshot
+            ):
+                raise ConcurrentModificationError(
+                    "original marketplace quarantine changed; recovery artifacts "
+                    f"preserved at {original_quarantine} and {written_quarantine}"
+                )
+            try:
+                self.rename_exclusive(original_quarantine, self.marketplace_file)
+            except OSError as error:
+                raise ConcurrentModificationError(
+                    "marketplace was populated concurrently during exact rollback; "
+                    "it was preserved and recovery artifacts remain at "
+                    f"{original_quarantine} and {written_quarantine}: {error}"
+                ) from error
+            if self.capture_marketplace_snapshot() != original_snapshot:
+                raise ConcurrentModificationError(
+                    "restored marketplace no longer matches its exact original "
+                    f"snapshot; transient artifact: {written_quarantine}"
+                )
+        elif self.capture_marketplace_snapshot().exists:
+            raise ConcurrentModificationError(
+                "marketplace was populated concurrently during rollback; it was "
+                f"preserved; transient artifact: {written_quarantine}"
+            )
+        self.delete_marketplace_quarantine(written_quarantine, lease.written_snapshot)
 
     def validate_source(self) -> SourceSnapshot | None:
         snapshot = self.capture_source_snapshot()
@@ -658,7 +895,12 @@ class LocalLifecycle:
         )
 
     def require_source_snapshot(self, expected_snapshot: SourceSnapshot) -> None:
-        current_snapshot = self.capture_source_snapshot()
+        self.require_source_snapshot_at(self.source_root, expected_snapshot)
+
+    def require_source_snapshot_at(
+        self, source_path: Path, expected_snapshot: SourceSnapshot
+    ) -> None:
+        current_snapshot = self.capture_source_snapshot_at(source_path)
         if (
             current_snapshot != expected_snapshot
             or current_snapshot.file_type != stat.S_IFLNK
@@ -666,8 +908,48 @@ class LocalLifecycle:
         ):
             raise ConcurrentModificationError(
                 "source symlink identity, target, or plugin content changed "
-                f"concurrently: {self.source_root}; expected the original link "
+                f"concurrently: {source_path}; expected the original link "
                 f"and content snapshot for {self.bid_root}"
+            )
+
+    def quarantine_source(self, expected_snapshot: SourceSnapshot) -> Path:
+        self.require_source_snapshot(expected_snapshot)
+        quarantine = self.unique_quarantine_path(self.source_root, "quarantine")
+        self.record_recovery_artifact(quarantine)
+        try:
+            self.rename_exclusive(self.source_root, quarantine)
+        except OSError as error:
+            if os.path.lexists(self.source_root) or not os.path.lexists(quarantine):
+                self.forget_recovery_artifact(quarantine)
+            raise ConcurrentModificationError(
+                f"could not atomically quarantine {self.source_root}: {error}"
+            ) from error
+        try:
+            self.require_source_snapshot_at(quarantine, expected_snapshot)
+        except ConcurrentModificationError as validation_error:
+            try:
+                self.restore_quarantine_no_clobber(
+                    quarantine, self.source_root, "concurrent source link"
+                )
+            except ConcurrentModificationError as restore_error:
+                raise ConcurrentModificationError(
+                    "source changed after final validation; recovery artifact "
+                    f"preserved at {quarantine}: {restore_error}"
+                ) from restore_error
+            raise ConcurrentModificationError(
+                "source changed after final validation; the concurrent source "
+                "link was restored without being modified"
+            ) from validation_error
+        return quarantine
+
+    def remove_owned_source(self, expected_snapshot: SourceSnapshot) -> None:
+        quarantine = self.quarantine_source(expected_snapshot)
+        self.require_source_snapshot_at(quarantine, expected_snapshot)
+        self.record_recovery_artifact(quarantine)
+        if self.capture_source_snapshot().exists:
+            raise ConcurrentModificationError(
+                "source path was recreated concurrently during cleanup; the "
+                "concurrent source was preserved"
             )
 
     def restore_removed_source(
@@ -677,7 +959,28 @@ class LocalLifecycle:
         if current_snapshot.exists:
             self.require_source_snapshot(expected_snapshot)
             return current_snapshot
-        self.source_root.symlink_to(self.bid_root)
+        temporary_source = self.unique_quarantine_path(self.source_root, "restore")
+        try:
+            temporary_source.symlink_to(self.bid_root)
+            temporary_snapshot = self.capture_source_snapshot_at(temporary_source)
+            if (
+                temporary_snapshot.file_type != stat.S_IFLNK
+                or temporary_snapshot.resolved_target != self.bid_root
+                or temporary_snapshot.tree != expected_snapshot.tree
+            ):
+                raise ConcurrentModificationError(
+                    "plugin source content changed before source restoration"
+                )
+            try:
+                self.rename_exclusive(temporary_source, self.source_root)
+            except OSError as error:
+                raise ConcurrentModificationError(
+                    "source destination was populated concurrently during "
+                    f"restoration; it was preserved: {error}"
+                ) from error
+        finally:
+            if os.path.lexists(temporary_source):
+                self.record_recovery_artifact(temporary_source)
         restored_snapshot = self.validate_source()
         if restored_snapshot is None:
             raise RuntimeError("restored source symlink disappeared")
@@ -740,8 +1043,7 @@ class LocalLifecycle:
                     except ProcessLookupError:
                         pass
                     deadline = (
-                        time.monotonic()
-                        + LocalLifecycle.CODEX_INTERRUPT_GRACE_SECONDS
+                        time.monotonic() + LocalLifecycle.CODEX_INTERRUPT_GRACE_SECONDS
                     )
                     while True:
                         try:
@@ -811,8 +1113,7 @@ class LocalLifecycle:
             detail = completed.stderr.strip()
             suffix = f": {detail}" if detail else ""
             raise ConflictError(
-                "codex plugin list --json failed "
-                f"({completed.returncode}){suffix}"
+                f"codex plugin list --json failed ({completed.returncode}){suffix}"
             )
         try:
             payload = json.loads(completed.stdout)
@@ -957,8 +1258,7 @@ class LocalLifecycle:
                 errors.append(str(error))
         if source_created_snapshot is not None:
             try:
-                self.require_source_snapshot(source_created_snapshot)
-                self.source_root.unlink()
+                self.remove_owned_source(source_created_snapshot)
             except Exception as error:  # noqa: BLE001 - collect all rollback errors.
                 errors.append(str(error))
         if errors:
@@ -994,6 +1294,22 @@ class LocalLifecycle:
                     marketplace_written_snapshot = self.write_marketplace(
                         marketplace, state.original_mode, state.original_snapshot
                     )
+
+            active_source_snapshot = (
+                source_created_snapshot
+                if source_created_snapshot is not None
+                else source_preexisting_snapshot
+            )
+            if active_source_snapshot is None:
+                raise RuntimeError("installed source snapshot disappeared")
+            active_marketplace_snapshot = (
+                marketplace_written_snapshot
+                if marketplace_written_snapshot is not None
+                else state.original_snapshot
+            )
+            codex_installed_before = self.codex_plugin_installed_with_contract(
+                active_marketplace_snapshot, active_source_snapshot
+            )
         except BaseException as original_error:
             try:
                 with defer_termination_signals():
@@ -1008,29 +1324,6 @@ class LocalLifecycle:
                     f"interrupted or failed ({original_error}); rollback also "
                     f"failed: {rollback_error}",
                     file=sys.stderr,
-                )
-            raise
-
-        active_source_snapshot = (
-            source_created_snapshot
-            if source_created_snapshot is not None
-            else source_preexisting_snapshot
-        )
-        if active_source_snapshot is None:
-            raise RuntimeError("installed source snapshot disappeared")
-        active_marketplace_snapshot = (
-            marketplace_written_snapshot
-            if marketplace_written_snapshot is not None
-            else state.original_snapshot
-        )
-        try:
-            codex_installed_before = self.codex_plugin_installed_with_contract(
-                active_marketplace_snapshot, active_source_snapshot
-            )
-        except BaseException:
-            with defer_termination_signals():
-                self.rollback_install(
-                    state, marketplace_written_snapshot, source_created_snapshot
                 )
             raise
         try:
@@ -1059,9 +1352,7 @@ class LocalLifecycle:
                     True, active_marketplace_snapshot, active_source_snapshot
                 )
             except Exception as error:  # noqa: BLE001 - exact postcondition required.
-                recovery_interruption_code = (
-                    self.recovery_interruption_exit_code(error)
-                )
+                recovery_interruption_code = self.recovery_interruption_exit_code(error)
                 if recovery_interruption_code is not None:
                     return self.reconcile_interrupted_install(
                         recovery_interruption_code,
@@ -1359,10 +1650,8 @@ class LocalLifecycle:
                 rollback_errors.append(str(error))
 
         try:
-            compensation_marketplace_snapshot = (
-                self.require_compensation_add_contract(
-                    compensation_source_snapshot
-                )
+            compensation_marketplace_snapshot = self.require_compensation_add_contract(
+                compensation_source_snapshot
             )
         except Exception as contract_error:  # noqa: BLE001 - trust gates add.
             print(
@@ -1627,6 +1916,180 @@ class LocalLifecycle:
             )
         return 1
 
+    def create_transient_local_registration(
+        self, state: MarketplaceState
+    ) -> tuple[MarketplaceWriteLease, SourceSnapshot]:
+        lease: MarketplaceWriteLease | None = None
+        source_snapshot: SourceSnapshot | None = None
+        try:
+            with defer_termination_signals():
+                self.source_root.parent.mkdir(parents=True, exist_ok=True)
+                self.source_root.symlink_to(self.bid_root)
+                source_snapshot = self.validate_source()
+                if source_snapshot is None:
+                    raise RuntimeError("transient source symlink disappeared")
+
+            marketplace = copy.deepcopy(
+                state.payload
+                if state.payload is not None
+                else self.default_marketplace()
+            )
+            plugins = marketplace.get("plugins")
+            if not isinstance(plugins, list):
+                raise RuntimeError("validated plugins list changed unexpectedly")
+            plugins.append(BID_ENTRY)
+            with defer_termination_signals():
+                lease = self.install_marketplace_bytes(
+                    self.encoded_marketplace(marketplace),
+                    state.original_mode or 0o600,
+                    state.original_snapshot,
+                    retain_original=True,
+                )
+            return lease, source_snapshot
+        except BaseException as original_error:
+            rollback_errors: list[str] = []
+            if lease is not None:
+                try:
+                    with defer_termination_signals():
+                        self.restore_marketplace_lease(lease, state.original_snapshot)
+                except BaseException as error:
+                    rollback_errors.append(str(error))
+            if source_snapshot is not None:
+                try:
+                    with defer_termination_signals():
+                        self.remove_owned_source(source_snapshot)
+                except BaseException as error:
+                    rollback_errors.append(str(error))
+            if rollback_errors:
+                print(
+                    "Partial state recovery required: transient registration "
+                    f"setup failed ({original_error}); rollback also failed: "
+                    + "; ".join(rollback_errors),
+                    file=sys.stderr,
+                )
+            raise
+
+    def restore_transient_local_registration(
+        self,
+        state: MarketplaceState,
+        lease: MarketplaceWriteLease,
+        source_snapshot: SourceSnapshot,
+    ) -> None:
+        errors: list[str] = []
+        try:
+            self.restore_marketplace_lease(lease, state.original_snapshot)
+        except Exception as error:  # noqa: BLE001 - preserve all recovery details.
+            errors.append(str(error))
+        try:
+            self.remove_owned_source(source_snapshot)
+        except Exception as error:  # noqa: BLE001 - preserve all recovery details.
+            errors.append(str(error))
+        if errors:
+            raise RuntimeError("; ".join(errors))
+
+    def uninstall_with_transient_local_registration(
+        self, state: MarketplaceState
+    ) -> int:
+        lease: MarketplaceWriteLease | None = None
+        source_snapshot: SourceSnapshot | None = None
+        command_started = False
+        original_exit_code = 0
+        try:
+            with defer_termination_signals():
+                lease, source_snapshot = self.create_transient_local_registration(state)
+            self.codex_plugin_installed_with_contract(
+                lease.written_snapshot, source_snapshot
+            )
+            command_started = True
+            result = self.run_codex("remove")
+            original_exit_code = (
+                result.interruption_exit_code or 130
+                if result.interrupted
+                else result.returncode
+            )
+            installed_after = self.codex_plugin_installed_with_contract(
+                lease.written_snapshot, source_snapshot
+            )
+            if installed_after:
+                retry_result = self.run_codex("remove")
+                retry_abnormal = (
+                    retry_result.interrupted or retry_result.returncode != 0
+                )
+                if original_exit_code == 0 and retry_abnormal:
+                    original_exit_code = (
+                        retry_result.interruption_exit_code or 130
+                        if retry_result.interrupted
+                        else retry_result.returncode
+                    )
+                installed_after = self.codex_plugin_installed_with_contract(
+                    lease.written_snapshot, source_snapshot
+                )
+            if installed_after:
+                print(
+                    "Partial state recovery required: Codex still reports the "
+                    "plugin installed after bounded removal attempts. The exact "
+                    "transient marketplace registration and source link were "
+                    "preserved so the orphan remains discoverable.",
+                    file=sys.stderr,
+                )
+                print(f"Marketplace: {self.marketplace_file}", file=sys.stderr)
+                print(f"Source symlink: {self.source_root}", file=sys.stderr)
+                return original_exit_code or 1
+            with defer_termination_signals():
+                self.restore_transient_local_registration(state, lease, source_snapshot)
+        except KeyboardInterrupt:
+            try:
+                if (
+                    command_started
+                    and lease is not None
+                    and source_snapshot is not None
+                ):
+                    installed_after = self.codex_plugin_installed_with_contract(
+                        lease.written_snapshot, source_snapshot
+                    )
+                    if installed_after:
+                        self.run_codex("remove")
+                        installed_after = self.codex_plugin_installed_with_contract(
+                            lease.written_snapshot, source_snapshot
+                        )
+                    if not installed_after:
+                        with defer_termination_signals():
+                            self.restore_transient_local_registration(
+                                state, lease, source_snapshot
+                            )
+                elif lease is not None and source_snapshot is not None:
+                    with defer_termination_signals():
+                        self.restore_transient_local_registration(
+                            state, lease, source_snapshot
+                        )
+            except BaseException as recovery_error:
+                print(
+                    "Partial state recovery required after interruption; exact "
+                    "transient discovery state was preserved when recovery could "
+                    f"not be verified: {recovery_error}",
+                    file=sys.stderr,
+                )
+            raise
+        except BaseException:
+            if (
+                not command_started
+                and lease is not None
+                and source_snapshot is not None
+            ):
+                with defer_termination_signals():
+                    self.restore_transient_local_registration(
+                        state, lease, source_snapshot
+                    )
+            raise
+
+        print(
+            "Verified Codex-owned installed configuration and cache absent using "
+            f"a transient exact registration and codex plugin remove {PLUGIN_REF}."
+        )
+        print("Restored the original absent local marketplace/source state exactly.")
+        print(f"Preserved source repository: {self.bid_root}")
+        return original_exit_code
+
     def uninstall(self) -> int:
         state = self.load_marketplace()
         source_preflight_snapshot = self.validate_source()
@@ -1639,62 +2102,7 @@ class LocalLifecycle:
             )
 
         if not local_entry_present:
-            try:
-                codex_result = self.run_codex("remove")
-                if codex_result.interrupted or codex_result.returncode != 0:
-                    original_exit_code = (
-                        codex_result.interruption_exit_code
-                        if codex_result.interrupted
-                        else codex_result.returncode
-                    )
-                    retry_result = self.run_codex("remove")
-                    if retry_result.interrupted or retry_result.returncode != 0:
-                        print(
-                            "Partial state recovery required: abnormal direct "
-                            "remove could not converge the orphan/absent local "
-                            f"state ({retry_result.returncode}).",
-                            file=sys.stderr,
-                        )
-                        return (
-                            retry_result.interruption_exit_code
-                            if retry_result.interrupted
-                            else original_exit_code
-                        ) or 1
-                    print(
-                        "Retried abnormal direct remove and converged Codex-owned "
-                        "state to absent; local registration and source were "
-                        "already absent.",
-                        file=sys.stderr,
-                    )
-                    return original_exit_code or 1
-            except KeyboardInterrupt:
-                convergence_result = self.run_codex("remove")
-                if (
-                    convergence_result.interrupted
-                    or convergence_result.returncode != 0
-                ):
-                    print(
-                        "Partial state recovery required: termination during "
-                        "direct-remove result dispatch was followed by an "
-                        "abnormal convergence retry "
-                        f"({convergence_result.returncode}).",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(
-                        "Termination during direct-remove result dispatch was "
-                        "followed by an idempotent convergence retry.",
-                        file=sys.stderr,
-                    )
-                raise
-            print(
-                "Ensured Codex-owned installed configuration and cache are "
-                "absent with "
-                f"codex plugin remove {PLUGIN_REF}."
-            )
-            print("Local marketplace entry and source symlink were already absent.")
-            print(f"Preserved source repository: {self.bid_root}")
-            return 0
+            return self.uninstall_with_transient_local_registration(state)
 
         if (
             state.payload is None
@@ -1710,6 +2118,7 @@ class LocalLifecycle:
         codex_installed_before = self.codex_plugin_installed_with_contract(
             state.original_snapshot, source_preflight_snapshot
         )
+        cleanup_started = False
         try:
             codex_result = self.run_codex("remove")
             if codex_result.interrupted:
@@ -1720,16 +2129,14 @@ class LocalLifecycle:
                 )
             if codex_result.returncode != 0:
                 try:
-                    recovery_interruption_code = (
-                        self.restore_codex_state_with_contract(
-                            codex_installed_before,
-                            state.original_snapshot,
-                            source_preflight_snapshot,
-                        )
+                    recovery_interruption_code = self.restore_codex_state_with_contract(
+                        codex_installed_before,
+                        state.original_snapshot,
+                        source_preflight_snapshot,
                     )
                 except Exception as error:  # noqa: BLE001 - incomplete recovery.
-                    recovery_interruption_code = (
-                        self.recovery_interruption_exit_code(error)
+                    recovery_interruption_code = self.recovery_interruption_exit_code(
+                        error
                     )
                     print(
                         f"codex plugin remove failed ({codex_result.returncode}); "
@@ -1743,17 +2150,10 @@ class LocalLifecycle:
                     file=sys.stderr,
                 )
                 return recovery_interruption_code or codex_result.returncode
-        except KeyboardInterrupt as error:
-            self.reconcile_interrupted_remove(
-                143 if isinstance(error, ParentTermination) else 130,
-                codex_installed_before,
-                source_preflight_snapshot,
-            )
-            raise
-        codex_removed = codex_installed_before
-        marketplace_written_snapshot: MarketplaceSnapshot | None = None
-        source_unlinked = False
-        try:
+            codex_removed = codex_installed_before
+            marketplace_written_snapshot: MarketplaceSnapshot | None = None
+            source_unlinked = False
+            cleanup_started = True
             try:
                 recovery_interruption_code = self.restore_codex_state_with_contract(
                     False, state.original_snapshot, source_preflight_snapshot
@@ -1774,10 +2174,22 @@ class LocalLifecycle:
                     state.payload, state.original_mode, state.original_snapshot
                 )
             with defer_termination_signals():
-                self.require_source_snapshot(source_preflight_snapshot)
-                self.source_root.unlink()
+                self.remove_owned_source(source_preflight_snapshot)
                 source_unlinked = True
         except BaseException as error:  # noqa: BLE001 - restore pre-operation state.
+            if not cleanup_started:
+                if isinstance(error, KeyboardInterrupt):
+                    self.reconcile_interrupted_remove(
+                        143 if isinstance(error, ParentTermination) else 130,
+                        codex_installed_before,
+                        source_preflight_snapshot,
+                    )
+                raise
+            if not source_unlinked:
+                try:
+                    source_unlinked = not self.capture_source_snapshot().exists
+                except Exception:
+                    source_unlinked = False
             if codex_removed:
                 recovery_result = self.compensate_failed_uninstall(
                     error,
@@ -1826,13 +2238,16 @@ def main() -> int:
         )
         return 2
     lifecycle = LocalLifecycle(Path(sys.argv[2]))
-    with parent_termination_handler():
-        with lifecycle.lifecycle_lock():
-            return (
-                lifecycle.install()
-                if sys.argv[1] == "install"
-                else lifecycle.uninstall()
-            )
+    try:
+        with parent_termination_handler():
+            with lifecycle.lifecycle_lock():
+                return (
+                    lifecycle.install()
+                    if sys.argv[1] == "install"
+                    else lifecycle.uninstall()
+                )
+    finally:
+        lifecycle.report_recovery_artifacts()
 
 
 try:
