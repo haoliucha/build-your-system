@@ -1,25 +1,27 @@
 {
   "name": "x-image",
-  "version": "0.1.0",
-  "description": "Generate complete X article covers and article illustrations with one built-in ImageGen call per asset.",
+  "version": "0.1.0+codex.20260721030132",
+  "description": "Preview five built-in visual styles or generate complete X article covers and illustrations.",
   "author": {
     "name": "J. Liu"
   },
   "skills": "./skills",
   "interface": {
     "displayName": "X Image",
-    "shortDescription": "One-call covers and article illustrations",
-    "longDescription": "Generate complete X article covers, article heroes, explainers, data visuals, and vertical illustrations. Codex selects ratio, style, and layout, then calls built-in ImageGen exactly once per asset with no image post-processing.",
+    "shortDescription": "Preview styles or generate X article images",
+    "longDescription": "Preview five bundled visual styles with zero generation calls, or generate complete X article covers, article heroes, explainers, data visuals, and vertical illustrations. Codex selects ratio, style, and layout, then calls built-in ImageGen exactly once per asset with no image post-processing.",
     "developerName": "J. Liu",
     "category": "Productivity",
     "capabilities": [
       "Skills",
       "Image generation",
-      "Article workflow"
+      "Article workflow",
+      "Style previews"
     ],
     "defaultPrompt": [
-      "给这篇 X 文章生成一张封面",
-      "为这篇文章生成一张正文解释图",
+      "\u7ed9\u8fd9\u7bc7 X \u6587\u7ae0\u751f\u6210\u4e00\u5f20\u5c01\u9762",
+      "\u4e3a\u8fd9\u7bc7\u6587\u7ae0\u751f\u6210\u4e00\u5f20\u6b63\u6587\u89e3\u91ca\u56fe",
+      "\u9884\u89c8 X Image \u7684\u5168\u90e8\u98ce\u683c",
       "Create two consistent article illustrations from this Markdown file"
     ],
     "brandColor": "#1DA1F2"

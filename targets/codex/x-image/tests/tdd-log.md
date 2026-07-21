@@ -447,3 +447,43 @@ Both atomic placement tests, all 9 prompt-contract tests, all 9 plugin tests, an
 
 Commit:
 `fix(x-image): place originals atomically`
+
+## 2026-07-21 — Built-in system styles and zero-call previews
+
+Behavior:
+X Image exposes five built-in styles, including specialized tactile-system and isometric-mechanism presets. A style-list or preview request returns versioned static PNGs in manifest order with zero ImageGen calls. The default remains `editorial-material`.
+
+Skill baseline:
+An isolated agent read the old skill and confirmed that it could only return the three text Style Specs. It found no preview route, gallery, stable Style-ID-to-image mapping, or way to show visual previews without generating new assets. It explicitly rejected ignored acceptance output as an official gallery.
+
+RED commands:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_style_contract.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_style_previews.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_codex_plugin.py' -v`
+
+Expected failure:
+The two new Style Specs, five-image preview manifest, preview source link, zero-generation skill branch, and surfaced plugin capability do not exist.
+
+Observed failure:
+The style suite failed on both missing specs and routing rules. The preview suite failed because the manifest and PNGs were absent. The plugin suite failed because the preview link and zero-call branch were absent. A separate manifest-capability RED test failed because `Style previews` was not surfaced in plugin metadata.
+
+Preview generation evidence:
+The first `terminal-tech` attempt was preserved as FAIL because placeholder body-copy bars violated the pseudo-writing rule. Per the no-retry contract, that batch stopped. A new explicit user request started a fresh batch. All five final previews were then generated with one built-in call each, zero edit calls, and zero image modification commands. Each passed read-only content and style QA at 1672 × 941; hashes are locked in `previews/manifest.json`.
+
+GREEN commands:
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_style_contract.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_style_previews.py' -v`
+
+`python3 -m unittest discover -s targets/codex/x-image/tests -p 'test_codex_plugin.py' -v`
+
+Observed result:
+All 13 style tests, all 3 preview tests, and all 11 plugin tests passed. The isolated skill scenario also passed: it selected all five manifest entries in stable order, returned static local images, and used zero generation calls. The style suite also locks the Chinese aliases `纸张材料风` / `纸片系统图` and `等距机械装置` / `等距机械风` to the two new built-ins.
+
+Final verification:
+The complete 55-test suite passed with zero failures and zero errors. Both the `local` cache and the cachebuster version cache contain real, self-contained `references`, `styles`, and `previews` directories. All five cached PNG hashes match the manifest, and Codex reports `x-image@local-build-your-system` installed and enabled.
+
+Commit:
+`feat(x-image): add built-in style previews`

@@ -18,10 +18,24 @@ class CodexPluginTests(unittest.TestCase):
             CODEX_X_IMAGE / ".codex-plugin" / "plugin.json"
         )
         self.assertEqual(manifest.get("name"), "x-image")
-        self.assertEqual(manifest.get("version"), "0.1.0")
+        self.assertRegex(
+            manifest.get("version", ""),
+            r"^0\.1\.0(?:\+codex\.[A-Za-z0-9.-]+)?$",
+        )
         self.assertEqual(manifest.get("skills"), "./skills")
         self.assertEqual(manifest.get("author", {}).get("name"), "J. Liu")
         self.assertIn("Image generation", manifest.get("interface", {}).get("capabilities", []))
+
+    def test_manifest_surfaces_static_style_previews(self):
+        manifest = read_json_optional(
+            CODEX_X_IMAGE / ".codex-plugin" / "plugin.json"
+        )
+        interface = manifest.get("interface", {})
+        self.assertIn("Style previews", interface.get("capabilities", []))
+        self.assertIn("zero generation calls", interface.get("longDescription", ""))
+        self.assertTrue(
+            any("预览" in prompt for prompt in interface.get("defaultPrompt", []))
+        )
 
     def test_repo_marketplace_registration(self):
         marketplace = read_json_optional(
@@ -49,12 +63,16 @@ class CodexPluginTests(unittest.TestCase):
         skill_root = CODEX_X_IMAGE / "skills" / "x-image"
         references = skill_root / "references"
         styles = skill_root / "styles"
+        previews = skill_root / "previews"
         self.assertTrue(references.is_symlink())
         self.assertTrue(styles.is_symlink())
+        self.assertTrue(previews.is_symlink())
         if references.is_symlink():
             self.assertEqual(references.resolve(), (SHARED / "references").resolve())
         if styles.is_symlink():
             self.assertEqual(styles.resolve(), (SHARED / "styles").resolve())
+        if previews.is_symlink():
+            self.assertEqual(previews.resolve(), (SHARED / "previews").resolve())
 
     def test_installer_uses_self_contained_cache_contract(self):
         installer = read_optional(
@@ -116,6 +134,20 @@ class CodexPluginTests(unittest.TestCase):
             "Invocation origin: Claude through Codex Rescue",
             "Host: native Codex",
             "Host: Claude through Codex Rescue",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, skill)
+
+    def test_native_skill_has_zero_generation_preview_mode(self):
+        skill = read_optional(
+            CODEX_X_IMAGE / "skills" / "x-image" / "SKILL.md"
+        )
+        for phrase in (
+            "Style preview mode",
+            "previews/manifest.json",
+            "Do not call `image_gen`",
+            "zero generation calls",
+            "style reference, not a pixel-level promise",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, skill)

@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "capture-clarify-connect-express",
+  "note": "Static previews are style references, not pixel-level promises.",
+  "styles": [
+    {
+      "id": "terminal-tech",
+      "displayNameZh": "终端科技",
+      "useForZh": "技术封面、开源项目、开发者工具",
+      "preview": "terminal-tech.png",
+      "ratio": "16:9",
+      "width": 1672,
+      "height": 941,
+      "benchmark": "capture-clarify-connect-express",
+      "sha256": "68b1b59a33138ace45316435a59ac3205c04d55f4958f7ff227683340e2644b7"
+    },
+    {
+      "id": "editorial-material",
+      "displayNameZh": "编辑材料",
+      "useForZh": "通用解释图、教育、人文、单一流程",
+      "preview": "editorial-material.png",
+      "ratio": "16:9",
+      "width": 1672,
+      "height": 941,
+      "benchmark": "capture-clarify-connect-express",
+      "sha256": "f347a4f51906d91ab419d0a65c1b3b2d75ca00d0111638b784aeadbf738c2205"
+    },
+    {
+      "id": "data-editorial",
+      "displayNameZh": "数据编辑",
+      "useForZh": "排名、趋势、指标、比较",
+      "preview": "data-editorial.png",
+      "ratio": "16:9",
+      "width": 1672,
+      "height": 941,
+      "benchmark": "capture-clarify-connect-express",
+      "sha256": "c403280a06b9cf8a7cbfd82c0ae6ca1e3aab0897fbcaf749bea17577d8c44aa8"
+    },
+    {
+      "id": "tactile-systems",
+      "displayNameZh": "纸张材料系统图",
+      "useForZh": "因果回路、流程地图、运营模型",
+      "preview": "tactile-systems.png",
+      "ratio": "16:9",
+      "width": 1672,
+      "height": 941,
+      "benchmark": "capture-clarify-connect-express",
+      "sha256": "de4d39dcdcb4a10984fa9a27ad6e6d56b326c803fdaedfb725341a998d95f672"
+    },
+    {
+      "id": "isometric-systems",
+      "displayNameZh": "等距机械装置",
+      "useForZh": "系统架构、管线、反馈机制、空间流程",
+      "preview": "isometric-systems.png",
+      "ratio": "16:9",
+      "width": 1672,
+      "height": 941,
+      "benchmark": "capture-clarify-connect-express",
+      "sha256": "8378c6918d3882d2e4117d527e00caf11de1ca9fb7894243c20054bbc816c3a5"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 ---
 name: x-image
-description: Use when the user wants an X article cover, article illustration, explainer, data visual, article hero, vertical image, share image, or custom-ratio article image in Claude Code.
+description: Use when the user wants an X Image style list or preview, article cover, article illustration, explainer, data visual, article hero, vertical image, share image, or custom-ratio article image in Claude Code.
 ---
 
 # X Image Claude Bridge

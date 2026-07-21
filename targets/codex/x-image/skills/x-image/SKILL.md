@@ -1,6 +1,6 @@
 ---
 name: x-image
-description: Use when the user wants an X article cover, article hero, inline explainer, data visual, vertical illustration, share image, or one or more article illustrations generated from a file, directory, text, data, or image brief.
+description: Use when the user wants an X Image style list or preview, article cover, article hero, inline explainer, data visual, vertical illustration, share image, or one or more article illustrations generated from a file, directory, text, data, or image brief.
 ---
 
 # X Image
@@ -28,9 +28,21 @@ Before planning an image, read these files completely:
 - `references/prompt-contract.md`
 - `references/qa-checklist.md`
 
-After choosing a built-in Style ID, read the matching file under `styles/`. For a custom style, read all three built-in presets first so the task-local Style Spec preserves their level of precision.
+After choosing a built-in Style ID, read the matching file under `styles/`. For a custom style, read all five built-in presets first so the task-local Style Spec preserves their level of precision.
+
+## Style preview mode
+
+When the user asks which styles exist, requests style examples, or asks to preview one or all styles, use preview mode before the generation workflow:
+
+1. Read `previews/manifest.json` and select the requested entry or all entries in manifest order.
+2. Return each Style ID, Chinese display name, use case, and the corresponding local static PNG as a Markdown image.
+3. State that each image is a style reference, not a pixel-level promise.
+
+Do not call `image_gen`, load the `imagegen` skill, copy files, or create output files in preview mode. A preview response must use zero generation calls. If preview and generation are requested together without a final style choice, show the previews and wait for the user's selection before generating.
 
 ## Workflow
+
+Use this workflow only for generation requests, not style preview mode.
 
 ### 1. Resolve the source
 

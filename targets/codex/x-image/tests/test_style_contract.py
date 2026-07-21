@@ -21,6 +21,8 @@ class StyleContractTests(unittest.TestCase):
             "terminal-tech",
             "editorial-material",
             "data-editorial",
+            "tactile-systems",
+            "isometric-systems",
         ):
             with self.subTest(style_id=style_id):
                 self.assertIn(f"id: {style_id}", combined)
@@ -120,6 +122,48 @@ class StyleContractTests(unittest.TestCase):
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, editorial)
+
+    def test_tactile_systems_is_a_specialized_physical_system_diagram(self):
+        tactile = self.styles["tactile-systems.md"]
+        for phrase in (
+            "layered paper",
+            "card modules",
+            "causal loops",
+            "process maps",
+            "not a generic editorial-material illustration",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, tactile)
+
+    def test_isometric_systems_uses_spatial_mechanisms_without_factory_cliches(self):
+        isometric = self.styles["isometric-systems.md"]
+        for phrase in (
+            "isometric",
+            "conveyors",
+            "spatial process",
+            "front-facing label plates",
+            "factory scenery",
+            "robots",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, isometric)
+
+    def test_new_styles_are_routed_without_changing_the_default(self):
+        for phrase in (
+            "`tactile-systems`",
+            "`isometric-systems`",
+            "The default preset remains `editorial-material`.",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.policy)
+
+    def test_chinese_aliases_route_to_the_new_builtin_styles(self):
+        for phrase in (
+            "`纸张材料风` and `纸片系统图` route to `tactile-systems`",
+            "`等距机械装置` and `等距机械风` route to `isometric-systems`",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.policy)
 
 
 if __name__ == "__main__":

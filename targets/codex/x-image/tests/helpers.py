@@ -20,7 +20,11 @@ STYLE_NAMES = (
     "terminal-tech.md",
     "editorial-material.md",
     "data-editorial.md",
+    "tactile-systems.md",
+    "isometric-systems.md",
 )
+
+STYLE_IDS = tuple(name.removesuffix(".md") for name in STYLE_NAMES)
 
 
 def read(path: Path) -> str:

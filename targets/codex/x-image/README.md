@@ -2,6 +2,8 @@
 
 Native Codex plugin for generating complete X article covers and article illustrations. Each requested asset uses one built-in ImageGen call, retains the original output, and receives a read-only QA decision.
 
+The plugin also includes five versioned style previews. Listing or previewing styles uses the bundled static PNGs and makes no ImageGen call.
+
 ## Install locally
 
 ```bash
@@ -24,6 +26,8 @@ Start a new Codex task after installation so the skill index refreshes.
 为 article.md 生成一张 3:2 正文解释图
 根据 data.md 生成 16:9 数据型文章头图
 Create two consistent article illustrations from article.md
+预览 X Image 的全部风格
+预览 isometric-systems 风格
 ```
 
 If only a path is supplied, the default is one cover. Explicit intent, count, ratio, style, and destination override their corresponding defaults.
@@ -34,3 +38,4 @@ If only a path is supplied, the default is one cover. Explicit intent, count, ra
 - No automatic retry or image modification.
 - Existing files receive versioned sibling names.
 - No publishing, uploading, article editing, or X account action.
+- Style preview mode is static and uses zero generation calls.
