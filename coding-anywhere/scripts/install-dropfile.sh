@@ -340,7 +340,10 @@ if [[ $DRY_RUN == 0 ]]; then
 # 也就是说：你 ssh 连着哪台，dropfile 默认就推给哪台，通常不用管这里。
 # 想关掉自动识别： DROPFILE_AUTODETECT=0
 DROP_HOST="$DROP_HOST"
-REMOTE_SCRIPT_FILE="$REMOTE_BIN/drop-file.sh"
+# 这里必须是**单引号**：$HOME 要留到远端才展开。用双引号的话 dropfile
+# 每次 source 配置都会被本地 shell 展开，把本地 home 路径发到远端去执行 ——
+# 本地与远端用户名相同时完全看不出来，异构用户名（summerliu → jliu）必炸
+REMOTE_SCRIPT_FILE='$REMOTE_BIN/drop-file.sh'
 DROPFILE_MAX_MB=$MAX_MB
 PNGPASTE="$PNGPASTE"
 # 排查问题时取消下面这行注释，会记录每次自动粘贴的等待与结果

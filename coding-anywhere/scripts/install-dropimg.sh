@@ -181,7 +181,10 @@ if [[ $DRY_RUN == 0 ]]; then
 # dropimg 配置（由 install-dropimg.sh 生成）
 # 环境变量同名项会覆盖这里的值
 DROP_HOST="$DROP_HOST"
-REMOTE_SCRIPT="$REMOTE_BIN/drop-image.sh"
+# 这里必须是**单引号**：$HOME 要留到远端才展开。用双引号的话 dropfile
+# 每次 source 配置都会被本地 shell 展开，把本地 home 路径发到远端去执行 ——
+# 本地与远端用户名相同时完全看不出来，异构用户名（summerliu → jliu）必炸
+REMOTE_SCRIPT='$REMOTE_BIN/drop-image.sh'
 PNGPASTE="$PNGPASTE"
 # 排查问题时取消下面这行的注释，会记录每次自动粘贴的等待与结果
 # DROPIMG_DEBUG_LOG="/tmp/dropimg-debug.log"
