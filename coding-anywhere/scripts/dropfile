@@ -185,9 +185,28 @@ push_one() {
   # 把上限一并传给远端：否则客户端 DROPFILE_MAX_MB=50 放宽了，远端仍按自己的
   # 默认 15MB 拒绝。远端的检查是防"版本不一致/脚本被绕过"这类意外，
   # 不是多租户下的防恶意，所以尊重客户端显式配置是合理的。
-  out="$("$BASE64" < "$path" | "$SSH" -o BatchMode=yes -o ConnectTimeout=8 \
-        "$DROP_HOST" "DROPFILE_MAX_MB=$MAX_MB bash $REMOTE_SCRIPT $(printf '%q' "$name")")" \
-    || die "SSH 推送失败（${DROP_HOST}）"
+  # ssh 的 stderr 单独接住：光说"SSH 推送失败"等于没说，用户还得自己去复现一遍
+  # 才知道是密钥没确认、机器睡了、还是免密没配
+  local sshlog; sshlog="$("$MKTEMP" -t dropfile-ssh)"
+  TMPS+=("$sshlog")
+  if ! out="$("$BASE64" < "$path" | "$SSH" -o BatchMode=yes -o ConnectTimeout=8 \
+        "$DROP_HOST" "DROPFILE_MAX_MB=$MAX_MB bash $REMOTE_SCRIPT $(printf '%q' "$name")" \
+        2>"$sshlog")"; then
+    local reason; reason="$(/usr/bin/tr -d '\r' < "$sshlog" | /usr/bin/grep -v '^$' | /usr/bin/head -1)"
+    case "$reason" in
+      *"Host key verification failed"*)
+        # known_hosts 是按你输入的字面量索引的：用 IP 连过、再用主机名连，
+        # 在 SSH 眼里就是新主机，要确认指纹；而 BatchMode 禁止交互，直接失败。
+        # 自动识别出的形式与安装时验证的形式不同，就会撞上这个。
+        die "${DROP_HOST} 的主机密钥没确认过，先跑一次: ssh ${DROP_HOST}" ;;
+      *"Permission denied"*)
+        die "${DROP_HOST} 免密登录没配好，先跑: ssh-copy-id ${DROP_HOST}" ;;
+      "")
+        die "SSH 推送失败（${DROP_HOST}）" ;;
+      *)
+        die "SSH 失败（${DROP_HOST}）：${reason}" ;;
+    esac
+  fi
   # ↑ 必须写 ${DROP_HOST} 而不是 $DROP_HOST：后面紧跟全角括号时，set -u 下
   #   bash 会把多字节字符的首字节吞进变量名，报 "DROP_HOST?: unbound variable"
   [[ -n "$out" ]] || die "远端没有返回路径"
