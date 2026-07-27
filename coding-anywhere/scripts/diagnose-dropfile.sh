@@ -11,6 +11,18 @@
 #   2. 本地没装 Karabiner-Elements —— 安装器会 warn 但不中止，容易被忽略
 #   3. 装了但规则写进了未选中的 profile —— 规则在，就是不生效
 
+# 选一个真能用的 python3：Homebrew 的 python 可能因 pyexpat 与系统 libexpat
+# 版本不匹配而无法 import plistlib（实测 3.14.4 是坏的），PATH 里解析到的常是它
+pick_python() {
+  local p
+  for p in /usr/bin/python3 "$(command -v python3 2>/dev/null || true)"; do
+    [[ -x "$p" ]] || continue
+    "$p" -c 'import json, plistlib' >/dev/null 2>&1 && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+PY3="$(pick_python || echo python3)"
+
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$1"; }
@@ -71,7 +83,7 @@ KJSON="$HOME/.config/karabiner/karabiner.json"
 if [[ ! -f "$KJSON" ]]; then
   bad "没有 $KJSON"
 else
-  python3 - <<'PY'
+  "$PY3" - <<'PY'
 import json, os
 p = os.path.expanduser("~/.config/karabiner/karabiner.json")
 d = json.load(open(p))
@@ -101,7 +113,7 @@ PY
 fi
 
 sec "5. 该组合键是否被别的规则抢了"
-python3 - <<'PY' 2>/dev/null
+"$PY3" - <<'PY' 2>/dev/null
 import json, os
 p = os.path.expanduser("~/.config/karabiner/karabiner.json")
 if os.path.exists(p):
