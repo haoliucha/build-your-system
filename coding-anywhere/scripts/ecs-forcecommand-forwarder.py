@@ -152,14 +152,18 @@ def is_sftp_subsystem_request(original: str) -> bool:
     ForceCommand 会把子系统请求压成普通命令字符串塞进 SSH_ORIGINAL_COMMAND，
     收到的具体值取决于本机 sshd_config 的 `Subsystem sftp …` —— 可能是 `sftp`、
     `internal-sftp`，也可能是解析后的绝对路径（本机实测
-    `/usr/libexec/openssh/sftp-server`），所以按 basename 认。
+    `/usr/libexec/openssh/sftp-server`），所以按第一个 token 的 basename 认。
+
+    **只看第一个 token**：`Subsystem subsystem command` 里的 command 是可以带参数的
+    （`Subsystem sftp internal-sftp -d /srv`），要求整条只有一个 token 会把这类
+    服务器的 sftp 请求判掉。
 
     当普通命令转发过去的话，后端会去执行 sftp 那个**客户端**程序，
     协议对不上直接 `Connection closed` —— 症状就是走中继的 scp 全挂
     （dropfile 安装器把 DROP_HOST 指向中继时就踩这个）。
     """
     argv = safe_split(original)
-    return len(argv) == 1 and os.path.basename(argv[0]) in {
+    return bool(argv) and os.path.basename(argv[0]) in {
         "sftp",
         "internal-sftp",
         "sftp-server",
@@ -319,7 +323,10 @@ def main() -> int:
         )
         return 0
 
-    if is_sftp_subsystem_request(original):
+    # 加 not client_requested_tty() 是为了不误伤 `ssh -t relay 'sftp somehost'`
+    # ——那是真的想在后端跑 sftp 客户端。真正的子系统请求（scp / sftp）从不申请 pty，
+    # 所以"没要终端"是个免费且可靠的旁证。
+    if not client_requested_tty() and is_sftp_subsystem_request(original):
         # 往后端发的必须是子系统**名字**（`sftp`），不是本机 sshd 解析出来的路径 ——
         # 后端 sshd 会用自己的 Subsystem 配置把名字映射到它自己的 sftp-server
         # （macOS 上是 /usr/libexec/sftp-server，和 Linux 不是一个路径）。

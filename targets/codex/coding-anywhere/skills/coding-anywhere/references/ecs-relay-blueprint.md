@@ -114,7 +114,11 @@ ssh root@<your-ecs-ip> 'chmod 755 /usr/local/bin/coding-anywhere-forwarder
 SFTP 那条不能当普通命令转发：OpenSSH 9 起 `scp` 默认走 SFTP，客户端发的是
 `ssh -s host sftp`；ForceCommand 会把子系统请求压成一个命令字符串，**具体值取决于
 本机 `Subsystem sftp …` 的配置**（可能是 `sftp`、`internal-sftp`，本机实测是解析后的
-`/usr/libexec/openssh/sftp-server`，所以脚本按 basename 认）。当普通命令转发过去，
+`/usr/libexec/openssh/sftp-server`，所以脚本按**第一个 token 的 basename** 认 ——
+`Subsystem subsystem command` 里的 command 允许带参数，例如
+`Subsystem sftp internal-sftp -d /srv`，要求整条只有一个 token 会把这类服务器判掉）。
+另外还要求客户端**没申请 pty**：真正的 scp/sftp 从不申请，而 `ssh -t relay 'sftp host'`
+是真想在后端跑 sftp 客户端，不能误伤。当普通命令转发过去，
 后端会去执行 sftp 那个**客户端**程序，协议对不上直接 `Connection closed`。
 往后端发的必须是子系统**名字** `sftp` —— 后端 sshd 用自己的配置把它映射到自己的
 sftp-server（macOS 上是 `/usr/libexec/sftp-server`，和 Linux 不同路径）。
