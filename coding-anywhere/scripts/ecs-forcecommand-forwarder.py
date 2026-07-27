@@ -197,20 +197,29 @@ def is_sftp_subsystem_request(original: str) -> bool:
     }
 
 
-def validated_env_prefix(assignments: List[str]) -> List[str]:
+def ensure_safe_assignment(assignment: str, source: str) -> None:
     """白名单外的赋值一律拒绝连接，不是悄悄丢掉。
 
     悄悄丢掉的话，客户端指定的 locale 明明没生效却毫无提示（就是上一版的 bug）；
     而一个被拒的 LD_PRELOAD 更应该让人立刻看见，而不是当作噪音抹掉。
+
+    客户端能把环境变量塞进来的入口不止一个 —— 命令前缀 `LANG=… mosh-server`
+    是一个，`mosh-server new -l NAME=VALUE` 是另一个（那个 -l 设的是
+    mosh-server **子进程**的环境，而子进程正是我们 exec 出去的 ssh）。
+    两个入口必须共用同一套策略，否则堵了一扇门另一扇还开着。
     """
+    name = assignment.split("=", 1)[0]
+    if not ENV_ASSIGNMENT_RE.match(assignment) or not SAFE_ENV_NAME_RE.match(name):
+        sys.stderr.write(
+            f"coding-anywhere-forwarder: {source} 不接受环境变量 {name}"
+            "（只允许 LANG / LANGUAGE / LC_* / TERM）\n"
+        )
+        raise SystemExit(78)  # EX_CONFIG
+
+
+def validated_env_prefix(assignments: List[str]) -> List[str]:
     for assignment in assignments:
-        name = assignment.split("=", 1)[0]
-        if not SAFE_ENV_NAME_RE.match(name):
-            sys.stderr.write(
-                f"coding-anywhere-forwarder: 不接受环境变量 {name}"
-                "（只允许 LANG / LANGUAGE / LC_* / TERM）\n"
-            )
-            raise SystemExit(78)  # EX_CONFIG
+        ensure_safe_assignment(assignment, "命令前缀")
     return assignments
 
 
@@ -309,6 +318,7 @@ def extract_mosh_forwarded_args(
         remote_command = []
         saw_port = False
         after_separator = False
+        expect_locale_value = False
         for arg in candidate[mosh_index + 1 :]:
             if after_separator:
                 remote_command.append(arg)
@@ -316,7 +326,17 @@ def extract_mosh_forwarded_args(
             if arg == "--":
                 after_separator = True
                 continue
-            if arg == "-p":
+            # mosh-server 的 `-l NAME=VALUE` 设的是它**子进程**的环境，而子进程
+            # 正是我们 exec 出去的 ssh —— 和命令前缀是同一个逃逸面，同一套策略。
+            # 两种写法都要管：分开的 `-l X=y` 和粘连的 `-lX=y`。
+            if expect_locale_value:
+                ensure_safe_assignment(arg, "mosh-server -l")
+                expect_locale_value = False
+            elif arg == "-l":
+                expect_locale_value = True
+            elif arg.startswith("-l") and len(arg) > 2:
+                ensure_safe_assignment(arg[2:], "mosh-server -l")
+            elif arg == "-p":
                 saw_port = True
             forwarded.append(arg)
         if FORCED_MOSH_PORT and not saw_port:
