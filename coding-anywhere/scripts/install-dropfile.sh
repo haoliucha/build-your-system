@@ -12,8 +12,10 @@
 #   bash install-dropfile.sh user@host    # 显式指定
 #
 # 选项：
-#   --key <组合>        全局快捷键，默认 ctrl+opt+v；格式如 cmd+shift+i
-#   --no-karabiner      不配置快捷键，只装命令
+#   --key <组合>        快捷键，默认 ctrl+opt+v；格式如 cmd+shift+i
+#   --iterm2            用 iTerm2 Coprocess（装了 iTerm2 时的默认选择）
+#   --karabiner         用 Karabiner 全局快捷键（需装应用并授予系统权限）
+#   --no-hotkey         不配置快捷键，只装命令（旧名 --no-karabiner 仍可用）
 #   --no-cleanup        不在远端安装定期清理任务
 #   --max-mb <N>        文件大小上限，默认 15
 #   --remote-dir <路径>  远端落盘目录，默认 ~/Drops
@@ -47,8 +49,11 @@ mirror_urls() {  # $1 = 文件名
 # ---------- 参数 ----------
 DROP_HOST=""
 HOTKEY="ctrl+opt+v"
-WITH_KARABINER=1
-WITH_ITERM2=0
+# auto = 装了 iTerm2 就走 Coprocess，否则回落 Karabiner
+# 为什么默认偏向 iTerm2：不用装应用、不用授予输入监控/辅助功能权限，
+# 而且**不模拟按键** —— 那一整类"发得太早"的时序竞态从物理上不存在。
+# Karabiner 留给不用 iTerm2、或确实需要全局快捷键（在别的 app 里也能按）的人。
+HOTKEY_MODE="auto"     # auto | iterm2 | karabiner | none
 WITH_CLEANUP=1
 MAX_MB=15
 REMOTE_DIR='$HOME/Drops'
@@ -57,10 +62,11 @@ DRY_RUN=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --key)          HOTKEY="$2"; shift 2 ;;
-    # 走 iTerm2 Coprocess：不需要 Karabiner、不需要任何系统权限，
-    # 也不需要模拟 ⌘V（输出由 iTerm2 直接注入 session）
-    --iterm2)       WITH_ITERM2=1; WITH_KARABINER=0; shift ;;
-    --no-karabiner) WITH_KARABINER=0; shift ;;
+    --iterm2)       HOTKEY_MODE="iterm2"; shift ;;
+    --karabiner)    HOTKEY_MODE="karabiner"; shift ;;
+    --no-hotkey)    HOTKEY_MODE="none"; shift ;;
+    # 保留兼容：已发布过的选项名
+    --no-karabiner) HOTKEY_MODE="none"; shift ;;
     --no-cleanup)   WITH_CLEANUP=0; shift ;;
     --max-mb)       MAX_MB="$2"; shift 2 ;;
     --remote-dir)   REMOTE_DIR="$2"; shift 2 ;;
@@ -70,6 +76,24 @@ while [[ $# -gt 0 ]]; do
     *)              DROP_HOST="$1"; shift ;;
   esac
 done
+
+# ---------- 决议快捷键方式 ----------
+# 探测 iTerm2：不能只看 /Applications —— 不想输管理员密码的人普遍装在 ~/Applications
+ITERM_APP=""
+for _p in /Applications/iTerm.app "$HOME/Applications/iTerm.app"; do
+  [[ -d "$_p" ]] && ITERM_APP="$_p" && break
+done
+[[ -z "$ITERM_APP" ]] && ITERM_APP="$(mdfind "kMDItemCFBundleIdentifier == 'com.googlecode.iterm2'" 2>/dev/null | head -1)"
+
+if [[ "$HOTKEY_MODE" == "auto" ]]; then
+  if [[ -n "$ITERM_APP" ]]; then
+    HOTKEY_MODE="iterm2"
+  elif [[ -d /Applications/Karabiner-Elements.app ]]; then
+    HOTKEY_MODE="karabiner"
+  else
+    HOTKEY_MODE="none"
+  fi
+fi
 
 BIN_DIR="$HOME/.local/bin"
 CONFIG_DIR="$HOME/.config/dropimg"
@@ -187,7 +211,7 @@ echo "  dropfile 安装器（终端远程传文件）"
 echo "  目标主机 : ${DROP_HOST}（${HOST_SRC}）"
 # ↑ 花括号不能省：全角括号紧跟变量名时，set -u 下 bash 会把多字节首字节
 #   吞进变量名，报 "DROP_HOST?: unbound variable"
-echo "  快捷键   : $([[ $WITH_KARABINER == 1 ]] && echo "$HOTKEY" || echo "(不配置)")"
+echo "  快捷键   : $([[ "$HOTKEY_MODE" != "none" ]] && echo "${HOTKEY}（${HOTKEY_MODE}）" || echo "(不配置)")"
 echo "  大小上限 : ${MAX_MB}MB"
 echo "  远端目录 : $REMOTE_DIR"
 [[ $DRY_RUN == 1 ]] && echo "  模式     : DRY RUN（不实际改动）"
@@ -334,7 +358,7 @@ case ":$PATH:" in
 esac
 
 # ---------- 6. 快捷键 ----------
-if [[ $WITH_ITERM2 == 1 ]]; then
+if [[ "$HOTKEY_MODE" == "iterm2" ]]; then
   step 6/6 "iTerm2 Coprocess 方式（打印配置步骤，不修改你的偏好设置）"
   # 刻意不自动写 iTerm2 偏好：
   #   1) 偏好由 cfprefsd 托管，外部改完必须**重启 iTerm2** 才生效，
@@ -367,7 +391,7 @@ EOF
   else
     warn "没找到 iTerm2 —— 确认在装了 iTerm2 的机器上操作"
   fi
-elif [[ $WITH_KARABINER == 1 ]]; then
+elif [[ "$HOTKEY_MODE" == "karabiner" ]]; then
   step 6/6 "配置 Karabiner 全局快捷键 $HOTKEY"
   KJSON="$HOME/.config/karabiner/karabiner.json"
   if [[ ! -f "$KJSON" ]]; then
@@ -445,7 +469,7 @@ PY
     fi
   fi
 else
-  step 6/6 "跳过快捷键配置（--no-karabiner）"
+  step 6/6 "跳过快捷键配置（--no-hotkey）"
   echo "    需要时手动绑定: AUTO_PASTE=1 $BIN_DIR/dropfile"
 fi
 
@@ -478,7 +502,7 @@ cat <<EOF
 ══════════════════════════════════════════════
 
   日常用法:
-    截图  → $([[ $WITH_KARABINER == 1 || $WITH_ITERM2 == 1 ]] && echo "按 $HOTKEY" || echo "运行 dropfile") → 路径出现在光标处
+    截图  → $([[ "$HOTKEY_MODE" != "none" ]] && echo "按 $HOTKEY" || echo "运行 dropfile") → 路径出现在光标处
     传文件 → dropfile report.pdf
     多文件 → dropfile a.png b.zip c.md
     Finder 里复制文件后 → dropfile（保留原文件名）

@@ -61,10 +61,21 @@ curl -fsSL <同上> | bash -s -- jliu@192.168.1.10
 | 选项 | 说明 |
 |------|------|
 | `--key cmd+shift+i` | 换快捷键（默认 `ctrl+opt+v`） |
-| `--no-karabiner` | 不配快捷键，只装 `dropfile` 命令 |
+| `--iterm2` | 用 iTerm2 Coprocess（**装了 iTerm2 就是默认**） |
+| `--karabiner` | 改用 Karabiner 全局快捷键 |
+| `--no-hotkey` | 不配快捷键，只装 `dropfile` 命令 |
 | `--no-cleanup` | 不装远端定期清理 |
 | `--max-mb 50` | 改大小上限（默认 15MB） |
 | `--dry-run` | 只打印将要做什么 |
+
+### 快捷键怎么触发：默认走 iTerm2，不装 Karabiner
+
+装了 iTerm2 的话，安装器默认用 **iTerm2 Coprocess**：不用装任何应用、
+不用授予系统权限，而且**不模拟按键** —— 那一整类「按了没反应 / 要按两次」的
+时序竞态从物理上就不存在。安装器会打印一段 GUI 配置步骤（约 30 秒，立即生效）。
+
+需要在 iTerm2 之外也能按（比如从 Finder 复制文件后直接按）就加 `--karabiner`，
+代价是装 Karabiner-Elements 并授予输入监控 + 辅助功能权限。
 
 ### 按了快捷键没反应？
 
