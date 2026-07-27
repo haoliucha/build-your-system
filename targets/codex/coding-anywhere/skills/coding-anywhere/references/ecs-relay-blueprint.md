@@ -106,13 +106,16 @@ ssh root@<your-ecs-ip> 'chmod 755 /usr/local/bin/coding-anywhere-forwarder
 
 | 客户端行为 | mode | 转发形态 |
 |---|---|---|
-| 无命令（交互式登录） | `interactive-ssh` | `ssh -tt` 进后端登录 shell |
+| 无命令（`ssh relay` / `ssh -T relay`） | `interactive-ssh` | 进后端登录 shell，是否 `-tt` 见下 |
 | `mosh-server new …` | `mosh-server` | mosh-server 在 **ECS 本机**起，`--` 后的 remote command 用 `ssh -tt` 透传到后端 |
 | 其他命令 | `tty-command-ssh` / `command-ssh` | 原样透传，是否 `-tt` 见下 |
 
-mosh 那条必须是**完整的 `mosh-server new` 形态**才认。只按文件名匹配的话，
-`ssh <relay-user>@<ecs-ip> 'command -v mosh-server'` 这种仅仅提到可执行文件名的命令
-会被误判成启动请求 —— ECS 上凭空起一个 mosh-server，用户真正想跑的命令没到后端。
+mosh 那条只在命令**开头**认完整的 `mosh-server new` 形态（允许 `LANG=… mosh-server new`
+这种环境变量前缀，以及一层 `sh -c '…'` / `zsh -lc '…'` 包装）。判定必须是"被执行的
+那个命令"，不能按子串猜：`ssh <relay-user>@<ecs-ip> 'echo mosh-server new'` 里的
+mosh-server 是数据不是命令，按子串匹配会把它劫持到 ECS 本机起 mosh-server，
+用户真正想跑的命令根本送不到后端。要支持新的包装形态就往 `mosh_candidates()` 里
+显式加一条。
 
 | 环境变量 | 必填 | 说明 |
 |---|---|---|
@@ -139,6 +142,9 @@ ssh 是全新连接，不显式 `-tt` 就没有终端，后端的 tmux 会报
 判定用的是 `sys.stdin.isatty()` —— 也就是**跟随客户端在第一跳的请求**：
 sshd 只在客户端要终端（`ssh -t` / 交互式登录）时才给 ForceCommand 分配 pty，
 管道式调用（`base64 | ssh host '...'`，dropfile 走的就是这条）拿到的是普通 pipe。
+
+**带不带远端命令都走同一条规则**，包括无命令的会话：`ssh -T <relay-user>@<ecs-ip>`
+是明确不要终端，强行 `-tt` 会把它变成终端会话（还会打开行处理），破坏脚本化调用。
 
 早期版本改成解析命令字符串猜（只认 `tmux attach|attach-session`），
 结果 `tmux new-session -A`（attach-or-create，同样要终端）落到无 pty 分支报错。

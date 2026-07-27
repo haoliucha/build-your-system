@@ -14,9 +14,13 @@ skills/coding-anywhere/references/ecs-relay-blueprint.md §3.4。
 
 import json
 import os
+import re
 import shlex
 import sys
 from typing import List, Optional, Tuple
+
+# 命令前缀里的 VAR=value（`LANG=en_US.UTF-8 mosh-server new …`）
+ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def required_env(name: str) -> str:
@@ -105,16 +109,24 @@ def is_mosh_server_token(token: str) -> bool:
     return os.path.basename(token) == "mosh-server"
 
 
-def find_mosh_server_index(candidate: List[str]) -> Optional[int]:
-    """找真正的 mosh 启动形态 —— `mosh-server new ...`,必须连 `new` 一起认。
+def mosh_invocation_index(argv: List[str]) -> Optional[int]:
+    """argv 是不是一次真正的 `mosh-server new …` 调用；是则返回该 token 的下标。
 
-    只认 basename 的话,`ssh relay 'command -v mosh-server'` 这种仅仅**提到**
-    可执行文件名的命令会被误判成启动请求:ECS 上凭空起一个 mosh-server,
-    而用户真正想跑的命令根本没送到后端。
+    只在 argv **开头**认（允许 `LANG=… mosh-server new …` 这种环境变量前缀，
+    `mosh --server=` 会生成这种形态）。理由是"被执行的那个命令"才算调用：
+    `echo mosh-server new` 里的 mosh-server 是数据不是命令，在任何别的位置
+    出现都只是被提到而已。放宽到"任意位置出现"会让这类命令被劫持到
+    ECS 本机起 mosh-server，用户真正想跑的命令根本送不到后端。
     """
-    for index, token in enumerate(candidate[:-1]):
-        if is_mosh_server_token(token) and candidate[index + 1] == "new":
-            return index
+    index = 0
+    while index < len(argv) and ENV_ASSIGNMENT_RE.match(argv[index]):
+        index += 1
+    if (
+        index + 1 < len(argv)
+        and is_mosh_server_token(argv[index])
+        and argv[index + 1] == "new"
+    ):
+        return index
     return None
 
 
@@ -167,28 +179,32 @@ def render_remote_command(remote_command: List[str]) -> str:
     return shell_join(["/bin/zsh", "-lc", shell_command])
 
 
+def mosh_candidates(original: str) -> List[List[str]]:
+    """可能承载 mosh 调用的两种形态：命令本身，或一层显式的 shell wrapper。
+
+    刻意**不**做"从字符串里第一次出现 mosh-server 的位置切一刀"那种兜底 ——
+    那样 `echo mosh-server new` 也会被切出一个看着合法的 argv。要支持新的
+    包装形态就往这里显式加一条，不要退回按子串猜。
+    """
+    argv = safe_split(original)
+    if not argv:
+        return []
+
+    candidates = [argv]
+    if (
+        len(argv) >= 3
+        and os.path.basename(argv[0]) in {"sh", "bash", "zsh"}
+        and argv[1] in {"-c", "-lc", "-cl"}
+    ):
+        wrapped = safe_split(argv[2])
+        if wrapped:
+            candidates.append(wrapped)
+    return candidates
+
+
 def extract_mosh_forwarded_args(original: str) -> Optional[Tuple[List[str], List[str]]]:
-    args = safe_split(original)
-    candidates: List[List[str]] = []
-
-    if args:
-        candidates.append(args)
-        for token in args:
-            if "mosh-server" in token:
-                nested = safe_split(token)
-                if nested:
-                    candidates.append(nested)
-
-    if "mosh-server" in original:
-        snippet = original[original.index("mosh-server") :]
-        snippet_args = safe_split(snippet)
-        if snippet_args:
-            candidates.append(snippet_args)
-        else:
-            candidates.append(snippet.split())
-
-    for candidate in candidates:
-        mosh_index = find_mosh_server_index(candidate)
+    for candidate in mosh_candidates(original):
+        mosh_index = mosh_invocation_index(candidate)
         if mosh_index is None:
             continue
         forwarded = []
@@ -215,7 +231,9 @@ def extract_mosh_forwarded_args(original: str) -> Optional[Tuple[List[str], List
 def main() -> int:
     original = os.environ.get("SSH_ORIGINAL_COMMAND", "").strip()
     if not original:
-        emit("interactive-ssh", backend_ssh_base(force_tty=True))
+        # 无命令也要跟随客户端：`ssh -T relay` / 脚本里非终端 stdin 的无命令会话
+        # 都是明确不要终端的，强行 -tt 会把它变成终端会话（还会打开行处理）。
+        emit("interactive-ssh", backend_ssh_base(force_tty=client_requested_tty()))
         return 0
 
     mosh_args = extract_mosh_forwarded_args(original)
