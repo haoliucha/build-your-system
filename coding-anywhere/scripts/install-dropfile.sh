@@ -344,7 +344,11 @@ if [[ $DRY_RUN == 0 ]]; then
   step "自检" "推一个测试文件过去"
   TESTF="$STAGE/dropfile-selftest.txt"
   echo "dropfile self test $(date)" > "$TESTF"
-  if result="$("$BIN_DIR/dropfile" "$TESTF" 2>&1)"; then
+  # stdout 与 stderr 必须分开捕获：dropfile 会把"目标 xxx（自动识别…）"这类
+  # 提示写到 stderr，用 2>&1 合并会让 $result 变成多行，后面的 test -f 必然失败，
+  # 明明装好了却报"远端找不到该文件"
+  ERRF="$STAGE/selftest.err"
+  if result="$("$BIN_DIR/dropfile" "$TESTF" 2>"$ERRF")"; then
     ok "推送成功 → $result"
     if ssh -n -o BatchMode=yes "$DROP_HOST" "test -f '$result'"; then
       ok "已确认文件存在于远端"
@@ -353,7 +357,7 @@ if [[ $DRY_RUN == 0 ]]; then
       warn "远端找不到该文件，请检查 $REMOTE_DIR 权限"
     fi
   else
-    err "自检失败: $result"
+    err "自检失败: $(cat "$ERRF" 2>/dev/null)"
   fi
 fi
 
