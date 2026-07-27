@@ -7,9 +7,14 @@
 skills/coding-anywhere/references/ecs-relay-blueprint.md §3.4。
 
 三条出路（客户端看不到自己被转发了两跳）：
-  - 无 SSH_ORIGINAL_COMMAND → 交互式登录，带 pty 进后端登录 shell
-  - 命令里含 mosh-server   → mosh-server 在 ECS 本机起，remote command 再透传到后端
-  - 其他                   → 原样透传，pty 与否跟随客户端（见 client_requested_tty）
+  - 无 SSH_ORIGINAL_COMMAND    → 进后端登录 shell
+  - 开头是 `mosh-server new …` → mosh-server 在 ECS 本机起，`--` 后的 remote command
+                                 再透传到后端（见 mosh_candidates）
+  - 其他                       → 原样透传
+
+第二跳给不给 pty 只有一条规则：跟随客户端（见 client_requested_tty）。
+唯一的例外是 mosh 分支 —— mosh 客户端本来就不请求 pty，跟随它会让整条链路
+失去终端，所以那条无条件 -tt。
 """
 
 import json
