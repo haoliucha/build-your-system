@@ -124,9 +124,17 @@ _detect_drop_host() {
     [[ -n "$hit" ]] && _parse_ssh_target "${hit#* }" && return 0
   fi
 
-  # 回退：全机恰好只有一条交互式 ssh，没什么可歧义的
-  if [[ "$(printf '%s\n' "$lines" | /usr/bin/wc -l | /usr/bin/tr -d ' ')" == "1" ]]; then
-    _parse_ssh_target "${lines#* }" && return 0
+  # 回退：把所有交互式 ssh 的目标解析出来去重 —— 只要指向同一台就没有歧义。
+  # 不按"进程数恰好为一"判断：同一台机器开两个窗口连同一个远端是常态。
+  # 而且安装命令不能在 ssh 会话里敲（会在远端执行），你总是在本地另一个窗口
+  # 跑它，前台 tty 是本地 shell 的，上一步的前台匹配必然落空 —— 这条回退
+  # 才是实际最常走到的路径。
+  local targets
+  targets="$(printf '%s\n' "$lines" | while IFS= read -r l; do
+      _parse_ssh_target "${l#* }" && echo
+    done | /usr/bin/sort -u | /usr/bin/grep -v '^$')"
+  if [[ -n "$targets" && "$(printf '%s\n' "$targets" | /usr/bin/wc -l | /usr/bin/tr -d ' ')" == "1" ]]; then
+    printf '%s' "$targets"; return 0
   fi
   return 1
 }
