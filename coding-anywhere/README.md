@@ -66,6 +66,17 @@ curl -fsSL <同上> | bash -s -- jliu@192.168.1.10
 | `--max-mb 50` | 改大小上限（默认 15MB） |
 | `--dry-run` | 只打印将要做什么 |
 
+### 按了快捷键没反应？
+
+在**你面前那台**（按键盘的、跑 iTerm2 的）机器上跑：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/diagnose-dropfile.sh | bash
+```
+
+只读检查，会逐项告诉你卡在哪一环。最常见的三种：在远端机器上按的快捷键
+（Karabiner 跑在本地）、本地没装 Karabiner-Elements、规则写进了未选中的 profile。
+
 ### 用法
 
 ```bash
