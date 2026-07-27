@@ -33,7 +33,9 @@ SUBDIR="coding-anywhere/scripts"
 #   jsdelivr  —— CDN，国内可达性最好，但对 @main 有缓存延迟
 #   ghfast    —— 反代兜底
 mirror_urls() {  # $1 = 文件名
-  echo "https://raw.githubusercontent.com/$REPO/$BRANCH/$SUBDIR/$1"
+  # raw 带 cache-buster：raw.githubusercontent.com 有几分钟 CDN 缓存，
+  # 刚合并就安装会拿到旧脚本（实测过）。加个变化的 query 强制回源。
+  echo "https://raw.githubusercontent.com/$REPO/$BRANCH/$SUBDIR/$1?cb=$(date +%s)"
   echo "https://cdn.jsdelivr.net/gh/$REPO@$BRANCH/$SUBDIR/$1"
   echo "https://ghfast.top/https://raw.githubusercontent.com/$REPO/$BRANCH/$SUBDIR/$1"
 }
