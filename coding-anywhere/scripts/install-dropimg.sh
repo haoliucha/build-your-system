@@ -89,7 +89,7 @@ ok "python3: $(command -v python3)"
 step 2/6 "验证到 $DROP_HOST 的免密 SSH"
 
 if [[ $DRY_RUN == 0 ]]; then
-  if ! remote_host="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$DROP_HOST" 'hostname' 2>&1)"; then
+  if ! remote_host="$(ssh -n -o BatchMode=yes -o ConnectTimeout=8 "$DROP_HOST" 'hostname' 2>&1)"; then
     err "免密 SSH 不通:"
     echo "$remote_host" | sed 's/^/      /'
     echo
@@ -109,11 +109,11 @@ step 3/6 "安装远端落盘脚本 → $DROP_HOST:$REMOTE_BIN/drop-image.sh"
   || die "找不到 $SCRIPT_DIR/drop-image.sh（请从插件目录或仓库内运行本安装器）"
 
 if [[ $DRY_RUN == 0 ]]; then
-  ssh -o BatchMode=yes "$DROP_HOST" "mkdir -p $REMOTE_BIN $REMOTE_DIR"
+  ssh -n -o BatchMode=yes "$DROP_HOST" "mkdir -p $REMOTE_BIN $REMOTE_DIR"
   # scp 的远端路径不经过 shell 展开（ssh 会，scp 不会），所以这里必须用
   # 相对 home 的路径 "bin/..." 而不是 "$HOME/bin/..."
   scp -q "$SCRIPT_DIR/drop-image.sh" "$DROP_HOST:bin/drop-image.sh"
-  ssh -o BatchMode=yes "$DROP_HOST" "chmod +x $REMOTE_BIN/drop-image.sh"
+  ssh -n -o BatchMode=yes "$DROP_HOST" "chmod +x $REMOTE_BIN/drop-image.sh"
   ok "已安装并 chmod +x"
 else
   echo "    (dry-run) scp drop-image.sh → $DROP_HOST:$REMOTE_BIN/"
@@ -123,7 +123,7 @@ fi
 if [[ $WITH_CLEANUP == 1 ]]; then
   step 4/6 "安装远端 Drops 清理任务（每周日 03:00 清 7 天前的文件）"
   if [[ $DRY_RUN == 0 ]]; then
-    remote_os="$(ssh -o BatchMode=yes "$DROP_HOST" 'uname' 2>/dev/null || echo unknown)"
+    remote_os="$(ssh -n -o BatchMode=yes "$DROP_HOST" 'uname' 2>/dev/null || echo unknown)"
     if [[ "$remote_os" == "Darwin" ]]; then
       # plist 在本地生成再 scp 过去：直接在 ssh 里用嵌套 heredoc 需要三层转义，
       # XML 的引号和 $ 极易出错，不值得为省一次 scp 冒这个险
@@ -146,16 +146,16 @@ if [[ $WITH_CLEANUP == 1 ]]; then
 </dict>
 </plist>
 PLIST
-      if ssh -o BatchMode=yes "$DROP_HOST" 'mkdir -p ~/Library/LaunchAgents' \
+      if ssh -n -o BatchMode=yes "$DROP_HOST" 'mkdir -p ~/Library/LaunchAgents' \
          && scp -q "$PLIST_TMP" "$DROP_HOST:Library/LaunchAgents/com.dropimg.cleanup.plist" \
-         && ssh -o BatchMode=yes "$DROP_HOST" 'launchctl bootout gui/$(id -u)/com.dropimg.cleanup 2>/dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dropimg.cleanup.plist'; then
+         && ssh -n -o BatchMode=yes "$DROP_HOST" 'launchctl bootout gui/$(id -u)/com.dropimg.cleanup 2>/dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dropimg.cleanup.plist'; then
         ok "LaunchAgent com.dropimg.cleanup 已注册"
       else
         warn "LaunchAgent 注册失败（不影响主功能，可稍后手动处理）"
       fi
       rm -f "$PLIST_TMP"
     else
-      ssh -o BatchMode=yes "$DROP_HOST" "bash -lc '
+      ssh -n -o BatchMode=yes "$DROP_HOST" "bash -lc '
         ( crontab -l 2>/dev/null | grep -v \"dropimg-cleanup\" ;
           echo \"0 3 * * 0 find $REMOTE_DIR -type f -mtime +7 -delete # dropimg-cleanup\" ) | crontab -
       '" && ok "crontab 清理任务已安装" || warn "crontab 安装失败（不影响主功能）"
@@ -289,7 +289,7 @@ if [[ $DRY_RUN == 0 ]]; then
   osascript -e "set the clipboard to (read (POSIX file \"$TESTPNG\") as «class PNGf»)"
   if result="$("$BIN_DIR/dropimg" 2>&1)"; then
     ok "推送成功 → $result"
-    ssh -o BatchMode=yes "$DROP_HOST" "test -f '$result'" \
+    ssh -n -o BatchMode=yes "$DROP_HOST" "test -f '$result'" \
       && ok "已确认文件存在于远端" \
       || warn "远端找不到该文件，请检查 $REMOTE_DIR 权限"
   else

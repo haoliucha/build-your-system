@@ -17,18 +17,35 @@
 #       /usr/bin:/bin，Homebrew 的 pngpaste 会 not found。
 set -euo pipefail
 
+# ---------- locale 兜底（必须在任何处理之前）----------
+# GUI（Karabiner / 快捷键）触发时环境变量被剥光，不只是 PATH —— LANG 也没有。
+# 此时 pbcopy 会把 UTF-8 字节当作 MacRoman 解释再转码，非 ASCII 路径会变成
+# 双重编码 mojibake。只设 LC_CTYPE，不动 LANG/LC_ALL。
+if [[ -z "${LC_ALL:-}" && -z "${LC_CTYPE:-}" && -z "${LANG:-}" ]]; then
+  export LC_CTYPE="UTF-8"
+fi
+
 # ---------- 配置 ----------
+# 先把环境变量存起来再 source：配置文件里是直接赋值（DROP_HOST=...），
+# 若先 source 就会把环境变量覆盖掉，`DROP_HOST=user@other dropimg` 这种
+# 临时指定目标机的用法会静默失效 —— 推到配置文件里那台去。
+_E_DROP_HOST="${DROP_HOST:-}"
+_E_REMOTE_SCRIPT="${REMOTE_SCRIPT:-}"
+_E_PNGPASTE="${PNGPASTE:-}"
+_E_DEBUG_LOG="${DROPIMG_DEBUG_LOG:-}"
+
 CONFIG_FILE="${DROPIMG_CONFIG:-$HOME/.config/dropimg/config}"
 # shellcheck disable=SC1090
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
 
-DROP_HOST="${DROP_HOST:-}"
-REMOTE_SCRIPT="${REMOTE_SCRIPT:-\$HOME/bin/drop-image.sh}"
+# 环境变量优先级高于配置文件
+DROP_HOST="${_E_DROP_HOST:-${DROP_HOST:-}}"
+REMOTE_SCRIPT="${_E_REMOTE_SCRIPT:-${REMOTE_SCRIPT:-\$HOME/bin/drop-image.sh}}"
+PNGPASTE="${_E_PNGPASTE:-${PNGPASTE:-}}"
+DEBUG_LOG="${_E_DEBUG_LOG:-${DROPIMG_DEBUG_LOG:-}}"
 AUTO_PASTE="${AUTO_PASTE:-0}"
-DEBUG_LOG="${DROPIMG_DEBUG_LOG:-}"
 
 # pngpaste 可能装在 Apple Silicon 或 Intel 的 Homebrew 前缀下
-PNGPASTE="${PNGPASTE:-}"
 if [[ -z "$PNGPASTE" ]]; then
   for c in /opt/homebrew/bin/pngpaste /usr/local/bin/pngpaste; do
     [[ -x "$c" ]] && PNGPASTE="$c" && break
@@ -69,7 +86,9 @@ fi
 
 # ---------- 推送 ----------
 remote_path="$("$BASE64" < "$TMP" | "$SSH" -o BatchMode=yes -o ConnectTimeout=8 "$DROP_HOST" "bash $REMOTE_SCRIPT")" \
-  || die "SSH 推送失败（$DROP_HOST）"
+  || die "SSH 推送失败（${DROP_HOST}）"
+  # ↑ 必须写 ${DROP_HOST} 而不是 $DROP_HOST：后面紧跟全角括号时，set -u 下
+  #   bash 会把多字节字符的首字节吞进变量名，报 "DROP_HOST?: unbound variable"
 [[ -n "$remote_path" ]] || die "远端没有返回路径"
 
 # 不带尾随换行：否则粘进 Claude Code 会立刻提交，来不及补充说明文字

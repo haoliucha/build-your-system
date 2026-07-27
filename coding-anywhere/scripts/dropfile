@@ -1,0 +1,302 @@
+#!/bin/bash
+# dropfile — 把本机的文件（或剪贴板里的图片）推到远端主机，
+#            落盘后把远端绝对路径写回本机剪贴板。
+#
+# 解决的问题：在终端里 ssh 到远端跑 tmux + Claude Code 时，PTY 是字符设备，
+# ⌘V 粘不了图片、更传不了文件。本脚本走 SSH 带外通道把内容送过去，
+# 终端里只流转一个路径字符串。
+#
+# 用法：
+#   dropfile                          # 用剪贴板内容（复制的文件 或 截图）
+#   dropfile report.pdf               # 指定文件
+#   dropfile a.png b.zip c.md         # 多个文件，返回多行路径
+#   AUTO_PASTE=1 dropfile             # 推送后自动模拟 ⌘V（供全局快捷键调用）
+#   DROP_HOST=user@host dropfile      # 临时指定目标机
+#   DROPFILE_MAX_MB=50 dropfile big.zip   # 临时放宽大小上限
+#
+# 配置：~/.config/dropimg/config（安装器生成），可被环境变量覆盖
+# 依赖：pngpaste（仅"剪贴板截图"这条来源需要；传文件不需要）
+#
+# 注意：外部命令一律用绝对路径 —— GUI（Karabiner / 快捷键）触发时 PATH 被消毒成
+#       /usr/bin:/bin，Homebrew 的 pngpaste 会 not found。
+set -euo pipefail
+
+# ---------- locale 兜底（必须在任何处理之前）----------
+# GUI（Karabiner / 快捷键）触发时环境变量被剥光，不只是 PATH —— LANG 也没有。
+# 此时 pbcopy 会把 UTF-8 字节当作 MacRoman 解释再转码，中文文件名会变成
+# "提单号" → "ÊèêÂçïÂè∑" 这样的双重编码 mojibake（实测：
+# e68f90e58d95e58fb7 → c38ac3a8c3aac382c3a7c3afc382c3a8e28891）。
+# 只设 LC_CTYPE 而不动 LANG/LC_ALL：我们只需要正确的字符编码，
+# 不想改变用户的语言、日期、排序等行为。macOS 支持 "UTF-8" 这个无语言值。
+if [[ -z "${LC_ALL:-}" && -z "${LC_CTYPE:-}" && -z "${LANG:-}" ]]; then
+  export LC_CTYPE="UTF-8"
+fi
+
+# osascript 的路径必须在这里定义 —— 下面的自动探测就要用它。
+# 曾经把它放在配置段之后，结果探测里的 $OSASCRIPT 撞上 set -u 报
+# "OSASCRIPT: unbound variable"，被 || true 吞掉，前台窗口识别静默失效，
+# 靠"全机只有一条 ssh"的回退蒙对，开两个会话才会暴露。
+OSASCRIPT=/usr/bin/osascript
+
+# ---------- 配置 ----------
+# 先把环境变量存起来再 source：配置文件里是直接赋值（DROP_HOST=...），
+# 若先 source 就会把环境变量覆盖掉，`DROP_HOST=user@other dropfile` 这种
+# 临时指定目标机的用法会静默失效 —— 推到配置文件里那台去。
+_E_DROP_HOST="${DROP_HOST:-}"
+_E_REMOTE_SCRIPT_FILE="${REMOTE_SCRIPT_FILE:-}"
+_E_PNGPASTE="${PNGPASTE:-}"
+_E_DEBUG_LOG="${DROPIMG_DEBUG_LOG:-}"
+_E_MAX_MB="${DROPFILE_MAX_MB:-}"
+
+CONFIG_FILE="${DROPIMG_CONFIG:-$HOME/.config/dropimg/config}"
+# shellcheck disable=SC1090
+[[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+
+# ---------- 自动探测目标主机 ----------
+#
+# 你正在用的那条 SSH 连接，命令行里就写着 user@host，没必要让人再填一遍：
+#     94725 ttys081  ssh jliu@192.168.71.181 -t tmux new-session -A -s vault
+#
+# 陷阱：ps 里还有 LaunchAgent 维持的**后台反向隧道**（ssh -N -T -R ... root@relay）。
+# 盲目抓第一个 ssh 会把文件推到中继机上。区分靠 tty —— 交互式 ssh 有真实 tty，
+# 后台隧道是 "??"。所以只认 ttys* 开头的行。
+
+# 从一条 ssh 命令行里取出 [user@]host：跳过选项及其参数，取第一个非选项 token
+_parse_ssh_target() {
+  local -a toks=($1); local i=1 n=${#toks[@]} t
+  # 这些选项后面跟一个独立参数，必须连带跳过，否则会把参数误当主机名
+  local witharg=" -i -o -p -L -R -D -F -l -E -b -c -m -O -Q -S -w -J -W -B -e "
+  while (( i < n )); do
+    t="${toks[$i]}"
+    if [[ "$t" == -* ]]; then
+      [[ "$witharg" == *" $t "* ]] && (( i++ ))
+      (( i++ )); continue
+    fi
+    printf '%s' "$t"; return 0
+  done
+  return 1
+}
+
+# 前台终端窗口的 tty（决定"你正在看哪个会话"）
+_frontmost_tty() {
+  local fg t=""
+  fg="$("$OSASCRIPT" -e 'tell application "System Events" to return name of first process whose frontmost is true' 2>/dev/null)" || return 1
+  case "$fg" in
+    iTerm2|iTerm) t="$("$OSASCRIPT" -e 'tell application "iTerm2" to tell current session of current window to get tty' 2>/dev/null)" ;;
+    Terminal)     t="$("$OSASCRIPT" -e 'tell application "Terminal" to get tty of selected tab of front window' 2>/dev/null)" ;;
+    *)            return 1 ;;
+  esac
+  [[ -n "$t" ]] || return 1
+  printf '%s' "${t#/dev/}"
+}
+
+_detect_drop_host() {
+  local lines fgtty hit
+  lines="$(/bin/ps -axo tty=,args= | /usr/bin/grep -E '^ttys[0-9]+ +(/usr/bin/)?ssh ' || true)"
+  [[ -n "$lines" ]] || return 1
+
+  # 优先：前台窗口那条连接 —— 开多个 ssh 时才不会串
+  fgtty="$(_frontmost_tty || true)"
+  if [[ -n "$fgtty" ]]; then
+    hit="$(printf '%s\n' "$lines" | /usr/bin/awk -v t="$fgtty" '$1==t {print; exit}')"
+    [[ -n "$hit" ]] && _parse_ssh_target "${hit#* }" && return 0
+  fi
+
+  # 回退：全机恰好只有一条交互式 ssh，那没什么可歧义的
+  if [[ "$(printf '%s\n' "$lines" | /usr/bin/wc -l | /usr/bin/tr -d ' ')" == "1" ]]; then
+    _parse_ssh_target "${lines#* }" && return 0
+  fi
+  return 1
+}
+
+# 优先级：环境变量（显式覆盖） > 自动探测 > 配置文件
+DROP_HOST_SRC="config"
+if [[ -n "$_E_DROP_HOST" ]]; then
+  DROP_HOST="$_E_DROP_HOST"
+  DROP_HOST_SRC="env"
+elif [[ "${DROPFILE_AUTODETECT:-1}" != "0" ]] && _auto="$(_detect_drop_host)" && [[ -n "$_auto" ]]; then
+  DROP_HOST="$_auto"
+  DROP_HOST_SRC="auto"
+else
+  DROP_HOST="${DROP_HOST:-}"
+fi
+REMOTE_SCRIPT="${_E_REMOTE_SCRIPT_FILE:-${REMOTE_SCRIPT_FILE:-\$HOME/bin/drop-file.sh}}"
+PNGPASTE="${_E_PNGPASTE:-${PNGPASTE:-}}"
+DEBUG_LOG="${_E_DEBUG_LOG:-${DROPIMG_DEBUG_LOG:-}}"
+MAX_MB="${_E_MAX_MB:-${DROPFILE_MAX_MB:-15}}"
+AUTO_PASTE="${AUTO_PASTE:-0}"
+MAX_BYTES=$(( MAX_MB * 1024 * 1024 ))
+
+if [[ -z "$PNGPASTE" ]]; then
+  for c in /opt/homebrew/bin/pngpaste /usr/local/bin/pngpaste; do
+    [[ -x "$c" ]] && PNGPASTE="$c" && break
+  done
+fi
+
+BASE64=/usr/bin/base64
+SSH=/usr/bin/ssh
+PBCOPY=/usr/bin/pbcopy
+MKTEMP=/usr/bin/mktemp
+STAT=/usr/bin/stat
+
+notify() { "$OSASCRIPT" -e "display notification \"$2\" with title \"$1\"" >/dev/null 2>&1 || true; }
+
+die() {
+  echo "dropfile: $1" >&2
+  if [[ "$AUTO_PASTE" == "1" ]]; then notify "dropfile 失败" "$1"; fi
+  exit 1
+}
+
+[[ -n "$DROP_HOST" ]] || die "没有目标主机：当前识别不到 SSH 会话，配置里也没有 DROP_HOST。用 DROP_HOST=user@host dropfile ... 显式指定"
+
+# 自动识别的结果必须让人看得见 —— 万一认错了机器，能当场发现而不是把文件发丢
+if [[ "$DROP_HOST_SRC" == "auto" && "$AUTO_PASTE" != "1" ]]; then
+  echo "dropfile: 目标 ${DROP_HOST}（自动识别自当前 SSH 会话）" >&2
+fi
+
+TMPS=()
+cleanup() { for f in ${TMPS+"${TMPS[@]}"}; do /bin/rm -f "$f"; done; }
+trap cleanup EXIT
+
+human() { # 字节 → 人类可读
+  local b=$1
+  if   (( b >= 1048576 )); then echo "$(( b / 1048576 ))MB"
+  elif (( b >= 1024 ));    then echo "$(( b / 1024 ))KB"
+  else echo "${b}B"; fi
+}
+
+# 推送单个文件：$1=本地路径 $2=原文件名(可为空) → stdout 远端绝对路径
+push_one() {
+  local path="$1" name="${2:-}" size
+  size="$("$STAT" -f%z "$path" 2>/dev/null || echo 0)"
+
+  (( size > 0 )) || die "文件是空的：$path"
+  if (( size > MAX_BYTES )); then
+    die "$(basename -- "${name:-$path}") 有 $(human "$size")，超过 ${MAX_MB}MB 上限（需要时用 DROPFILE_MAX_MB=50 放宽）"
+  fi
+
+  local out
+  # 把上限一并传给远端：否则客户端 DROPFILE_MAX_MB=50 放宽了，远端仍按自己的
+  # 默认 15MB 拒绝。远端的检查是防"版本不一致/脚本被绕过"这类意外，
+  # 不是多租户下的防恶意，所以尊重客户端显式配置是合理的。
+  out="$("$BASE64" < "$path" | "$SSH" -o BatchMode=yes -o ConnectTimeout=8 \
+        "$DROP_HOST" "DROPFILE_MAX_MB=$MAX_MB bash $REMOTE_SCRIPT $(printf '%q' "$name")")" \
+    || die "SSH 推送失败（${DROP_HOST}）"
+  # ↑ 必须写 ${DROP_HOST} 而不是 $DROP_HOST：后面紧跟全角括号时，set -u 下
+  #   bash 会把多字节字符的首字节吞进变量名，报 "DROP_HOST?: unbound variable"
+  [[ -n "$out" ]] || die "远端没有返回路径"
+  printf '%s' "$out"
+}
+
+# ---------- 决定来源 ----------
+PATHS=()   # 待推送的本地文件
+NAMES=()   # 对应的原文件名（空串表示让远端按 mime 猜后缀）
+
+if [[ $# -gt 0 ]]; then
+  # 来源 1：命令行参数
+  for f in "$@"; do
+    [[ -f "$f" ]] || die "不是文件或不存在：$f"
+    PATHS+=("$f")
+    NAMES+=("$(basename -- "$f")")
+  done
+else
+  # 来源 2：剪贴板里的**文件引用**（Finder 里复制了文件）
+  #
+  # 刻意排在图片数据之前：从 Finder 复制一个 PNG 时，剪贴板同时有 file URL 和
+  # 图片数据；走 pngpaste 会丢掉原文件名，还会把图片重编码一遍。
+  # 有原文件就传原始字节。
+  src="$("$OSASCRIPT" -e 'POSIX path of (the clipboard as «class furl»)' 2>/dev/null || true)"
+  if [[ -n "$src" && -f "$src" ]]; then
+    PATHS+=("$src")
+    NAMES+=("$(basename -- "$src")")
+  else
+    # 来源 3：剪贴板里的图片数据（截图 ⌘⇧⌃4、网页复制图片）—— 无文件名
+    [[ -n "$PNGPASTE" && -x "$PNGPASTE" ]] \
+      || die "剪贴板里没有文件；要走截图这条路需要 pngpaste（brew install pngpaste）"
+    tmp="$("$MKTEMP" -t dropfile)"
+    TMPS+=("$tmp")
+    if "$PNGPASTE" "$tmp" >/dev/null 2>&1 && [[ -s "$tmp" ]]; then
+      PATHS+=("$tmp")
+      NAMES+=("")
+    else
+      die "剪贴板里既没有文件也没有图片"
+    fi
+  fi
+fi
+
+# ---------- 推送 ----------
+results=""
+for i in "${!PATHS[@]}"; do
+  r="$(push_one "${PATHS[$i]}" "${NAMES[$i]}")"
+  if [[ -z "$results" ]]; then results="$r"; else results="$results"$'\n'"$r"; fi
+done
+
+# 不带尾随换行：否则粘进 Claude Code 会立刻提交，来不及补充说明文字
+# （多文件时中间的换行保留 —— Claude Code 会把每一行都识别为 attachment）
+printf '%s' "$results" | "$PBCOPY"
+
+if [[ "$AUTO_PASTE" != "1" ]]; then
+  echo "$results"
+  exit 0
+fi
+
+# ---------- 自动粘贴（条件化等待）----------
+#
+# 为什么不是"直接发 ⌘V"：实测中直接发经常静默失效，需要用户再手动按一次。
+# 根因未能 100% 锁定，但所有候选都属于「发得太早」这一类时序竞态：
+#   a) 修饰键残留 —— 触发快捷键的 ctrl/opt 还按着，合成的 cmd 与之叠加成
+#      Cmd+Ctrl+Opt+V，目标应用没有这个绑定 → 静默丢弃
+#   b) 剪贴板尚未就绪 —— pbcopy 刚写入，目标应用读到的还是旧内容（常常是那张
+#      图片本身），⌘V 到终端等于什么都没发生
+#   c) 剪贴板管理器（PasteEasy / Maccy 等）介入 pasteboard，引入额外抖动
+#
+# 因此不用固定 sleep，而是**轮询到条件真正满足**再发键：
+#   条件 1：shift/ctrl/opt/cmd 全部释放
+#   条件 2：系统剪贴板的文本内容确实等于我们刚写入的内容
+# 两个条件都满足（或超时）才发送。这样对上述任一根因都成立，
+# 也不依赖某个实现"恰好慢了几十毫秒"这种运气。
+#
+# 全部逻辑放在**一次** osascript 调用里完成：多起一个进程会额外引入 ~50ms，
+# 足以让这类时序 bug 自己消失又在别人机器上复现（海森堡 bug）。
+
+export DROPIMG_PATH="$results"
+diag="$("$OSASCRIPT" -l JavaScript -e '
+ObjC.import("AppKit");
+var env    = $.NSProcessInfo.processInfo.environment;
+var target = ObjC.unwrap(env.objectForKey("DROPIMG_PATH"));
+var budget = parseFloat(ObjC.unwrap(env.objectForKey("DROPIMG_WAIT_MS")) || "1500") / 1000.0;
+
+// shift(1<<17) ctrl(1<<18) opt(1<<19) cmd(1<<20)；刻意不含 capslock/fn
+var MASK     = (1<<17)|(1<<18)|(1<<19)|(1<<20);
+var pb       = $.NSPasteboard.generalPasteboard;
+var deadline = $.NSDate.date.timeIntervalSince1970 + budget;
+var now      = function () { return $.NSDate.date.timeIntervalSince1970; };
+
+// 条件 1：等修饰键全部松开
+var mods0 = $.NSEvent.modifierFlags & MASK, waitMods = 0;
+while (($.NSEvent.modifierFlags & MASK) !== 0 && now() < deadline) {
+  $.NSThread.sleepForTimeInterval(0.015); waitMods += 15;
+}
+
+// 条件 2：等剪贴板确实是我们写入的内容
+var clipOK = false, waitClip = 0;
+while (now() < deadline) {
+  var cur = pb.stringForType($.NSPasteboardTypeString);
+  if (cur && ObjC.unwrap(cur) === target) { clipOK = true; break; }
+  $.NSThread.sleepForTimeInterval(0.010); waitClip += 10;
+}
+
+var err = "", fm = "";
+try { Application("System Events").keystroke("v", {using: "command down"}); }
+catch (e) { err = String(e); }
+try { fm = Application("System Events").applicationProcesses.whose({frontmost: true})[0].name(); }
+catch (e) { fm = "?"; }
+
+"mods0=" + mods0 + " waitMods=" + waitMods + "ms clipOK=" + clipOK +
+" waitClip=" + waitClip + "ms frontmost=" + fm + " err=" + err;
+' 2>&1)"
+rc=$?
+
+[[ -n "$DEBUG_LOG" ]] && echo "[$(/bin/date '+%F %T')] rc=$rc $diag" >> "$DEBUG_LOG"
+[[ $rc -ne 0 ]] && notify "dropfile" "路径已复制，请手动 ⌘V"
+exit 0
