@@ -337,9 +337,8 @@ if [[ $DRY_RUN == 0 ]]; then
   mkdir -p "$BIN_DIR" "$CONFIG_DIR"
   install -m 0755 "$STAGE/dropfile" "$BIN_DIR/dropfile"
   ok "$BIN_DIR/dropfile"
-  # dropimg 作为别名保留：老用户的肌肉记忆和已有快捷键不会 break
-  ln -sf "$BIN_DIR/dropfile" "$BIN_DIR/dropimg"
-  ok "$BIN_DIR/dropimg → dropfile（兼容别名）"
+  # 旧的 dropimg 已废弃：不再创建别名。老安装留下的软链接由卸载器清理，
+  # 这里刻意不主动删 —— 它指向 dropfile，还能用，删了反而 break 已有快捷键。
 
   cat > "$CONFIG_DIR/config" <<EOF
 # dropfile 配置（由 install-dropfile.sh 生成）

@@ -271,7 +271,8 @@ jsDelivr 保证国内可达），然后：检查依赖 → 验证免密 SSH → 
 选快捷键时避开目标终端已占用的组合。iTerm2 里 `Cmd+Shift+V`（Paste Special）
 和 `Cmd+Shift+D`（Split）都有用途，`Ctrl+Opt+V` 通常是空的。
 
-安装器会创建 `dropimg` 作为 `dropfile` 的软链接，老的用法和快捷键不会 break。
+旧的 `dropimg`（仅图片）已废弃移除 —— 图片和普通文件走同一条 `dropfile`。
+卸载器仍会清理老安装留下的 `dropimg` 软链接和快捷键规则。
 
 ---
 

@@ -111,7 +111,7 @@ DROP_HOST=user@other dropfile foo.pdf  # 临时换目标机
 ```
 
 从 Finder 复制文件时会**保留原文件名**；截图这种没有文件名的来源，
-远端按 mime 类型生成后缀。`dropimg` 保留为软链接，老用法不 break。
+远端按 mime 类型生成后缀。图片和普通文件走同一条路，不需要单独的命令。
 
 > 客户端需 macOS（依赖 `NSPasteboard` / `osascript`；`pngpaste` 只有截图这条来源需要），
 > 远端 macOS 与 Linux 都支持。默认上限 15MB，客户端与远端两侧都会检查。
@@ -174,14 +174,14 @@ coding-anywhere/
 │       ├── client-config.md              # Blink / Termius / La Terminal / mosh CLI
 │       ├── tmux-session-recipes.md       # tmux 持久会话配置
 │       ├── file-drop-blueprint.md        # 终端远程传文件原理 + 设计取舍 + 排查
-│       └── troubleshooting.md            # 9 类常见故障的排查清单
+│       └── troubleshooting.md            # 10 类常见故障的排查清单
 └── scripts/
     ├── install-dropfile.sh               # 在线一键安装器（推荐，含自检）
+    ├── uninstall-dropfile.sh             # 卸载器（含旧版残留清理）
+    ├── diagnose-dropfile.sh              # 自检：命令/配置/快捷键/远端连通性
     ├── dropfile                          # 客户端：取文件/剪贴板 → 推送 → 回填路径
     ├── drop-file.sh                      # 远端：解码 → 校验大小 → 落盘 → 回显路径
-    ├── install-dropimg.sh                # 旧版安装器（仅图片，保留兼容）
-    ├── dropimg                           # 旧版客户端（仅图片，保留兼容）
-    └── drop-image.sh                     # 旧版远端脚本（仅图片，保留兼容）
+    └── ecs-forcecommand-forwarder.py     # 中继 ECS 的 ForceCommand 分流器（方案 A 用）
 ```
 
 ---

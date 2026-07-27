@@ -160,7 +160,7 @@ bash ${CLAUDE_PLUGIN_ROOT}/scripts/install-dropfile.sh
 - **大小上限** —— 默认 15MB，用 `--max-mb` 改
 
 用法：`dropfile` 用剪贴板内容，`dropfile a.pdf b.zip` 传指定文件（可多个）。
-`dropimg` 保留为软链接，老用法不 break。
+图片走同一条命令（旧的 `dropimg` 已废弃移除）。
 
 > [!warning] 实现上最容易翻车的一点
 > 自动模拟 ⌘V **必须条件化等待**（等修饰键释放 + 等剪贴板就绪），
