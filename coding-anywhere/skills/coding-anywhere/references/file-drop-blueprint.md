@@ -286,6 +286,11 @@ jsDelivr 保证国内可达），然后：检查依赖 → 验证免密 SSH → 
 | 时序竞态 | 有（见 4.5） | **不存在** |
 | 配置后生效 | 立即 | 立即（GUI 里加） |
 
+> [!important] 默认走 iTerm2，不是 Karabiner
+> 安装器检测到 iTerm2 就默认用 Coprocess。理由很直接：Karabiner 要装应用 +
+> 授予输入监控和辅助功能两项系统权限，而 Coprocess 什么都不要，可靠性还更高。
+> Karabiner 留给不用 iTerm2、或确实需要在别的 app 里也能按的人（`--karabiner`）。
+
 **iTerm2 Coprocess 这条路把 4.5 那一整节的问题从根上消掉了** —— 不模拟按键，
 就没有"修饰键还按着"或"剪贴板没就绪"可言。代价是只在 iTerm2 里有效。
 
