@@ -118,7 +118,10 @@ echo "════════════════════════�
 step 1/6 "获取脚本"
 if [[ $DRY_RUN == 0 ]]; then
   for f in dropfile drop-file.sh; do
-    src="$(fetch "$f")" || die "拿不到 $f（本地没有，且所有下载源都失败）"
+    # ${f} 必须带花括号：后面紧跟全角括号时，set -u 下 bash 会把多字节
+    # 首字节吞进变量名，报 "f?: unbound variable"。这行只在下载失败时执行，
+    # 正常路径测不出来
+    src="$(fetch "$f")" || die "拿不到 ${f}（本地没有，且所有下载源都失败）"
     ok "$f ← $src"
   done
 else
@@ -352,7 +355,7 @@ cat <<EOF
 ══════════════════════════════════════════════
 
   日常用法:
-    截图  → 按 $([[ $WITH_KARABINER == 1 ]] && echo "$HOTKEY" || echo "运行 dropfile") → 路径出现在光标处
+    截图  → $([[ $WITH_KARABINER == 1 ]] && echo "按 $HOTKEY" || echo "运行 dropfile") → 路径出现在光标处
     传文件 → dropfile report.pdf
     多文件 → dropfile a.png b.zip c.md
     Finder 里复制文件后 → dropfile（保留原文件名）
