@@ -76,11 +76,38 @@ Claude Code 输入框出现 /home/user/Drops/20260727_130248_报告.md
 
 > 改脚本时不要顺手"简化"掉，每一条都是踩出来的。
 
-### 4.1 所有外部命令写死绝对路径
+### 4.1 GUI 触发时环境变量被剥光 —— PATH 和 LANG 都要兜底
 
-Karabiner / 快捷键触发的是 **GUI 上下文**，PATH 被消毒成 `/usr/bin:/bin`。
-`pngpaste` 装在 `/opt/homebrew/bin`（Apple Silicon）或 `/usr/local/bin`（Intel），
-不写绝对路径必然 `command not found`，而且错误发生在 GUI 里，你看不到。
+Karabiner / 快捷键触发的是 **GUI 上下文**，环境变量几乎是空的。两个后果：
+
+**PATH 被消毒成 `/usr/bin:/bin`**。`pngpaste` 装在 `/opt/homebrew/bin`
+（Apple Silicon）或 `/usr/local/bin`（Intel），不写绝对路径必然
+`command not found`，而且错误发生在 GUI 里你看不到。所以所有外部命令写死绝对路径。
+
+**`LANG` 也没有** —— 这个更隐蔽。没有 locale 时 `pbcopy` 会把 UTF-8 字节
+当作 **MacRoman** 解释再转码，中文文件名变成双重编码 mojibake：
+
+```
+提单号            e68f90 e58d95 e58fb7          ← 正确
+ÊèêÂçïÂè∑    c38ac3a8c3aa c382c3a7c3af ...  ← 无 LANG 时 pbcopy 的产物
+```
+
+注意这**不只是显示难看**：剪贴板里的字节是真错的，粘出来的路径找不到文件
+（磁盘上的文件名一直是对的）。
+
+修法是脚本开头兜底 `LC_CTYPE`：
+
+```bash
+if [[ -z "${LC_ALL:-}" && -z "${LC_CTYPE:-}" && -z "${LANG:-}" ]]; then
+  export LC_CTYPE="UTF-8"     # macOS 支持这个无语言值
+fi
+```
+
+只设 `LC_CTYPE` 而不动 `LANG`/`LC_ALL`：我们只需要正确的字符编码，
+不想改变用户的语言、日期格式、排序行为。
+
+> 这个 bug 在只传图片的年代不会暴露 —— 图片路径是纯时间戳，全 ASCII。
+> 一旦开始保留原文件名，中文进来就炸。
 
 ### 4.2 `pbcopy` 用 `printf '%s'` 而不是 `echo`
 

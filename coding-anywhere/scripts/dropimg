@@ -17,6 +17,14 @@
 #       /usr/bin:/bin，Homebrew 的 pngpaste 会 not found。
 set -euo pipefail
 
+# ---------- locale 兜底（必须在任何处理之前）----------
+# GUI（Karabiner / 快捷键）触发时环境变量被剥光，不只是 PATH —— LANG 也没有。
+# 此时 pbcopy 会把 UTF-8 字节当作 MacRoman 解释再转码，非 ASCII 路径会变成
+# 双重编码 mojibake。只设 LC_CTYPE，不动 LANG/LC_ALL。
+if [[ -z "${LC_ALL:-}" && -z "${LC_CTYPE:-}" && -z "${LANG:-}" ]]; then
+  export LC_CTYPE="UTF-8"
+fi
+
 # ---------- 配置 ----------
 # 先把环境变量存起来再 source：配置文件里是直接赋值（DROP_HOST=...），
 # 若先 source 就会把环境变量覆盖掉，`DROP_HOST=user@other dropimg` 这种
