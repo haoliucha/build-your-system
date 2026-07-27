@@ -135,7 +135,7 @@ if [[ -z "$PNGPASTE" ]]; then
   # pngpaste 只有"剪贴板截图"这一条来源需要；传文件不依赖它，所以缺了不致命
   if command -v brew >/dev/null 2>&1 && [[ $DRY_RUN == 0 ]]; then
     warn "未找到 pngpaste，正在安装（截图直传需要它）…"
-    brew install pngpaste >/dev/null 2>&1 || warn "pngpaste 安装失败，截图直传将不可用"
+    brew install pngpaste </dev/null >/dev/null 2>&1 || warn "pngpaste 安装失败，截图直传将不可用"
     for c in /opt/homebrew/bin/pngpaste /usr/local/bin/pngpaste; do
       [[ -x "$c" ]] && PNGPASTE="$c" && break
     done
@@ -151,7 +151,7 @@ ok "python3: $(command -v python3)"
 # ---------- 3. 免密 SSH ----------
 step 3/6 "验证到 $DROP_HOST 的免密 SSH"
 if [[ $DRY_RUN == 0 ]]; then
-  if ! remote_host="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$DROP_HOST" 'hostname' 2>&1)"; then
+  if ! remote_host="$(ssh -n -o BatchMode=yes -o ConnectTimeout=8 "$DROP_HOST" 'hostname' 2>&1)"; then
     err "免密 SSH 不通:"
     echo "$remote_host" | sed 's/^/      /'
     echo
@@ -166,14 +166,14 @@ fi
 # ---------- 4. 远端 ----------
 step 4/6 "安装远端落盘脚本 → $DROP_HOST:$REMOTE_BIN/drop-file.sh"
 if [[ $DRY_RUN == 0 ]]; then
-  ssh -o BatchMode=yes "$DROP_HOST" "mkdir -p $REMOTE_BIN $REMOTE_DIR"
+  ssh -n -o BatchMode=yes "$DROP_HOST" "mkdir -p $REMOTE_BIN $REMOTE_DIR"
   # scp 的远端路径不经过 shell 展开（ssh 会，scp 不会），必须用相对 home 的路径
   scp -q "$STAGE/drop-file.sh" "$DROP_HOST:bin/drop-file.sh"
-  ssh -o BatchMode=yes "$DROP_HOST" "chmod +x $REMOTE_BIN/drop-file.sh"
+  ssh -n -o BatchMode=yes "$DROP_HOST" "chmod +x $REMOTE_BIN/drop-file.sh"
   ok "已安装并 chmod +x"
 
   if [[ $WITH_CLEANUP == 1 ]]; then
-    remote_os="$(ssh -o BatchMode=yes "$DROP_HOST" 'uname' 2>/dev/null || echo unknown)"
+    remote_os="$(ssh -n -o BatchMode=yes "$DROP_HOST" 'uname' 2>/dev/null || echo unknown)"
     if [[ "$remote_os" == "Darwin" ]]; then
       # plist 在本地生成再 scp：直接在 ssh 里嵌套 heredoc 要三层转义，XML 的引号极易出错
       PL="$STAGE/cleanup.plist"
@@ -195,15 +195,15 @@ if [[ $DRY_RUN == 0 ]]; then
 </dict>
 </plist>
 PLIST
-      if ssh -o BatchMode=yes "$DROP_HOST" 'mkdir -p ~/Library/LaunchAgents' \
+      if ssh -n -o BatchMode=yes "$DROP_HOST" 'mkdir -p ~/Library/LaunchAgents' \
          && scp -q "$PL" "$DROP_HOST:Library/LaunchAgents/com.dropimg.cleanup.plist" \
-         && ssh -o BatchMode=yes "$DROP_HOST" 'launchctl bootout gui/$(id -u)/com.dropimg.cleanup 2>/dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dropimg.cleanup.plist'; then
+         && ssh -n -o BatchMode=yes "$DROP_HOST" 'launchctl bootout gui/$(id -u)/com.dropimg.cleanup 2>/dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.dropimg.cleanup.plist'; then
         ok "清理任务已注册（每周日 03:00 清 7 天前的文件）"
       else
         warn "清理任务注册失败（不影响主功能）"
       fi
     else
-      ssh -o BatchMode=yes "$DROP_HOST" "bash -lc '
+      ssh -n -o BatchMode=yes "$DROP_HOST" "bash -lc '
         ( crontab -l 2>/dev/null | grep -v dropimg-cleanup ;
           echo \"0 3 * * 0 find $REMOTE_DIR -type f -mtime +7 -delete # dropimg-cleanup\" ) | crontab -
       '" && ok "crontab 清理任务已安装" || warn "crontab 安装失败（不影响主功能）"
@@ -334,9 +334,9 @@ if [[ $DRY_RUN == 0 ]]; then
   echo "dropfile self test $(date)" > "$TESTF"
   if result="$("$BIN_DIR/dropfile" "$TESTF" 2>&1)"; then
     ok "推送成功 → $result"
-    if ssh -o BatchMode=yes "$DROP_HOST" "test -f '$result'"; then
+    if ssh -n -o BatchMode=yes "$DROP_HOST" "test -f '$result'"; then
       ok "已确认文件存在于远端"
-      ssh -o BatchMode=yes "$DROP_HOST" "rm -f '$result'" 2>/dev/null || true
+      ssh -n -o BatchMode=yes "$DROP_HOST" "rm -f '$result'" 2>/dev/null || true
     else
       warn "远端找不到该文件，请检查 $REMOTE_DIR 权限"
     fi
