@@ -1,7 +1,7 @@
 ---
 name: Coding Anywhere
-description: This skill should be used when the user wants to set up remote development access from mobile devices (iPhone/iPad/Android) or any laptop to a home Mac/Linux box. Trigger on keywords like "mosh", "tmux remote", "ssh from iPhone", "Blink shell setup", "always-on Mac", "reverse SSH relay", "DDNS direct connection", "build my own Tailscale alternative", "remote development setup", "code from anywhere", or when the user asks "how do I keep coding when I'm not at my desk". Also trigger when the user references this plugin's GitHub README and wants to replicate the stack.
-version: 1.0.0
+description: This skill should be used when the user wants to set up remote development access from mobile devices (iPhone/iPad/Android) or any laptop to a home Mac/Linux box. Trigger on keywords like "mosh", "tmux remote", "ssh from iPhone", "Blink shell setup", "always-on Mac", "reverse SSH relay", "DDNS direct connection", "build my own Tailscale alternative", "remote development setup", "code from anywhere", or when the user asks "how do I keep coding when I'm not at my desk". ALSO trigger for pasting images into a remote terminal session - keywords like "dropimg", "paste image over ssh", "send screenshot to remote Claude Code", "Cmd+V does not work in terminal", "how do I show Claude a screenshot when working remotely", "贴图", "粘贴图片", "传图", "截图给 Claude", "远程终端发图片". Also trigger when the user references this plugin's GitHub README and wants to replicate the stack.
+version: 1.1.0
 ---
 
 # Coding Anywhere - 随时随地远程开发栈
@@ -121,6 +121,41 @@ Home Mac
 4. **客户端配置** — Blink / Termius / La Terminal / 命令行 mosh 的 Host 配置（详见 `references/client-config.md`）
 5. **tmux 持久会话** — 配置项目自动 attach（详见 `references/tmux-session-recipes.md`）
 6. **验收清单** — 跑一遍最小验证：`ssh` 能通、`mosh` 能通、tmux 能 attach、网络切换连接不掉
+7. **终端贴图能力**（可选但强烈建议） — 见下节
+
+## 终端里"粘贴"图片（dropimg）
+
+> 触发词：贴图、粘贴图片、传图、截图给 Claude、`⌘V 没反应`、
+> "远程终端里怎么发图片"、"Claude Code 看不到我的截图"
+
+**先纠正一个常见误解**：⌘V 贴不了图**不是 mosh 的锅**。PTY 是字符设备，
+终端收到 ⌘V 时只取剪贴板的纯文本类型，图片二进制没有通道可走——
+普通 `ssh -t` 一样贴不了。
+
+**解法**：图片走 SSH **带外通道**落到远端 `~/Drops/`，终端里只流转路径字符串。
+用户体验是「截图 → 按一个快捷键 → 路径出现在输入框」。
+
+一键安装：
+
+```bash
+bash ${CLAUDE_PLUGIN_ROOT}/scripts/install-dropimg.sh <user@host>
+```
+
+安装器做六件事并自检：检查/装 `pngpaste` → 验证免密 SSH → 装远端落盘脚本 →
+装远端清理任务 → 装本地命令与配置 → 写 Karabiner 快捷键 → 推一张测试图验证。
+
+引导用户时需要问的：
+
+- **目标主机**（`user@host`）—— 局域网 IP、DDNS 域名或 ECS Relay 入口都行
+- **快捷键** —— 默认 `ctrl+opt+v`；要避开目标终端已占用的组合
+  （iTerm2 的 `Cmd+Shift+V`、`Cmd+Shift+D` 都有用途）
+- **是否装 Karabiner 规则** —— 没装 Karabiner 就用 `--no-karabiner`，只装命令
+
+> [!warning] 实现上最容易翻车的一点
+> 自动模拟 ⌘V **必须条件化等待**（等修饰键释放 + 等剪贴板就绪），
+> 不能直接发键、也不能用固定 sleep。开发中出现过"换个实现就自己好了"的
+> 海森堡 bug —— 真相只是新实现慢了 48ms 恰好躲过竞态窗口。
+> 完整原理、五条设计取舍与排查表见 `references/image-paste-blueprint.md`。
 
 ## 故障速查
 

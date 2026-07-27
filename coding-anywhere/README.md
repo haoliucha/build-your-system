@@ -13,6 +13,44 @@
 - **不依赖 Tailscale/ZeroTier 的可用性** — 全部自建，路径短、延迟低
 - **覆盖任何客户端** — iPhone Blink / iPad Termius / 桌面 mosh CLI / 朋友的 Linux 笔记本
 - **两套架构按需切换** — ECS Relay（稳定，需公网 ECS）或 DDNS + IPv6 直连（最快，需家里有公网 IPv6）
+- **终端里能"贴图"** — 截图 → 按一个快捷键 → 远端路径出现在 Claude Code 输入框（见下方 `dropimg`）
+
+---
+
+## 终端远程贴图（dropimg）
+
+远程写代码时最膈应的一件事：**想给 Claude Code 看一张截图，但终端里 `⌘V` 贴不了图。**
+
+这**不是 mosh 的锅**。PTY 是字符设备，终端收到 `⌘V` 时只取剪贴板的纯文本类型，
+图片二进制根本没有通道——普通 `ssh -t` 一样贴不了。
+
+解法是让图片走 SSH **带外通道**落到远端 `~/Drops/`，终端里只流转一个路径字符串：
+
+```
+截图（⌘⇧⌃4） → 按 Ctrl+Opt+V → 路径出现在输入框 → 接着打字说明 → 回车
+```
+
+**一键安装**（先装好插件）：
+
+```bash
+bash ~/.claude/plugins/marketplaces/build-your-system/coding-anywhere/scripts/install-dropimg.sh user@your-host
+```
+
+安装器会检查/安装 `pngpaste`、验证免密 SSH、装远端落盘脚本与清理任务、
+装本地命令与配置、写 Karabiner 快捷键，最后**推一张测试图自检**。
+
+| 选项 | 说明 |
+|------|------|
+| `--key cmd+shift+i` | 换快捷键（默认 `ctrl+opt+v`） |
+| `--no-karabiner` | 不配快捷键，只装 `dropimg` 命令 |
+| `--no-cleanup` | 不装远端定期清理 |
+| `--dry-run` | 只打印将要做什么 |
+
+装完也可以纯命令行用：`dropimg` 推送并把路径复制到剪贴板。
+
+> 客户端需 macOS（依赖 `pngpaste` / `NSPasteboard`），远端 macOS 与 Linux 都支持。
+> 原理、五条设计取舍与排查表见
+> [`references/image-paste-blueprint.md`](skills/coding-anywhere/references/image-paste-blueprint.md)。
 
 ---
 
@@ -69,7 +107,12 @@ coding-anywhere/
 │       ├── ddns-direct-blueprint.md      # DDNS + IPv6 直连完整模板
 │       ├── client-config.md              # Blink / Termius / La Terminal / mosh CLI
 │       ├── tmux-session-recipes.md       # tmux 持久会话配置
+│       ├── image-paste-blueprint.md      # 终端远程贴图原理 + 设计取舍 + 排查
 │       └── troubleshooting.md            # 9 类常见故障的排查清单
+└── scripts/
+    ├── install-dropimg.sh                # 贴图能力一键安装器（含自检）
+    ├── dropimg                           # 客户端：取剪贴板图 → 推送 → 回填路径
+    └── drop-image.sh                     # 远端：解码落盘 → 回显绝对路径
 ```
 
 ---

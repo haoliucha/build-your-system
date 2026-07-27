@@ -1,0 +1,142 @@
+#!/bin/bash
+# dropimg — 把本机剪贴板里的图片推到远端主机，落盘后把远端绝对路径写回本机剪贴板。
+#
+# 解决的问题：在终端里 ssh 到远端跑 tmux + Claude Code 时，PTY 是字符设备，
+# ⌘V 粘不了图片。本脚本走 SSH 带外通道把图送过去，终端里只流转一个路径字符串。
+#
+# 用法：
+#   dropimg                          # 推送，打印并复制远端路径
+#   AUTO_PASTE=1 dropimg             # 推送后自动模拟 ⌘V（供全局快捷键调用）
+#   DROP_HOST=user@host dropimg      # 临时指定目标机
+#
+# 配置：~/.config/dropimg/config（安装器生成），可被环境变量覆盖
+#
+# 依赖：pngpaste（brew install pngpaste）
+#
+# 注意：外部命令一律用绝对路径 —— GUI（Karabiner / 快捷键）触发时 PATH 被消毒成
+#       /usr/bin:/bin，Homebrew 的 pngpaste 会 not found。
+set -euo pipefail
+
+# ---------- 配置 ----------
+CONFIG_FILE="${DROPIMG_CONFIG:-$HOME/.config/dropimg/config}"
+# shellcheck disable=SC1090
+[[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+
+DROP_HOST="${DROP_HOST:-}"
+REMOTE_SCRIPT="${REMOTE_SCRIPT:-\$HOME/bin/drop-image.sh}"
+AUTO_PASTE="${AUTO_PASTE:-0}"
+DEBUG_LOG="${DROPIMG_DEBUG_LOG:-}"
+
+# pngpaste 可能装在 Apple Silicon 或 Intel 的 Homebrew 前缀下
+PNGPASTE="${PNGPASTE:-}"
+if [[ -z "$PNGPASTE" ]]; then
+  for c in /opt/homebrew/bin/pngpaste /usr/local/bin/pngpaste; do
+    [[ -x "$c" ]] && PNGPASTE="$c" && break
+  done
+fi
+
+OSASCRIPT=/usr/bin/osascript
+BASE64=/usr/bin/base64
+SSH=/usr/bin/ssh
+PBCOPY=/usr/bin/pbcopy
+MKTEMP=/usr/bin/mktemp
+
+notify() { "$OSASCRIPT" -e "display notification \"$2\" with title \"$1\"" >/dev/null 2>&1 || true; }
+
+die() {
+  echo "dropimg: $1" >&2
+  [[ "$AUTO_PASTE" == "1" ]] && notify "dropimg 失败" "$1"
+  exit 1
+}
+
+[[ -n "$DROP_HOST" ]]  || die "未配置 DROP_HOST（跑一次 install-dropimg.sh，或 export DROP_HOST=user@host）"
+[[ -n "$PNGPASTE" && -x "$PNGPASTE" ]] || die "找不到 pngpaste，请先 brew install pngpaste"
+
+# ---------- 取图 ----------
+TMP="$("$MKTEMP" -t dropimg)"
+trap '/bin/rm -f "$TMP"' EXIT
+
+# 路径 1：剪贴板里是图片数据（截图、网页复制图片）
+if ! "$PNGPASTE" "$TMP" >/dev/null 2>&1 || [[ ! -s "$TMP" ]]; then
+  # 路径 2：剪贴板里是文件引用（Finder 里复制了一个图片文件）
+  src="$("$OSASCRIPT" -e 'POSIX path of (the clipboard as «class furl»)' 2>/dev/null || true)"
+  if [[ -n "$src" && -f "$src" ]]; then
+    /bin/cp "$src" "$TMP"
+  else
+    die "剪贴板里没有图片"
+  fi
+fi
+
+# ---------- 推送 ----------
+remote_path="$("$BASE64" < "$TMP" | "$SSH" -o BatchMode=yes -o ConnectTimeout=8 "$DROP_HOST" "bash $REMOTE_SCRIPT")" \
+  || die "SSH 推送失败（$DROP_HOST）"
+[[ -n "$remote_path" ]] || die "远端没有返回路径"
+
+# 不带尾随换行：否则粘进 Claude Code 会立刻提交，来不及补充说明文字
+printf '%s' "$remote_path" | "$PBCOPY"
+
+if [[ "$AUTO_PASTE" != "1" ]]; then
+  echo "$remote_path"
+  exit 0
+fi
+
+# ---------- 自动粘贴（条件化等待，见下方说明）----------
+#
+# 为什么不是"直接发 ⌘V"：实测中直接发经常静默失效，需要用户再手动按一次。
+# 根因未能 100% 锁定，但所有候选都属于「发得太早」这一类时序竞态：
+#   a) 修饰键残留 —— 触发快捷键的 ctrl/opt 还按着，合成的 cmd 与之叠加成
+#      Cmd+Ctrl+Opt+V，目标应用没有这个绑定 → 静默丢弃
+#   b) 剪贴板尚未就绪 —— pbcopy 刚写入，目标应用读到的还是旧内容（常常是那张
+#      图片本身），⌘V 到终端等于什么都没发生
+#   c) 剪贴板管理器（PasteEasy / Maccy 等）介入 pasteboard，引入额外抖动
+#
+# 因此这里不用固定 sleep，而是**轮询到条件真正满足**再发键：
+#   条件 1：shift/ctrl/opt/cmd 全部释放
+#   条件 2：系统剪贴板的文本内容确实等于我们刚写入的路径
+# 两个条件都满足（或超时）才发送。这样对上述任一根因都成立，
+# 也不依赖某个实现"恰好慢了几十毫秒"这种运气。
+#
+# 全部逻辑放在**一次** osascript 调用里完成：多起一个进程会额外引入 ~50ms，
+# 足以让这类时序 bug 自己消失又在别人机器上复现（海森堡 bug）。
+
+export DROPIMG_PATH="$remote_path"
+diag="$("$OSASCRIPT" -l JavaScript -e '
+ObjC.import("AppKit");
+var env    = $.NSProcessInfo.processInfo.environment;
+var target = ObjC.unwrap(env.objectForKey("DROPIMG_PATH"));
+var budget = parseFloat(ObjC.unwrap(env.objectForKey("DROPIMG_WAIT_MS")) || "1500") / 1000.0;
+
+// shift(1<<17) ctrl(1<<18) opt(1<<19) cmd(1<<20)；刻意不含 capslock/fn
+var MASK     = (1<<17)|(1<<18)|(1<<19)|(1<<20);
+var pb       = $.NSPasteboard.generalPasteboard;
+var deadline = $.NSDate.date.timeIntervalSince1970 + budget;
+var now      = function () { return $.NSDate.date.timeIntervalSince1970; };
+
+// 条件 1：等修饰键全部松开
+var mods0 = $.NSEvent.modifierFlags & MASK, waitMods = 0;
+while (($.NSEvent.modifierFlags & MASK) !== 0 && now() < deadline) {
+  $.NSThread.sleepForTimeInterval(0.015); waitMods += 15;
+}
+
+// 条件 2：等剪贴板确实是我们写入的路径
+var clipOK = false, waitClip = 0;
+while (now() < deadline) {
+  var cur = pb.stringForType($.NSPasteboardTypeString);
+  if (cur && ObjC.unwrap(cur) === target) { clipOK = true; break; }
+  $.NSThread.sleepForTimeInterval(0.010); waitClip += 10;
+}
+
+var err = "", fm = "";
+try { Application("System Events").keystroke("v", {using: "command down"}); }
+catch (e) { err = String(e); }
+try { fm = Application("System Events").applicationProcesses.whose({frontmost: true})[0].name(); }
+catch (e) { fm = "?"; }
+
+"mods0=" + mods0 + " waitMods=" + waitMods + "ms clipOK=" + clipOK +
+" waitClip=" + waitClip + "ms frontmost=" + fm + " err=" + err;
+' 2>&1)"
+rc=$?
+
+[[ -n "$DEBUG_LOG" ]] && echo "[$(/bin/date '+%F %T')] rc=$rc $diag" >> "$DEBUG_LOG"
+[[ $rc -ne 0 ]] && notify "dropimg" "路径已复制，请手动 ⌘V"
+exit 0
