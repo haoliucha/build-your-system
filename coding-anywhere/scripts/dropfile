@@ -32,6 +32,12 @@ if [[ -z "${LC_ALL:-}" && -z "${LC_CTYPE:-}" && -z "${LANG:-}" ]]; then
   export LC_CTYPE="UTF-8"
 fi
 
+# osascript 的路径必须在这里定义 —— 下面的自动探测就要用它。
+# 曾经把它放在配置段之后，结果探测里的 $OSASCRIPT 撞上 set -u 报
+# "OSASCRIPT: unbound variable"，被 || true 吞掉，前台窗口识别静默失效，
+# 靠"全机只有一条 ssh"的回退蒙对，开两个会话才会暴露。
+OSASCRIPT=/usr/bin/osascript
+
 # ---------- 配置 ----------
 # 先把环境变量存起来再 source：配置文件里是直接赋值（DROP_HOST=...），
 # 若先 source 就会把环境变量覆盖掉，`DROP_HOST=user@other dropfile` 这种
@@ -46,8 +52,74 @@ CONFIG_FILE="${DROPIMG_CONFIG:-$HOME/.config/dropimg/config}"
 # shellcheck disable=SC1090
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
 
-# 环境变量优先级高于配置文件
-DROP_HOST="${_E_DROP_HOST:-${DROP_HOST:-}}"
+# ---------- 自动探测目标主机 ----------
+#
+# 你正在用的那条 SSH 连接，命令行里就写着 user@host，没必要让人再填一遍：
+#     94725 ttys081  ssh jliu@192.168.71.181 -t tmux new-session -A -s vault
+#
+# 陷阱：ps 里还有 LaunchAgent 维持的**后台反向隧道**（ssh -N -T -R ... root@relay）。
+# 盲目抓第一个 ssh 会把文件推到中继机上。区分靠 tty —— 交互式 ssh 有真实 tty，
+# 后台隧道是 "??"。所以只认 ttys* 开头的行。
+
+# 从一条 ssh 命令行里取出 [user@]host：跳过选项及其参数，取第一个非选项 token
+_parse_ssh_target() {
+  local -a toks=($1); local i=1 n=${#toks[@]} t
+  # 这些选项后面跟一个独立参数，必须连带跳过，否则会把参数误当主机名
+  local witharg=" -i -o -p -L -R -D -F -l -E -b -c -m -O -Q -S -w -J -W -B -e "
+  while (( i < n )); do
+    t="${toks[$i]}"
+    if [[ "$t" == -* ]]; then
+      [[ "$witharg" == *" $t "* ]] && (( i++ ))
+      (( i++ )); continue
+    fi
+    printf '%s' "$t"; return 0
+  done
+  return 1
+}
+
+# 前台终端窗口的 tty（决定"你正在看哪个会话"）
+_frontmost_tty() {
+  local fg t=""
+  fg="$("$OSASCRIPT" -e 'tell application "System Events" to return name of first process whose frontmost is true' 2>/dev/null)" || return 1
+  case "$fg" in
+    iTerm2|iTerm) t="$("$OSASCRIPT" -e 'tell application "iTerm2" to tell current session of current window to get tty' 2>/dev/null)" ;;
+    Terminal)     t="$("$OSASCRIPT" -e 'tell application "Terminal" to get tty of selected tab of front window' 2>/dev/null)" ;;
+    *)            return 1 ;;
+  esac
+  [[ -n "$t" ]] || return 1
+  printf '%s' "${t#/dev/}"
+}
+
+_detect_drop_host() {
+  local lines fgtty hit
+  lines="$(/bin/ps -axo tty=,args= | /usr/bin/grep -E '^ttys[0-9]+ +(/usr/bin/)?ssh ' || true)"
+  [[ -n "$lines" ]] || return 1
+
+  # 优先：前台窗口那条连接 —— 开多个 ssh 时才不会串
+  fgtty="$(_frontmost_tty || true)"
+  if [[ -n "$fgtty" ]]; then
+    hit="$(printf '%s\n' "$lines" | /usr/bin/awk -v t="$fgtty" '$1==t {print; exit}')"
+    [[ -n "$hit" ]] && _parse_ssh_target "${hit#* }" && return 0
+  fi
+
+  # 回退：全机恰好只有一条交互式 ssh，那没什么可歧义的
+  if [[ "$(printf '%s\n' "$lines" | /usr/bin/wc -l | /usr/bin/tr -d ' ')" == "1" ]]; then
+    _parse_ssh_target "${lines#* }" && return 0
+  fi
+  return 1
+}
+
+# 优先级：环境变量（显式覆盖） > 自动探测 > 配置文件
+DROP_HOST_SRC="config"
+if [[ -n "$_E_DROP_HOST" ]]; then
+  DROP_HOST="$_E_DROP_HOST"
+  DROP_HOST_SRC="env"
+elif [[ "${DROPFILE_AUTODETECT:-1}" != "0" ]] && _auto="$(_detect_drop_host)" && [[ -n "$_auto" ]]; then
+  DROP_HOST="$_auto"
+  DROP_HOST_SRC="auto"
+else
+  DROP_HOST="${DROP_HOST:-}"
+fi
 REMOTE_SCRIPT="${_E_REMOTE_SCRIPT_FILE:-${REMOTE_SCRIPT_FILE:-\$HOME/bin/drop-file.sh}}"
 PNGPASTE="${_E_PNGPASTE:-${PNGPASTE:-}}"
 DEBUG_LOG="${_E_DEBUG_LOG:-${DROPIMG_DEBUG_LOG:-}}"
@@ -61,7 +133,6 @@ if [[ -z "$PNGPASTE" ]]; then
   done
 fi
 
-OSASCRIPT=/usr/bin/osascript
 BASE64=/usr/bin/base64
 SSH=/usr/bin/ssh
 PBCOPY=/usr/bin/pbcopy
@@ -76,7 +147,12 @@ die() {
   exit 1
 }
 
-[[ -n "$DROP_HOST" ]] || die "未配置 DROP_HOST（跑一次安装器，或 export DROP_HOST=user@host）"
+[[ -n "$DROP_HOST" ]] || die "没有目标主机：当前识别不到 SSH 会话，配置里也没有 DROP_HOST。用 DROP_HOST=user@host dropfile ... 显式指定"
+
+# 自动识别的结果必须让人看得见 —— 万一认错了机器，能当场发现而不是把文件发丢
+if [[ "$DROP_HOST_SRC" == "auto" && "$AUTO_PASTE" != "1" ]]; then
+  echo "dropfile: 目标 ${DROP_HOST}（自动识别自当前 SSH 会话）" >&2
+fi
 
 TMPS=()
 cleanup() { for f in ${TMPS+"${TMPS[@]}"}; do /bin/rm -f "$f"; done; }

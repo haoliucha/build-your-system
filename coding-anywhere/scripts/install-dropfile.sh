@@ -230,7 +230,14 @@ if [[ $DRY_RUN == 0 ]]; then
 
   cat > "$CONFIG_DIR/config" <<EOF
 # dropfile 配置（由 install-dropfile.sh 生成）
-# 环境变量同名项优先级更高，例如: DROP_HOST=user@other dropfile
+#
+# 目标主机的优先级：
+#   1. 环境变量        DROP_HOST=user@other dropfile foo.pdf
+#   2. 自动识别        读当前前台终端窗口那条 ssh 的 user@host
+#   3. 下面这个值      前两者都没有时才用
+#
+# 也就是说：你 ssh 连着哪台，dropfile 默认就推给哪台，通常不用管这里。
+# 想关掉自动识别： DROPFILE_AUTODETECT=0
 DROP_HOST="$DROP_HOST"
 REMOTE_SCRIPT_FILE="$REMOTE_BIN/drop-file.sh"
 DROPFILE_MAX_MB=$MAX_MB

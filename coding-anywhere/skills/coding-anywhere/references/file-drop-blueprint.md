@@ -54,6 +54,46 @@ Claude Code 输入框出现 /home/user/Drops/20260727_130248_报告.md
 
 ---
 
+## 2.5 目标主机：不用填，自动认
+
+你正在用的那条 SSH 连接，命令行里就写着 `user@host`：
+
+```
+94725 ttys081  ssh jliu@192.168.71.181 -t tmux new-session -A -s vault
+```
+
+所以 `dropfile` 直接去读它，**默认推给"你当前正看着的那个 SSH 会话"**。
+
+| 优先级 | 来源 |
+|--------|------|
+| 1 | 环境变量 `DROP_HOST=user@other dropfile foo.pdf` |
+| 2 | **自动识别**：前台终端窗口那条 ssh 的 `user@host` |
+| 3 | 配置文件 `~/.config/dropimg/config` 里的 `DROP_HOST` |
+
+识别逻辑先看**前台终端窗口的 tty**（iTerm2 / Terminal 都支持），
+这样开多个 ssh 连不同机器也不会串；拿不到前台 tty 时，若全机恰好只有
+一条交互式 ssh，就用它；再不行才回落配置。`DROPFILE_AUTODETECT=0` 可关掉。
+
+> [!warning] 必须用 tty 过滤，否则会推错机器
+> `ps` 里除了你的交互式 ssh，还有 LaunchAgent 维持的**后台反向隧道**：
+> ```
+> ??  ssh -N -T -R 127.0.0.1:10023:127.0.0.1:22 root@<relay-ip>
+> ```
+> 盲目抓第一个 ssh 会把文件推到中继机上。区分特征很干净：
+> **交互式 ssh 有真实 tty，后台隧道是 `??`** —— 只认 `ttys*` 开头的行。
+
+自动识别的结果会打印到 stderr（`目标 xxx（自动识别自当前 SSH 会话）`），
+认错了能当场发现，而不是把文件发丢。
+
+> [!note] 关于走中继时的地址
+> ECS 中继方案里，中继机的公网 IP 是**固定**的，家里 Mac 的局域网 IP 和
+> 家庭宽带公网 IP 都不需要任何人知道（Mac 主动向中继建反向隧道）。
+> 所以人在外面时 `user@<relay-ip>` 是个永不变的地址。
+> 实测中继链路可用：ForceCommand 能透传 stdin，base64 正常抵达后端。
+> 代价是多一次转发（8KB 文件 0.25s → 1.0s，差值主要是 RTT）。
+
+---
+
 ## 3. 来源优先级
 
 `dropfile` 按这个顺序找内容，**顺序本身是设计决策**：
