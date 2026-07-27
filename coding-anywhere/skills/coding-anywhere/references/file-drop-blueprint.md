@@ -275,6 +275,64 @@ jsDelivr 保证国内可达），然后：检查依赖 → 验证免密 SSH → 
 
 ---
 
+## 6.5 两种触发方式：Karabiner vs iTerm2 Coprocess
+
+| | Karabiner | iTerm2 Coprocess |
+|---|---|---|
+| 装什么 | Karabiner-Elements | 无（iTerm2 自带） |
+| 系统权限 | 输入监控 + 辅助功能 | **不需要** |
+| 生效范围 | 全局（任何 app） | 仅 iTerm2 |
+| 路径怎么进输入框 | 模拟 ⌘V | **iTerm2 直接注入 session** |
+| 时序竞态 | 有（见 4.5） | **不存在** |
+| 配置后生效 | 立即 | 立即（GUI 里加） |
+
+**iTerm2 Coprocess 这条路把 4.5 那一整节的问题从根上消掉了** —— 不模拟按键，
+就没有"修饰键还按着"或"剪贴板没就绪"可言。代价是只在 iTerm2 里有效。
+
+配置（`install-dropfile.sh --iterm2` 会打印同样的步骤）：
+
+```
+iTerm2 → Settings（⌘,）→ Keys → Key Bindings → 左下角 "+"
+  Keyboard Shortcut : 按下 Ctrl+Opt+V
+  Action            : Run Coprocess…
+  命令              : /bin/bash -c 'DROPFILE_COPROCESS=1 exec ~/.local/bin/dropfile 2>/dev/null'
+```
+
+### coprocess 模式对输出的硬要求
+
+Coprocess 的 **stdout 会被当作用户输入注入 session**，所以：
+
+| 要求 | 为什么 |
+|------|--------|
+| 绝不带换行 | 等于替你按了回车，话还没说完就提交 |
+| 末尾补一个空格 | 方便接着打字 |
+| stderr 必须丢弃 | 否则「目标 xxx（自动识别…）」会被打进输入框 |
+| 失败也要吐点东西 | 否则按了没反应，分不清是没触发还是失败了 |
+| 永远 exit 0 | coprocess 不看退出码，非 0 只会让 iTerm2 弹无谓警告 |
+
+> [!warning] 自动写 iTerm2 偏好是负收益
+> 偏好由 `cfprefsd` 托管，**外部改完必须重启 iTerm2** 才生效，而重启会关掉
+> 当前所有窗口；在 GUI 里加则立即生效。所以 `--iterm2` 只打印步骤、不代改配置。
+>
+> 真要写的话有个隐蔽的坑：`defaults -dict-add` 写进去的是**字符串** `'35'`，
+> 而 iTerm2 要的是**整数** `35` —— 类型不对它会静默忽略整条规则，
+> 表现成「配置明明在但快捷键没反应」。必须用 `plistlib` 精确控制类型。
+
+### iTerm2 键位格式速查
+
+`GlobalKeyMap` 的键是 `0x<字符>-0x<修饰键掩码>-0x<虚拟键码>`：
+
+| 修饰键 | 掩码 | | 常用虚拟键码 |
+|--------|------|---|--------------|
+| Shift | `0x20000` | | `v`=9 `c`=8 `x`=7 |
+| Control | `0x40000` | | `i`=34 `d`=2 `f`=3 |
+| Option | `0x80000` | | `a`=0 `s`=1 |
+| Command | `0x100000` | | |
+
+`Action` 值：**35 = Run Coprocess**，12 = Send Text，60 = Invoke Script Function。
+
+---
+
 ## 7. 用法
 
 ```bash

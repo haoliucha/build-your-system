@@ -48,6 +48,7 @@ mirror_urls() {  # $1 = 文件名
 DROP_HOST=""
 HOTKEY="ctrl+opt+v"
 WITH_KARABINER=1
+WITH_ITERM2=0
 WITH_CLEANUP=1
 MAX_MB=15
 REMOTE_DIR='$HOME/Drops'
@@ -56,6 +57,9 @@ DRY_RUN=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --key)          HOTKEY="$2"; shift 2 ;;
+    # 走 iTerm2 Coprocess：不需要 Karabiner、不需要任何系统权限，
+    # 也不需要模拟 ⌘V（输出由 iTerm2 直接注入 session）
+    --iterm2)       WITH_ITERM2=1; WITH_KARABINER=0; shift ;;
     --no-karabiner) WITH_KARABINER=0; shift ;;
     --no-cleanup)   WITH_CLEANUP=0; shift ;;
     --max-mb)       MAX_MB="$2"; shift 2 ;;
@@ -322,7 +326,40 @@ case ":$PATH:" in
 esac
 
 # ---------- 6. 快捷键 ----------
-if [[ $WITH_KARABINER == 1 ]]; then
+if [[ $WITH_ITERM2 == 1 ]]; then
+  step 6/6 "iTerm2 Coprocess 方式（打印配置步骤，不修改你的偏好设置）"
+  # 刻意不自动写 iTerm2 偏好：
+  #   1) 偏好由 cfprefsd 托管，外部改完必须**重启 iTerm2** 才生效，
+  #      而重启会关掉你当前所有窗口；在 GUI 里加则立即生效
+  #   2) 全局快捷键属于持久化配置，值得让人自己过一眼
+  cat <<EOF
+
+    iTerm2 → Settings（⌘,）→ Keys → Key Bindings → 左下角 "+"
+
+      Keyboard Shortcut : 按下 ${HOTKEY}
+      Action            : Run Coprocess…
+      命令              : /bin/bash -c 'DROPFILE_COPROCESS=1 exec ${BIN_DIR}/dropfile 2>/dev/null'
+
+    加完立刻生效，不用重启 iTerm2、不用装 Karabiner、不用给任何系统权限。
+
+    原理：Coprocess 的 stdout 会被 iTerm2 **当作你输入的内容注入当前 session**。
+    dropfile 的 coprocess 模式因此只吐一行路径、末尾补空格、不带换行
+    （带换行等于替你按了回车），stderr 全部丢弃以免提示信息被打进输入框。
+
+EOF
+  # 不能只看 /Applications：不想输管理员密码的人普遍把 app 装在 ~/Applications
+  # （跟 Homebrew 有 /opt/homebrew 与 /usr/local 两个前缀是同一类问题）
+  ITERM_APP=""
+  for p in /Applications/iTerm.app "$HOME/Applications/iTerm.app"; do
+    [[ -d "$p" ]] && ITERM_APP="$p" && break
+  done
+  [[ -z "$ITERM_APP" ]] && ITERM_APP="$(mdfind "kMDItemCFBundleIdentifier == 'com.googlecode.iterm2'" 2>/dev/null | head -1)"
+  if [[ -n "$ITERM_APP" ]]; then
+    ok "已检测到 iTerm2: $ITERM_APP"
+  else
+    warn "没找到 iTerm2 —— 确认在装了 iTerm2 的机器上操作"
+  fi
+elif [[ $WITH_KARABINER == 1 ]]; then
   step 6/6 "配置 Karabiner 全局快捷键 $HOTKEY"
   KJSON="$HOME/.config/karabiner/karabiner.json"
   if [[ ! -f "$KJSON" ]]; then
@@ -433,7 +470,7 @@ cat <<EOF
 ══════════════════════════════════════════════
 
   日常用法:
-    截图  → $([[ $WITH_KARABINER == 1 ]] && echo "按 $HOTKEY" || echo "运行 dropfile") → 路径出现在光标处
+    截图  → $([[ $WITH_KARABINER == 1 || $WITH_ITERM2 == 1 ]] && echo "按 $HOTKEY" || echo "运行 dropfile") → 路径出现在光标处
     传文件 → dropfile report.pdf
     多文件 → dropfile a.png b.zip c.md
     Finder 里复制文件后 → dropfile（保留原文件名）

@@ -144,6 +144,12 @@ notify() { "$OSASCRIPT" -e "display notification \"$2\" with title \"$1\"" >/dev
 die() {
   echo "dropfile: $1" >&2
   if [[ "$AUTO_PASTE" == "1" ]]; then notify "dropfile 失败" "$1"; fi
+  # coprocess 模式下 stderr 不会进 session：错误必须走 stdout，否则按了没反应，
+  # 用户无法区分"快捷键没触发"和"触发了但失败"。压成单行并 exit 0（见下方说明）
+  if [[ "${DROPFILE_COPROCESS:-0}" == "1" ]]; then
+    printf '[dropfile: %s] ' "$(printf '%s' "$1" | /usr/bin/tr -d '\n')"
+    exit 0
+  fi
   exit 1
 }
 
@@ -234,6 +240,26 @@ done
 # 不带尾随换行：否则粘进 Claude Code 会立刻提交，来不及补充说明文字
 # （多文件时中间的换行保留 —— Claude Code 会把每一行都识别为 attachment）
 printf '%s' "$results" | "$PBCOPY"
+
+# ---------- iTerm2 Coprocess 模式 ----------
+# iTerm2 的 coprocess 会把命令的 **stdout 当作用户输入注入当前 session**，
+# 所以这条路完全不需要 Karabiner、不需要辅助功能权限，也不需要模拟 ⌘V ——
+# 那个"发得太早"的时序竞态从根上就不存在了。
+#
+# 但对输出的要求很严：
+#   - 绝不能带换行，否则等于替你按了回车，话还没说完就提交了
+#   - 末尾补一个空格，方便接着打字（"这个报错帮我看下"）
+#   - stderr 绝不能混进来，否则"目标 xxx（自动识别…）"会被打进输入框
+#   - 失败也必须注入点什么，否则按了没反应，你不知道是没触发还是失败了
+#   - 永远 exit 0：coprocess 不看退出码，非 0 只会让 iTerm2 弹无谓的警告
+if [[ "${DROPFILE_COPROCESS:-0}" == "1" ]]; then
+  if [[ -n "$results" ]]; then
+    printf '%s ' "$results"
+  else
+    printf '[dropfile: 没有拿到路径] '
+  fi
+  exit 0
+fi
 
 if [[ "$AUTO_PASTE" != "1" ]]; then
   echo "$results"
