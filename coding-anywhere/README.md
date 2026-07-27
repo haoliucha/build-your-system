@@ -77,6 +77,18 @@ curl -fsSL <同上> | bash -s -- jliu@192.168.1.10
 需要在 iTerm2 之外也能按（比如从 Finder 复制文件后直接按）就加 `--karabiner`，
 代价是装 Karabiner-Elements 并授予输入监控 + 辅助功能权限。
 
+### 卸载
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/uninstall-dropfile.sh | bash -s
+```
+
+清掉本地命令、配置、Karabiner 规则和远端脚本。**远端 `~/Drops` 里的文件默认保留**
+——那是你传过去的数据，要一并删得显式加 `--purge-drops`。
+`--dry-run` 可先看会删什么，`--keep-remote` 只卸本地。
+
+iTerm2 的 Coprocess 绑定是你在 GUI 里手动加的，脚本只检测并提示，不代删。
+
 ### 按了快捷键没反应？
 
 在**你面前那台**（按键盘的、跑 iTerm2 的）机器上跑：
