@@ -236,12 +236,28 @@ fi
 **在线一键**（只装 dropfile，不装整个插件；目标主机从当前 SSH 会话自动识别，不用填）：
 
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/haoliucha/build-your-system@main/coding-anywhere/scripts/install-dropfile.sh | bash -s
+curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/install-dropfile.sh | bash -s
 ```
 
 安装器按 `raw → jsDelivr → ghfast` 顺序回退取脚本（raw 保证最新，
 jsDelivr 保证国内可达），然后：检查依赖 → 验证免密 SSH → 装远端脚本与清理任务 →
 装本地命令与配置 → 写 Karabiner 快捷键 → **推一个测试文件自检**。
+
+> [!note] 为什么外层入口用 raw 而不是 jsDelivr 镜像
+> 两者速度实测几乎一样（0.65s vs 0.61s），差别只在"没有代理时能不能访问"。
+> 真正的分野是**缓存行为**：
+>
+> | 源 | 缓存 | 发新版后 |
+> |----|------|---------|
+> | raw | 几分钟 | **自愈**，等一会儿自动新 |
+> | jsDelivr | 对 `@main` 长缓存 | 需手动 `curl https://purge.jsdelivr.net/gh/<user>/<repo>@main/<path>` |
+>
+> 用一个"需要人记住的手动步骤"去换几分钟等待，不划算 —— 忘了 purge 的后果
+> 很隐蔽：脚本照样跑，只是行为是旧的，用户根本不知道自己装了过时版本。
+> 所以 raw 做主入口，jsDelivr 只在 raw 不可达时作为备选写在注记里。
+>
+> 注意只有**最外层那条 curl** 是单源的；安装器内部取 `dropfile` /
+> `drop-file.sh` 时仍是三源回退，覆盖面没有实质损失。
 
 | 选项 | 说明 |
 |------|------|
