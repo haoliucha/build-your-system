@@ -101,18 +101,34 @@ ssh root@<your-ecs-ip> 'chmod 755 /usr/local/bin/coding-anywhere-forwarder
 
 #### 它做的三件事
 
-脚本从 `SSH_ORIGINAL_COMMAND` 判断走哪条路，全部通过环境变量参数化
-（`MAC_HAOLIUCHA_IDENTITY_FILE` / `_BACKEND_PORT` / `_BACKEND_USER` / `_LOG_FILE` …，
-由 §3.5 的 `Match User` 块注入），所以**一个脚本服务所有后端 Mac**：
+脚本从 `SSH_ORIGINAL_COMMAND` 判断走哪条路，路由参数全部由 §3.5 的 `Match User`
+块以环境变量注入，所以**一个脚本服务所有后端 Mac**：
 
 | 客户端行为 | mode | 转发形态 |
 |---|---|---|
 | 无命令（交互式登录） | `interactive-ssh` | `ssh -tt` 进后端登录 shell |
-| 命令里含 `mosh-server` | `mosh-server` | mosh-server 在 **ECS 本机**起，`--` 后的 remote command 用 `ssh -tt` 透传到后端 |
+| `mosh-server new …` | `mosh-server` | mosh-server 在 **ECS 本机**起，`--` 后的 remote command 用 `ssh -tt` 透传到后端 |
 | 其他命令 | `tty-command-ssh` / `command-ssh` | 原样透传，是否 `-tt` 见下 |
 
-每次分流都会往 `MAC_HAOLIUCHA_LOG_FILE` 追加一行 JSON（含最终 argv），
-排查时先看这个文件，不要靠猜。
+mosh 那条必须是**完整的 `mosh-server new` 形态**才认。只按文件名匹配的话，
+`ssh <relay-user>@<ecs-ip> 'command -v mosh-server'` 这种仅仅提到可执行文件名的命令
+会被误判成启动请求 —— ECS 上凭空起一个 mosh-server，用户真正想跑的命令没到后端。
+
+| 环境变量 | 必填 | 说明 |
+|---|---|---|
+| `CA_IDENTITY_FILE` | ✅ | ECS 回跳后端用的私钥 |
+| `CA_BACKEND_USER` | ✅ | 后端 Mac 上的登录用户 |
+| `CA_BACKEND_PORT` | ✅ | 反向隧道在 ECS 本地的端口（10023 / 10024 …） |
+| `CA_KNOWN_HOSTS_FILE` | | 默认 `~/.ssh/known_hosts.coding-anywhere` |
+| `CA_BACKEND_HOST` | | 默认 `127.0.0.1` |
+| `CA_LOG_FILE` | | 默认 `/tmp/coding-anywhere-forwarder.log`，建议按用户分开 |
+| `CA_FORCED_MOSH_PORT` | | 强制 mosh 端口（一般别设，见 §3.6） |
+
+**前三个没有默认值，缺了直接退出（EX_CONFIG 78）**。给它们兜底默认值意味着配错时
+用户会连上一台"能用但不是自己那台"的机器 —— 静默走错后端比连不上难排查得多。
+
+每次分流都会往 `CA_LOG_FILE` 追加一行 JSON（含最终 argv），排查时先看这个文件，
+不要靠猜。
 
 #### 第二跳的 PTY 规则（踩过坑）
 
@@ -144,17 +160,24 @@ ClientAliveInterval 30
 ClientAliveCountMax 3
 
 Match User <user-1>
-  ForceCommand env CA_IDENTITY_FILE=/home/<user-1>/.ssh/mac-relay CA_KNOWN_HOSTS_FILE=/home/<user-1>/.ssh/known_hosts.macrelay CA_BACKEND_PORT=10023 CA_BACKEND_USER=<mac1-user> /usr/local/bin/coding-anywhere-forwarder
+  ForceCommand env CA_IDENTITY_FILE=/home/<user-1>/.ssh/mac-relay CA_KNOWN_HOSTS_FILE=/home/<user-1>/.ssh/known_hosts.macrelay CA_BACKEND_PORT=10023 CA_BACKEND_USER=<mac1-user> CA_LOG_FILE=/tmp/coding-anywhere-forwarder-<user-1>.log /usr/local/bin/coding-anywhere-forwarder
   AllowTcpForwarding no
   X11Forwarding no
   PermitTTY yes
 
 Match User <user-2>
-  ForceCommand env CA_IDENTITY_FILE=/home/<user-2>/.ssh/mac-relay CA_KNOWN_HOSTS_FILE=/home/<user-2>/.ssh/known_hosts.macrelay CA_BACKEND_PORT=10024 CA_BACKEND_USER=<mac2-user> /usr/local/bin/coding-anywhere-forwarder
+  ForceCommand env CA_IDENTITY_FILE=/home/<user-2>/.ssh/mac-relay CA_KNOWN_HOSTS_FILE=/home/<user-2>/.ssh/known_hosts.macrelay CA_BACKEND_PORT=10024 CA_BACKEND_USER=<mac2-user> CA_LOG_FILE=/tmp/coding-anywhere-forwarder-<user-2>.log /usr/local/bin/coding-anywhere-forwarder
   AllowTcpForwarding no
   X11Forwarding no
   PermitTTY yes
 ```
+
+变量名要和 §3.4 那张表**逐字对上** —— 名字对不上时脚本不会静默降级，
+它会因为缺必填项直接退出，你会立刻在客户端看到报错（这是刻意的）。
+
+> [!note] `CA_IDENTITY_FILE` 在本文里出现两次，含义不同
+> 这里（ECS 侧）是"ECS 回跳后端 Mac 用的私钥"；§4.2 那个（Mac 侧）是
+> "家庭 Mac 连 ECS 用的私钥"。两个脚本跑在不同机器上，不会互相污染。
 
 重载：
 

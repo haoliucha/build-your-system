@@ -198,7 +198,7 @@ ECS 上 ForceCommand 脚本 exec 出去的第二条 ssh（ECS → Mac）是全�
 
 ```bash
 ssh -t <relay-user>@<ecs-ip> 'tty'      # 报 not a tty 就是这个问题
-ssh root@<ecs-ip> 'tail -3 <MAC_HAOLIUCHA_LOG_FILE>'   # 看分流 argv 里有没有 -tt
+ssh root@<ecs-ip> 'tail -3 <CA_LOG_FILE>'   # 看分流 argv 里有没有 -tt
 ```
 
 **修复**：让分流脚本按 `sys.stdin.isatty()` 决定第二跳加不加 `-tt`，

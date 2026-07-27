@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """中继 ECS 上的 ForceCommand 分流器：按登录用户把会话透传到对应的后端 Mac。
 
-部署位置：ECS 的 /usr/local/bin/mac-haoliucha-forcecommand（由 sshd_config 的
-`Match User <relay-user>` → `ForceCommand env MAC_HAOLIUCHA_* ... <此脚本>` 调起）。
+部署位置：ECS 的 /usr/local/bin/coding-anywhere-forwarder（由 sshd_config 的
+`Match User <relay-user>` → `ForceCommand env CA_* ... <此脚本>` 调起）。
 这个文件是线上那份的**源**，改完必须 scp 回 ECS 才生效，见
 skills/coding-anywhere/references/ecs-relay-blueprint.md §3.4。
 
@@ -19,18 +19,34 @@ import sys
 from typing import List, Optional, Tuple
 
 
-SSH_BIN = os.environ.get("MAC_HAOLIUCHA_SSH_BIN", "/usr/bin/ssh")
-MOSH_SERVER_BIN = os.environ.get("MAC_HAOLIUCHA_MOSH_SERVER_BIN", "/usr/bin/mosh-server")
-IDENTITY_FILE = os.environ.get("MAC_HAOLIUCHA_IDENTITY_FILE", "/home/jliu/.ssh/mac-relay")
+def required_env(name: str) -> str:
+    """路由参数没有默认值 —— 缺了就断连,不猜。
+
+    这三个变量决定"连到哪台后端",给默认值意味着配错时用户会连上一台
+    能用但不是自己那台的机器 —— 比连不上更难排查(而且是静默的)。
+    """
+    value = os.environ.get(name, "").strip()
+    if not value:
+        sys.stderr.write(
+            f"coding-anywhere-forwarder: 缺少 {name}"
+            "（应由 sshd_config 的 Match 块用 ForceCommand env ... 注入）\n"
+        )
+        raise SystemExit(78)  # EX_CONFIG
+    return value
+
+
+SSH_BIN = os.environ.get("CA_SSH_BIN", "/usr/bin/ssh")
+MOSH_SERVER_BIN = os.environ.get("CA_MOSH_SERVER_BIN", "/usr/bin/mosh-server")
+IDENTITY_FILE = required_env("CA_IDENTITY_FILE")
+BACKEND_USER = required_env("CA_BACKEND_USER")
+BACKEND_PORT = required_env("CA_BACKEND_PORT")
 KNOWN_HOSTS_FILE = os.environ.get(
-    "MAC_HAOLIUCHA_KNOWN_HOSTS_FILE", "/home/jliu/.ssh/known_hosts.macrelay"
+    "CA_KNOWN_HOSTS_FILE", os.path.expanduser("~/.ssh/known_hosts.coding-anywhere")
 )
-BACKEND_USER = os.environ.get("MAC_HAOLIUCHA_BACKEND_USER", "jliu")
-BACKEND_HOST = os.environ.get("MAC_HAOLIUCHA_BACKEND_HOST", "127.0.0.1")
-BACKEND_PORT = os.environ.get("MAC_HAOLIUCHA_BACKEND_PORT", "10023")
-DRY_RUN = os.environ.get("MAC_HAOLIUCHA_FORCECOMMAND_DRY_RUN") == "1"
-FORCED_MOSH_PORT = os.environ.get("MAC_HAOLIUCHA_FORCED_MOSH_PORT", "").strip()
-LOG_FILE = os.environ.get("MAC_HAOLIUCHA_LOG_FILE", "/tmp/mac-haoliucha-forcecommand.log")
+BACKEND_HOST = os.environ.get("CA_BACKEND_HOST", "127.0.0.1")
+DRY_RUN = os.environ.get("CA_FORCECOMMAND_DRY_RUN") == "1"
+FORCED_MOSH_PORT = os.environ.get("CA_FORCED_MOSH_PORT", "").strip()
+LOG_FILE = os.environ.get("CA_LOG_FILE", "/tmp/coding-anywhere-forwarder.log")
 
 
 def backend_ssh_base(force_tty: bool) -> List[str]:
@@ -87,6 +103,19 @@ def shell_join(argv: List[str]) -> str:
 
 def is_mosh_server_token(token: str) -> bool:
     return os.path.basename(token) == "mosh-server"
+
+
+def find_mosh_server_index(candidate: List[str]) -> Optional[int]:
+    """找真正的 mosh 启动形态 —— `mosh-server new ...`,必须连 `new` 一起认。
+
+    只认 basename 的话,`ssh relay 'command -v mosh-server'` 这种仅仅**提到**
+    可执行文件名的命令会被误判成启动请求:ECS 上凭空起一个 mosh-server,
+    而用户真正想跑的命令根本没送到后端。
+    """
+    for index, token in enumerate(candidate[:-1]):
+        if is_mosh_server_token(token) and candidate[index + 1] == "new":
+            return index
+    return None
 
 
 def client_requested_tty() -> bool:
@@ -159,10 +188,7 @@ def extract_mosh_forwarded_args(original: str) -> Optional[Tuple[List[str], List
             candidates.append(snippet.split())
 
     for candidate in candidates:
-        mosh_index = next(
-            (index for index, token in enumerate(candidate) if is_mosh_server_token(token)),
-            None,
-        )
+        mosh_index = find_mosh_server_index(candidate)
         if mosh_index is None:
             continue
         forwarded = []
