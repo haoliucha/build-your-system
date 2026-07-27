@@ -86,7 +86,7 @@ coding-anywhere/
 │       ├── client-config.md              # Blink / Termius / La Terminal / mosh CLI
 │       ├── tmux-session-recipes.md       # tmux 持久会话配置
 │       ├── file-drop-blueprint.md        # 终端远程传文件原理 + 设计取舍 + 排查
-│       └── troubleshooting.md            # 10 类常见故障的排查清单
+│       └── troubleshooting.md            # 11 类常见故障的排查清单
 └── scripts/
     ├── ecs-forcecommand-forwarder.py     # 中继 ECS 的 ForceCommand 分流器（方案 A 用）
     ├── install-dropfile.sh               # dropfile 在线一键安装器（含自检）

@@ -218,7 +218,29 @@ ssh -t <relay-user>@<ecs-ip> 'tmux attach -t foo'
 
 ---
 
-## 10. 通用排查清单
+## 10. `scp` 走中继报 `Connection closed`（ssh 却是通的）
+
+**症状**：`ssh <relay-user>@<ecs-ip> hostname` 正常，`scp file <relay-user>@<ecs-ip>:/tmp/`
+立刻 `scp: Connection closed`。dropfile 安装器把 `DROP_HOST` 指向中继时也会卡在拷贝那步。
+
+**根因**：OpenSSH 9 起 `scp` 默认走 SFTP，发的是 `ssh -s host sftp` 这个**子系统请求**。
+ForceCommand 把它压成普通命令字符串，分流脚本若原样当命令转发，后端就去执行
+sftp 那个**客户端**程序，协议对不上直接断。
+
+**定位**：
+
+```bash
+ssh root@<ecs-ip> 'tail -1 <CA_LOG_FILE>'
+# mode 是 command-ssh 且 original 形如 sftp / internal-sftp / …/sftp-server 就是它
+```
+
+**修复**：第二跳同样用 `ssh -s … sftp` 发子系统请求，见
+`ecs-relay-blueprint.md` §3.4 的分流表。别用"让用户改成 `scp -O`"绕过 ——
+`-O`（legacy SCP 协议）迟早会从 OpenSSH 里消失。
+
+---
+
+## 11. 通用排查清单
 
 遇到任何远程连接问题，按这个顺序快速二分：
 

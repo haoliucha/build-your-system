@@ -66,7 +66,7 @@ FORCED_MOSH_PORT = os.environ.get("CA_FORCED_MOSH_PORT", "").strip()
 LOG_FILE = os.environ.get("CA_LOG_FILE", "/tmp/coding-anywhere-forwarder.log")
 
 
-def backend_ssh_base(force_tty: bool) -> List[str]:
+def backend_ssh_base(force_tty: bool, subsystem: bool = False) -> List[str]:
     argv = [
         SSH_BIN,
         "-i",
@@ -82,6 +82,8 @@ def backend_ssh_base(force_tty: bool) -> List[str]:
     ]
     if force_tty:
         argv.append("-tt")
+    if subsystem:
+        argv.append("-s")
     argv.append(f"{BACKEND_USER}@{BACKEND_HOST}")
     return argv
 
@@ -141,6 +143,27 @@ def mosh_invocation_index(argv: List[str]) -> Optional[int]:
     ):
         return index
     return None
+
+
+def is_sftp_subsystem_request(original: str) -> bool:
+    """这次连接其实是 SFTP **子系统**请求，而不是要跑一条命令。
+
+    OpenSSH 9 起 `scp` 默认走 SFTP：客户端发的是 `ssh -s host sftp`。
+    ForceCommand 会把子系统请求压成普通命令字符串塞进 SSH_ORIGINAL_COMMAND，
+    收到的具体值取决于本机 sshd_config 的 `Subsystem sftp …` —— 可能是 `sftp`、
+    `internal-sftp`，也可能是解析后的绝对路径（本机实测
+    `/usr/libexec/openssh/sftp-server`），所以按 basename 认。
+
+    当普通命令转发过去的话，后端会去执行 sftp 那个**客户端**程序，
+    协议对不上直接 `Connection closed` —— 症状就是走中继的 scp 全挂
+    （dropfile 安装器把 DROP_HOST 指向中继时就踩这个）。
+    """
+    argv = safe_split(original)
+    return len(argv) == 1 and os.path.basename(argv[0]) in {
+        "sftp",
+        "internal-sftp",
+        "sftp-server",
+    }
 
 
 def validated_env_prefix(assignments: List[str]) -> List[str]:
@@ -294,6 +317,13 @@ def main() -> int:
                 *([backend_command] if backend_command else []),
             ],
         )
+        return 0
+
+    if is_sftp_subsystem_request(original):
+        # 往后端发的必须是子系统**名字**（`sftp`），不是本机 sshd 解析出来的路径 ——
+        # 后端 sshd 会用自己的 Subsystem 配置把名字映射到它自己的 sftp-server
+        # （macOS 上是 /usr/libexec/sftp-server，和 Linux 不是一个路径）。
+        emit("sftp-subsystem-ssh", [*backend_ssh_base(force_tty=False, subsystem=True), "sftp"])
         return 0
 
     if client_requested_tty():

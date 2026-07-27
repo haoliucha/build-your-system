@@ -108,7 +108,16 @@ ssh root@<your-ecs-ip> 'chmod 755 /usr/local/bin/coding-anywhere-forwarder
 |---|---|---|
 | 无命令（`ssh relay` / `ssh -T relay`） | `interactive-ssh` | 进后端登录 shell，是否 `-tt` 见下 |
 | `mosh-server new …` | `mosh-server` | mosh-server 在 **ECS 本机**起，`--` 后的 remote command 用 `ssh -tt` 透传到后端 |
+| SFTP 子系统（`scp` / `sftp`） | `sftp-subsystem-ssh` | 第二跳用 `ssh -s … sftp` 同样发子系统请求 |
 | 其他命令 | `tty-command-ssh` / `command-ssh` | 原样透传，是否 `-tt` 见下 |
+
+SFTP 那条不能当普通命令转发：OpenSSH 9 起 `scp` 默认走 SFTP，客户端发的是
+`ssh -s host sftp`；ForceCommand 会把子系统请求压成一个命令字符串，**具体值取决于
+本机 `Subsystem sftp …` 的配置**（可能是 `sftp`、`internal-sftp`，本机实测是解析后的
+`/usr/libexec/openssh/sftp-server`，所以脚本按 basename 认）。当普通命令转发过去，
+后端会去执行 sftp 那个**客户端**程序，协议对不上直接 `Connection closed`。
+往后端发的必须是子系统**名字** `sftp` —— 后端 sshd 用自己的配置把它映射到自己的
+sftp-server（macOS 上是 `/usr/libexec/sftp-server`，和 Linux 不同路径）。
 
 mosh 那条只在命令**开头**认完整的 `mosh-server new` 形态（允许 `LANG=… mosh-server new`
 这种环境变量前缀，以及一层 `sh -c '…'` / `zsh -lc '…'` 包装）。判定必须是"被执行的
