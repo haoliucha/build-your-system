@@ -22,8 +22,10 @@
 #   # 再从 ~/.config/karabiner/karabiner.json 删掉 description 含 dropfile 的那条规则
 set -euo pipefail
 
-REPO="haoliucha/build-your-system"
-BRANCH="main"
+REPO="${DROPFILE_REPO:-haoliucha/build-your-system}"
+# 合并前想验证在线流程，或想从 fork 装，可以覆盖分支：
+#   DROPFILE_BRANCH=feat/xxx curl -fsSL <url> | bash -s -- user@host
+BRANCH="${DROPFILE_BRANCH:-main}"
 SUBDIR="coding-anywhere/scripts"
 
 # 下载源按序回退：
