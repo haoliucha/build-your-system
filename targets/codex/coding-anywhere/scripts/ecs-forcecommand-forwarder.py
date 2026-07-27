@@ -207,11 +207,18 @@ def mosh_candidates(original: str) -> List[List[str]]:
     return candidates
 
 
-def extract_mosh_forwarded_args(original: str) -> Optional[Tuple[List[str], List[str]]]:
+def extract_mosh_forwarded_args(
+    original: str,
+) -> Optional[Tuple[List[str], List[str], List[str]]]:
+    """→ (环境变量前缀, 传给 mosh-server 的参数, `--` 之后的 remote command)"""
     for candidate in mosh_candidates(original):
         mosh_index = mosh_invocation_index(candidate)
         if mosh_index is None:
             continue
+        # `LANG=… mosh-server new …` 里的赋值是调用的一部分，必须带上。
+        # 丢掉它不会报错，只会让 mosh-server 用 ForceCommand 进程的环境跑起来 ——
+        # 客户端显式指定的 locale 被静默忽略，症状是远端中文变乱码。
+        env_prefix = candidate[:mosh_index]
         forwarded = []
         remote_command = []
         saw_port = False
@@ -228,7 +235,7 @@ def extract_mosh_forwarded_args(original: str) -> Optional[Tuple[List[str], List
             forwarded.append(arg)
         if FORCED_MOSH_PORT and not saw_port:
             forwarded.extend(["-p", FORCED_MOSH_PORT])
-        return forwarded, remote_command
+        return env_prefix, forwarded, remote_command
 
     return None
 
@@ -243,11 +250,15 @@ def main() -> int:
 
     mosh_args = extract_mosh_forwarded_args(original)
     if mosh_args is not None:
-        forwarded, remote_command = mosh_args
+        env_prefix, forwarded, remote_command = mosh_args
         backend_command = render_remote_command(remote_command)
+        # 用 `env VAR=val …` 而不是改 os.environ：赋值会出现在日志的 argv 和 ps 里，
+        # 排查 locale 问题时看得见，不用去猜进程继承了什么。
+        launcher = ["/usr/bin/env", *env_prefix] if env_prefix else []
         emit(
             "mosh-server",
             [
+                *launcher,
                 MOSH_SERVER_BIN,
                 *forwarded,
                 "--",

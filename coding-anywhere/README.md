@@ -148,8 +148,18 @@ dropfile a.png b.zip c.md     # 多个文件，返回多行路径
 图片和普通文件走同一条命令。装了 iTerm2 就默认用 **Coprocess** 触发——不装应用、
 不给系统权限、不模拟按键，那一整类"按了没反应/要按两次"的时序竞态从物理上不存在。
 
-- **按了没反应** → 在你面前那台机器上跑 `.../diagnose-dropfile.sh | bash`（只读自检）
-- **卸载** → `.../uninstall-dropfile.sh | bash -s`（远端 `~/Drops` 里的文件默认保留）
+**按了没反应**——在你面前那台（按键盘的）机器上跑只读自检：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/diagnose-dropfile.sh | bash
+```
+
+**卸载**（远端 `~/Drops` 里的文件默认保留，要一并删加 `--purge-drops`）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/uninstall-dropfile.sh | bash -s
+```
+
 - **访问不了 `raw.githubusercontent.com`** → 换 jsDelivr：
   `https://cdn.jsdelivr.net/gh/haoliucha/build-your-system@main/coding-anywhere/scripts/install-dropfile.sh`
   （只有最外层这条 curl 是单源的，安装器内部下载本来就是三源回退）
