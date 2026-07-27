@@ -206,7 +206,8 @@ ssh root@<ecs-ip> 'tail -3 <MAC_HAOLIUCHA_LOG_FILE>'   # 看分流 argv 里有�
 
 **不要这样修**：把 `tmux new-session` 加进"需要终端的命令"白名单。
 白名单永远补不全（`new`、`new-session -A`、`zsh -lc '...'` 包装、以后的新用法），
-而且会误伤 dropfile 那种管道调用 —— 给它塞个 pty，base64 流里会混进 `\r`。
+而且会误伤管道式调用（`base64 < file | ssh <relay-user>@<ecs-ip> '...'` 这种
+用 stdin 传数据的）—— 给它塞个 pty，二进制流里会混进 `\r`。
 
 **临时绕法**（不改服务端）：拆成建会话 + 附着两步，后者才需要终端：
 

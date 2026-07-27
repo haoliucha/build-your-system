@@ -90,7 +90,7 @@ sudo -u <user-2> ssh-keygen -t ed25519 -f /home/<user-2>/.ssh/mac-relay -N ''
 部署：
 
 ```bash
-scp coding-anywhere/scripts/ecs-forcecommand-forwarder.py \
+scp <plugin-root>/scripts/ecs-forcecommand-forwarder.py \
     root@<your-ecs-ip>:/usr/local/bin/coding-anywhere-forwarder
 ssh root@<your-ecs-ip> 'chmod 755 /usr/local/bin/coding-anywhere-forwarder
                         chown root:root /usr/local/bin/coding-anywhere-forwarder

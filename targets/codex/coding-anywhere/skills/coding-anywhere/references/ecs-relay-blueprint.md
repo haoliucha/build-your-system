@@ -83,55 +83,54 @@ sudo -u <user-2> ssh-keygen -t ed25519 -f /home/<user-2>/.ssh/mac-relay -N ''
 
 ### 3.4 安装 ForceCommand 分流脚本
 
-在 ECS 上创建 `/usr/local/bin/coding-anywhere-forwarder`：
-
-```python
-#!/usr/bin/env python3
-"""ECS-side ForceCommand: 按登录用户透传到后端 Mac。"""
-
-import os
-import shlex
-import subprocess
-import sys
-
-IDENTITY_FILE = os.environ.get("CA_IDENTITY_FILE", "/home/example/.ssh/mac-relay")
-KNOWN_HOSTS_FILE = os.environ.get("CA_KNOWN_HOSTS_FILE", "/home/example/.ssh/known_hosts.macrelay")
-BACKEND_PORT = os.environ.get("CA_BACKEND_PORT", "10023")
-BACKEND_USER = os.environ.get("CA_BACKEND_USER", os.environ.get("USER", "appuser"))
-LOG_FILE = os.environ.get("CA_LOG_FILE", "/tmp/coding-anywhere-forwarder.log")
-
-original = os.environ.get("SSH_ORIGINAL_COMMAND", "").strip()
-
-ssh_cmd = [
-    "ssh",
-    "-T",
-    "-o", "BatchMode=yes",
-    "-o", "StrictHostKeyChecking=no",
-    "-o", f"UserKnownHostsFile={KNOWN_HOSTS_FILE}",
-    "-i", IDENTITY_FILE,
-    "-p", BACKEND_PORT,
-    f"{BACKEND_USER}@127.0.0.1",
-]
-
-if original:
-    # 客户端带了远端命令（如 tmux new-session），透传
-    ssh_cmd.append(original)
-else:
-    # 没带命令：进登录 shell（兼容 Blink 的 mosh+tmux 流程）
-    ssh_cmd.append("zsh -l")
-
-with open(LOG_FILE, "a") as f:
-    f.write(f"[{os.getpid()}] {' '.join(shlex.quote(x) for x in ssh_cmd)}\n")
-
-os.execvp(ssh_cmd[0], ssh_cmd)
-```
+脚本源在仓库里：[`scripts/ecs-forcecommand-forwarder.py`](../../../scripts/ecs-forcecommand-forwarder.py)。
+**不要在这里内联一份副本** —— 之前文档里那版简化实现和线上部署分叉了半年，
+排查时读文档得出的结论是错的。
 
 部署：
 
 ```bash
-chmod +x /usr/local/bin/coding-anywhere-forwarder
-chown root:root /usr/local/bin/coding-anywhere-forwarder
+scp <plugin-root>/scripts/ecs-forcecommand-forwarder.py \
+    root@<your-ecs-ip>:/usr/local/bin/coding-anywhere-forwarder
+ssh root@<your-ecs-ip> 'chmod 755 /usr/local/bin/coding-anywhere-forwarder
+                        chown root:root /usr/local/bin/coding-anywhere-forwarder
+                        python3 -m py_compile /usr/local/bin/coding-anywhere-forwarder'
 ```
+
+改完不需要 reload sshd —— ForceCommand 每次连接都重新 exec 这个文件。
+
+#### 它做的三件事
+
+脚本从 `SSH_ORIGINAL_COMMAND` 判断走哪条路，全部通过环境变量参数化
+（`MAC_HAOLIUCHA_IDENTITY_FILE` / `_BACKEND_PORT` / `_BACKEND_USER` / `_LOG_FILE` …，
+由 §3.5 的 `Match User` 块注入），所以**一个脚本服务所有后端 Mac**：
+
+| 客户端行为 | mode | 转发形态 |
+|---|---|---|
+| 无命令（交互式登录） | `interactive-ssh` | `ssh -tt` 进后端登录 shell |
+| 命令里含 `mosh-server` | `mosh-server` | mosh-server 在 **ECS 本机**起，`--` 后的 remote command 用 `ssh -tt` 透传到后端 |
+| 其他命令 | `tty-command-ssh` / `command-ssh` | 原样透传，是否 `-tt` 见下 |
+
+每次分流都会往 `MAC_HAOLIUCHA_LOG_FILE` 追加一行 JSON（含最终 argv），
+排查时先看这个文件，不要靠猜。
+
+#### 第二跳的 PTY 规则（踩过坑）
+
+**PTY 不跨跳传递**：`ssh -t` 只让第一跳的 sshd 分配 pty；ECS 上 exec 出去的第二条
+ssh 是全新连接，不显式 `-tt` 就没有终端，后端的 tmux 会报
+`open terminal failed: not a terminal`。
+
+判定用的是 `sys.stdin.isatty()` —— 也就是**跟随客户端在第一跳的请求**：
+sshd 只在客户端要终端（`ssh -t` / 交互式登录）时才给 ForceCommand 分配 pty，
+管道式调用（`base64 | ssh host '...'`，dropfile 走的就是这条）拿到的是普通 pipe。
+
+早期版本改成解析命令字符串猜（只认 `tmux attach|attach-session`），
+结果 `tmux new-session -A`（attach-or-create，同样要终端）落到无 pty 分支报错。
+**不要再退回白名单方案** —— PTY 是连接层的属性，不是命令的属性，
+猜命令永远补不全，还得为每个新用法打补丁。
+
+mosh 分支是唯一的例外，无条件 `-tt`：mosh 客户端调 mosh-server 时并不请求 pty，
+跟随 isatty 会让整条 mosh 链路失去终端。
 
 ### 3.5 配置 sshd_config
 
@@ -321,6 +320,21 @@ mosh <user-1>@<your-ecs-ip>
 # 6. ClientAlive 是否生效
 ssh root@<your-ecs-ip> 'sshd -T | grep -i clientalive'
 # 预期 clientaliveinterval 30 / clientalivecountmax 3
+
+# 7. 第二跳 PTY：要终端时给，不要时不给
+ssh -t <user-1>@<your-ecs-ip> 'tty'
+# 预期 /dev/ttysNNN（不是 "not a tty"）—— 这条不过，tmux 就会 open terminal failed
+ssh <user-1>@<your-ecs-ip> 'tty'
+# 预期 not a tty —— 反过来也要成立，否则 dropfile 的二进制流会被塞进 \r
+
+# 8. 管道二进制完整性（dropfile 依赖）
+printf 'a\nb\n' > /tmp/p && printf '%s ' "$(md5 -q /tmp/p)" \
+  && base64 < /tmp/p | ssh <user-1>@<your-ecs-ip> 'base64 -d | md5'
+# 预期两个 md5 一致
+
+# 9. 真实 tmux 会话
+ssh -t <user-1>@<your-ecs-ip> 'tmux new-session -A -s <session-name> -c <project-path>'
+# 预期直接进 tmux
 ```
 
 ---

@@ -1,7 +1,7 @@
 ---
 name: Coding Anywhere
 description: This skill should be used when the user wants to set up remote development access from mobile devices (iPhone/iPad/Android) or any laptop to a home Mac/Linux box. Trigger on keywords like "mosh", "tmux remote", "ssh from iPhone", "Blink shell setup", "always-on Mac", "reverse SSH relay", "DDNS direct connection", "build my own Tailscale alternative", "remote development setup", "code from anywhere", or when the user asks "how do I keep coding when I'm not at my desk". ALSO trigger for pasting images into a remote terminal session - keywords like "dropimg", "paste image over ssh", "send screenshot to remote Claude Code", "Cmd+V does not work in terminal", "how do I show Claude a screenshot when working remotely", "贴图", "粘贴图片", "传图", "截图给 Claude", "远程终端发图片". Also trigger when the user references this plugin's GitHub README and wants to replicate the stack.
-version: 1.2.0
+version: 1.3.0
 ---
 
 # Coding Anywhere - 随时随地远程开发栈
@@ -149,14 +149,16 @@ bash ${CLAUDE_PLUGIN_ROOT}/scripts/install-dropfile.sh
 
 安装器做六件事并自检：取脚本（本地优先，否则按 raw → jsDelivr → ghfast 回退下载）
 → 检查依赖 → 验证免密 SSH → 装远端脚本与清理任务 → 装本地命令与配置 →
-写 Karabiner 快捷键 → 推一个测试文件验证。
+配快捷键 → 推一个测试文件验证。
 
 引导用户时需要问的：
 
 - **目标主机**（`user@host`）—— 局域网 IP、DDNS 域名或 ECS Relay 入口都行
+  （多数情况不用问：安装器会从用户当前的 SSH 会话自动识别并打印出来确认）
 - **快捷键** —— 默认 `ctrl+opt+v`；要避开目标终端已占用的组合
   （iTerm2 的 `Cmd+Shift+V`、`Cmd+Shift+D` 都有用途）
-- **是否装 Karabiner 规则** —— 没装 Karabiner 就用 `--no-karabiner`，只装命令
+- **触发方式** —— 装了 iTerm2 就默认 Coprocess（不装应用、不给权限、不模拟按键）；
+  要在 iTerm2 之外也能按用 `--karabiner`；只装命令不配快捷键用 `--no-hotkey`
 - **大小上限** —— 默认 15MB，用 `--max-mb` 改
 
 用法：`dropfile` 用剪贴板内容，`dropfile a.pdf b.zip` 传指定文件（可多个）。
@@ -178,6 +180,8 @@ bash ${CLAUDE_PLUGIN_ROOT}/scripts/install-dropfile.sh
 - **白天偶发断连** → 客户端 TUN/代理把 ECS 流量截走，需要给 ECS IP 加 DIRECT 规则
 - **第二个 mosh 窗口失败** → ECS 强制了单 UDP 端口；改回端口段
 - **DDNS 解析对了但还是连不上** → 公网 IPv6 入站没放行，跟 DDNS 无关
+- **走中继时 tmux 报 `open terminal failed: not a terminal`** → PTY 不跨跳传递，
+  ECS 分流脚本要按 `stdin.isatty()` 决定第二跳加不加 `-tt`
 
 ## 不要做的事
 
