@@ -1,6 +1,6 @@
 {
   "name": "coding-anywhere",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "随时随地远程开发栈 - 一键搭建 mosh + tmux + SSH 中继方案，iPhone/iPad/任何笔记本都能从山顶、咖啡馆、高铁连回家中 Mac。含 dropfile 终端传文件能力（截图或选文件→快捷键→路径进 Claude Code 输入框，支持任意文件类型，默认 15MB 上限，可在线一键安装）。1 个 skill + 6 个配置模板 + 6 个可执行脚本，覆盖 ECS Relay 和 DDNS 直连两种架构。",
   "skills": "./skills"
 }

@@ -185,7 +185,62 @@ zsh -lc 'tmux new-session -A -s <name> -c <path>; exec /bin/zsh -l'
 
 ---
 
-## 9. 通用排查清单
+## 9. `open terminal failed: not a terminal`（走中继 ECS 时）
+
+**症状**：`ssh <relay-user>@<ecs-ip> -t "tmux new-session -A -s foo"` 报这个，
+但同一条命令直连后端 Mac 好好的；mosh 那条路也正常。
+
+**根因**：**PTY 不跨跳传递**。`-t` 只让第一跳（Client → ECS）分配伪终端；
+ECS 上 ForceCommand 脚本 exec 出去的第二条 ssh（ECS → Mac）是全新连接，
+不显式 `-tt` 就没有终端。tmux 在后端看到 stdin 不是 tty，直接拒绝。
+
+**定位**（一步就够）：
+
+```bash
+ssh -t <relay-user>@<ecs-ip> 'tty'      # 报 not a tty 就是这个问题
+ssh root@<ecs-ip> 'tail -3 <CA_LOG_FILE>'   # 看分流 argv 里有没有 -tt
+```
+
+**修复**：让分流脚本按 `sys.stdin.isatty()` 决定第二跳加不加 `-tt`，
+见 `ecs-relay-blueprint.md` §3.4「第二跳的 PTY 规则」。
+
+**不要这样修**：把 `tmux new-session` 加进"需要终端的命令"白名单。
+白名单永远补不全（`new`、`new-session -A`、`zsh -lc '...'` 包装、以后的新用法），
+而且会误伤管道式调用（`base64 < file | ssh <relay-user>@<ecs-ip> '...'` 这种
+用 stdin 传数据的）—— 给它塞个 pty，二进制流里会混进 `\r`。
+
+**临时绕法**（不改服务端）：拆成建会话 + 附着两步，后者才需要终端：
+
+```bash
+ssh <relay-user>@<ecs-ip> 'tmux new-session -A -d -s foo -c <path>'
+ssh -t <relay-user>@<ecs-ip> 'tmux attach -t foo'
+```
+
+---
+
+## 10. `scp` 走中继报 `Connection closed`（ssh 却是通的）
+
+**症状**：`ssh <relay-user>@<ecs-ip> hostname` 正常，`scp file <relay-user>@<ecs-ip>:/tmp/`
+立刻 `scp: Connection closed`。dropfile 安装器把 `DROP_HOST` 指向中继时也会卡在拷贝那步。
+
+**根因**：OpenSSH 9 起 `scp` 默认走 SFTP，发的是 `ssh -s host sftp` 这个**子系统请求**。
+ForceCommand 把它压成普通命令字符串，分流脚本若原样当命令转发，后端就去执行
+sftp 那个**客户端**程序，协议对不上直接断。
+
+**定位**：
+
+```bash
+ssh root@<ecs-ip> 'tail -1 <CA_LOG_FILE>'
+# mode 是 command-ssh 且 original 形如 sftp / internal-sftp / …/sftp-server 就是它
+```
+
+**修复**：第二跳同样用 `ssh -s … sftp` 发子系统请求，见
+`ecs-relay-blueprint.md` §3.4 的分流表。别用"让用户改成 `scp -O`"绕过 ——
+`-O`（legacy SCP 协议）迟早会从 OpenSSH 里消失。
+
+---
+
+## 11. 通用排查清单
 
 遇到任何远程连接问题，按这个顺序快速二分：
 

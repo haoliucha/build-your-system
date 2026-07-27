@@ -13,110 +13,7 @@
 - **不依赖 Tailscale/ZeroTier 的可用性** — 全部自建，路径短、延迟低
 - **覆盖任何客户端** — iPhone Blink / iPad Termius / 桌面 mosh CLI / 朋友的 Linux 笔记本
 - **两套架构按需切换** — ECS Relay（稳定，需公网 ECS）或 DDNS + IPv6 直连（最快，需家里有公网 IPv6）
-- **终端里能"贴图"和传文件** — 截图/选文件 → 按一个快捷键 → 远端路径出现在 Claude Code 输入框（见下方 `dropfile`）
-
----
-
-## 终端远程传图/传文件（dropfile）
-
-远程写代码时最膈应的一件事：**想给 Claude Code 看一张截图或一份文件，
-但终端里 `⌘V` 贴不了。**
-
-这**不是 mosh 的锅**。PTY 是字符设备，终端收到 `⌘V` 时只取剪贴板的纯文本类型，
-图片和文件引用都没有通道——普通 `ssh -t` 一样贴不了。
-
-解法是让内容走 SSH **带外通道**落到远端 `~/Drops/`，终端里只流转一个路径字符串：
-
-```
-截图（⌘⇧⌃4） → 按 Ctrl+Opt+V → 路径出现在输入框 → 接着打字说明 → 回车
-```
-
-### 一键在线安装
-
-**不需要先装插件，也不用填任何地址**——在你正连着远端的那台 Mac 上跑：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/install-dropfile.sh | bash -s
-```
-
-目标主机**从你当前的 SSH 会话自动识别**：你的 `ssh user@host -t "tmux ..."`
-命令行里就写着 `user@host`，安装器直接读它，并在开头打印出来确认。
-
-认不出来（当前没开 ssh），或者要装到别的机器时，显式指定：
-
-```bash
-curl -fsSL <同上> | bash -s -- jliu@192.168.1.10
-```
-
-安装器会：取脚本（本地优先，否则按 `raw → jsDelivr → ghfast` 回退下载）→
-检查依赖 → 验证免密 SSH → 装远端脚本与清理任务 → 装本地命令与配置 →
-写 Karabiner 快捷键 → **推一个测试文件自检**。
-
-> **访问不了 raw.githubusercontent.com**（没有代理）时，换 jsDelivr 镜像：
-> `https://cdn.jsdelivr.net/gh/haoliucha/build-your-system@main/coding-anywhere/scripts/install-dropfile.sh`
->
-> 只有最外层这条 curl 是单源的；安装器**内部**下载 `dropfile` / `drop-file.sh`
-> 时本来就是 `raw → jsDelivr → ghfast` 三源回退，不受影响。
-
-| 选项 | 说明 |
-|------|------|
-| `--key cmd+shift+i` | 换快捷键（默认 `ctrl+opt+v`） |
-| `--iterm2` | 用 iTerm2 Coprocess（**装了 iTerm2 就是默认**） |
-| `--karabiner` | 改用 Karabiner 全局快捷键 |
-| `--no-hotkey` | 不配快捷键，只装 `dropfile` 命令 |
-| `--no-cleanup` | 不装远端定期清理 |
-| `--max-mb 50` | 改大小上限（默认 15MB） |
-| `--dry-run` | 只打印将要做什么 |
-
-### 快捷键怎么触发：默认走 iTerm2，不装 Karabiner
-
-装了 iTerm2 的话，安装器默认用 **iTerm2 Coprocess**：不用装任何应用、
-不用授予系统权限，而且**不模拟按键** —— 那一整类「按了没反应 / 要按两次」的
-时序竞态从物理上就不存在。安装器会打印一段 GUI 配置步骤（约 30 秒，立即生效）。
-
-需要在 iTerm2 之外也能按（比如从 Finder 复制文件后直接按）就加 `--karabiner`，
-代价是装 Karabiner-Elements 并授予输入监控 + 辅助功能权限。
-
-### 卸载
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/uninstall-dropfile.sh | bash -s
-```
-
-清掉本地命令、配置、Karabiner 规则和远端脚本。**远端 `~/Drops` 里的文件默认保留**
-——那是你传过去的数据，要一并删得显式加 `--purge-drops`。
-`--dry-run` 可先看会删什么，`--keep-remote` 只卸本地。
-
-iTerm2 的 Coprocess 绑定是你在 GUI 里手动加的，脚本只检测并提示，不代删。
-
-### 按了快捷键没反应？
-
-在**你面前那台**（按键盘的、跑 iTerm2 的）机器上跑：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/diagnose-dropfile.sh | bash
-```
-
-只读检查，会逐项告诉你卡在哪一环。最常见的三种：在远端机器上按的快捷键
-（Karabiner 跑在本地）、本地没装 Karabiner-Elements、规则写进了未选中的 profile。
-
-### 用法
-
-```bash
-dropfile                      # 剪贴板内容（Finder 复制的文件 或 截图）
-dropfile report.pdf           # 指定文件
-dropfile a.png b.zip c.md     # 多个文件，返回多行路径
-DROPFILE_MAX_MB=50 dropfile big.zip    # 临时放宽上限
-DROP_HOST=user@other dropfile foo.pdf  # 临时换目标机
-```
-
-从 Finder 复制文件时会**保留原文件名**；截图这种没有文件名的来源，
-远端按 mime 类型生成后缀。`dropimg` 保留为软链接，老用法不 break。
-
-> 客户端需 macOS（依赖 `NSPasteboard` / `osascript`；`pngpaste` 只有截图这条来源需要），
-> 远端 macOS 与 Linux 都支持。默认上限 15MB，客户端与远端两侧都会检查。
-> 原理、六条设计取舍、四个 shell 坑与排查表见
-> [`references/file-drop-blueprint.md`](skills/coding-anywhere/references/file-drop-blueprint.md)。
+- **终端里能"贴图"和传文件** — 截图/选文件 → 按一个快捷键 → 远端路径出现在 Claude Code 输入框（见文末 [dropfile](#附终端里传图传文件dropfile)）
 
 ---
 
@@ -162,6 +59,21 @@ git clone https://github.com/haoliucha/build-your-system.git ~/.claude/plugins/m
 
 ---
 
+## 两套架构
+
+| | ECS Relay（方案 A） | DDNS + IPv6 直连（方案 B） |
+|---|---|---|
+| 前提 | 一台公网 ECS（约 ¥30/月） | 家里有公网 IPv6 或公网 IP |
+| 路径 | Client → ECS → 家庭 Mac | Client → 家庭 Mac |
+| 延迟 | 多一跳 | 最低 |
+| 适用 | 家里在 NAT 后 / 要"任何网络都能连" | 家宽给了公网地址，且客户端所在网络支持 IPv6 |
+
+两套都由 skill 引导生成完整配置，模板见
+[`ecs-relay-blueprint.md`](skills/coding-anywhere/references/ecs-relay-blueprint.md) 和
+[`ddns-direct-blueprint.md`](skills/coding-anywhere/references/ddns-direct-blueprint.md)。
+
+---
+
 ## 这个插件的内容
 
 ```
@@ -174,14 +86,14 @@ coding-anywhere/
 │       ├── client-config.md              # Blink / Termius / La Terminal / mosh CLI
 │       ├── tmux-session-recipes.md       # tmux 持久会话配置
 │       ├── file-drop-blueprint.md        # 终端远程传文件原理 + 设计取舍 + 排查
-│       └── troubleshooting.md            # 9 类常见故障的排查清单
+│       └── troubleshooting.md            # 11 类常见故障的排查清单
 └── scripts/
-    ├── install-dropfile.sh               # 在线一键安装器（推荐，含自检）
+    ├── ecs-forcecommand-forwarder.py     # 中继 ECS 的 ForceCommand 分流器（方案 A 用）
+    ├── install-dropfile.sh               # dropfile 在线一键安装器（含自检）
+    ├── uninstall-dropfile.sh             # dropfile 卸载器（含旧版残留清理）
+    ├── diagnose-dropfile.sh              # dropfile 自检：命令/配置/快捷键/远端连通性
     ├── dropfile                          # 客户端：取文件/剪贴板 → 推送 → 回填路径
-    ├── drop-file.sh                      # 远端：解码 → 校验大小 → 落盘 → 回显路径
-    ├── install-dropimg.sh                # 旧版安装器（仅图片，保留兼容）
-    ├── dropimg                           # 旧版客户端（仅图片，保留兼容）
-    └── drop-image.sh                     # 旧版远端脚本（仅图片，保留兼容）
+    └── drop-file.sh                      # 远端：解码 → 校验大小 → 落盘 → 回显路径
 ```
 
 ---
@@ -202,6 +114,60 @@ coding-anywhere/
   - 给每个客户端单独生成 key
   - 给 ECS 装 fail2ban
   - **不要在公开帖子里暴露你真实的 ECS IP / 域名**
+
+---
+
+## 附：终端里传图/传文件（dropfile）
+
+> 这是上面那套远程开发栈的配套小工具，可以单独装、单独用。
+
+远程写代码时想给 Claude Code 看一张截图或一份文件，终端里 `⌘V` 贴不了。
+**这不是 mosh 的锅**：PTY 是字符设备，终端收到 `⌘V` 只取剪贴板的纯文本类型，
+图片和文件引用都没有通道——普通 `ssh -t` 一样贴不了。
+
+`dropfile` 让内容走 SSH **带外通道**落到远端 `~/Drops/`，终端里只流转一个路径字符串：
+
+```
+截图（⌘⇧⌃4） → 按 Ctrl+Opt+V → 路径出现在输入框 → 接着打字说明 → 回车
+```
+
+**不用先装插件，也不用填任何地址**——在你正连着远端的那台 Mac 上跑，
+目标主机从当前 SSH 会话自动识别（安装器会打印出来让你确认）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/install-dropfile.sh | bash -s
+```
+
+```bash
+dropfile                      # 剪贴板内容（Finder 复制的文件 或 截图）
+dropfile report.pdf           # 指定文件
+dropfile a.png b.zip c.md     # 多个文件，返回多行路径
+```
+
+从 Finder 复制文件时**保留原文件名**；截图这种没有文件名的来源，远端按 mime 生成后缀。
+图片和普通文件走同一条命令。装了 iTerm2 就默认用 **Coprocess** 触发——不装应用、
+不给系统权限、不模拟按键，那一整类"按了没反应/要按两次"的时序竞态从物理上不存在。
+
+**按了没反应**——在你面前那台（按键盘的）机器上跑只读自检：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/diagnose-dropfile.sh | bash
+```
+
+**卸载**（远端 `~/Drops` 里的文件默认保留，要一并删加 `--purge-drops`）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/uninstall-dropfile.sh | bash -s
+```
+
+- **访问不了 `raw.githubusercontent.com`** → 换 jsDelivr：
+  `https://cdn.jsdelivr.net/gh/haoliucha/build-your-system@main/coding-anywhere/scripts/install-dropfile.sh`
+  （只有最外层这条 curl 是单源的，安装器内部下载本来就是三源回退）
+
+> 客户端需 macOS（依赖 `NSPasteboard` / `osascript`；`pngpaste` 只有截图这条来源需要），
+> 远端 macOS 与 Linux 都支持。默认上限 15MB，客户端与远端两侧都会检查。
+> 完整安装选项、两种触发方式对比、原理、六条设计取舍、四个 shell 坑与排查表见
+> [`references/file-drop-blueprint.md`](skills/coding-anywhere/references/file-drop-blueprint.md)。
 
 ---
 

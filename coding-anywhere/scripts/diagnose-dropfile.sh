@@ -53,7 +53,7 @@ if [[ -x "$HOME/.local/bin/dropfile" ]]; then
 else
   bad "没装 dropfile —— 先跑安装器"
 fi
-[[ -L "$HOME/.local/bin/dropimg" ]] && ok "dropimg → dropfile 别名在"
+[[ -L "$HOME/.local/bin/dropimg" ]] && warn "还有老的 dropimg 软链接（已废弃，指向 dropfile 仍可用）"
 
 sec "2. 配置"
 if [[ -f "$HOME/.config/dropimg/config" ]]; then

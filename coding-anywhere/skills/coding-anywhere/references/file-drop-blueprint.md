@@ -241,7 +241,8 @@ curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/co
 
 安装器按 `raw → jsDelivr → ghfast` 顺序回退取脚本（raw 保证最新，
 jsDelivr 保证国内可达），然后：检查依赖 → 验证免密 SSH → 装远端脚本与清理任务 →
-装本地命令与配置 → 写 Karabiner 快捷键 → **推一个测试文件自检**。
+装本地命令与配置 → 配快捷键（装了 iTerm2 就打印 Coprocess 配置步骤，否则写
+Karabiner 规则）→ **推一个测试文件自检**。
 
 > [!note] 为什么外层入口用 raw 而不是 jsDelivr 镜像
 > 两者速度实测几乎一样（0.65s vs 0.61s），差别只在"没有代理时能不能访问"。
@@ -262,16 +263,33 @@ jsDelivr 保证国内可达），然后：检查依赖 → 验证免密 SSH → 
 | 选项 | 说明 |
 |------|------|
 | `--key cmd+shift+i` | 换快捷键（默认 `ctrl+opt+v`） |
-| `--no-karabiner` | 不配快捷键，只装命令 |
+| `--iterm2` | 用 iTerm2 Coprocess 触发（**装了 iTerm2 就是默认**） |
+| `--karabiner` | 改用 Karabiner 全局快捷键 |
+| `--no-hotkey` | 不配快捷键，只装 `dropfile` 命令 |
 | `--no-cleanup` | 不装远端定期清理 |
 | `--max-mb 50` | 改大小上限（默认 15） |
 | `--remote-dir '$HOME/img'` | 换远端落盘目录 |
 | `--dry-run` | 只打印将要做什么 |
 
+（`--no-karabiner` 仍作为 `--no-hotkey` 的别名接受，是默认改成 iTerm2 之前的老名字。）
+
 选快捷键时避开目标终端已占用的组合。iTerm2 里 `Cmd+Shift+V`（Paste Special）
 和 `Cmd+Shift+D`（Split）都有用途，`Ctrl+Opt+V` 通常是空的。
 
-安装器会创建 `dropimg` 作为 `dropfile` 的软链接，老的用法和快捷键不会 break。
+旧的 `dropimg`（仅图片）已废弃移除 —— 图片和普通文件走同一条 `dropfile`。
+卸载器仍会清理老安装留下的 `dropimg` 软链接和快捷键规则。
+
+### 卸载
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/uninstall-dropfile.sh | bash -s
+```
+
+清掉本地命令、配置、Karabiner 规则和远端脚本。**远端 `~/Drops` 里的文件默认保留**
+——那是你传过去的数据，要一并删得显式加 `--purge-drops`。
+`--dry-run` 先看会删什么，`--keep-remote` 只卸本地。
+
+iTerm2 的 Coprocess 绑定是你在 GUI 里手动加的，脚本只检测并提示，不代删。
 
 ---
 
@@ -353,6 +371,16 @@ DROP_HOST=user@other dropfile foo.pdf # 临时换目标机
 ---
 
 ## 8. 排查
+
+先跑自检 —— 在**你面前那台**（按键盘的、跑 iTerm2 的）机器上，只读不改：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/diagnose-dropfile.sh | bash
+```
+
+它会逐项报命令/配置/快捷键/远端连通性卡在哪一环。最常见的三种：
+在**远端**机器上按了快捷键（触发器跑在本地）、本地没装 Karabiner-Elements、
+规则写进了未选中的 profile。
 
 | 现象 | 排查 |
 |------|------|
