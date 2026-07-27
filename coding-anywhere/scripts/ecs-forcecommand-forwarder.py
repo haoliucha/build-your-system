@@ -27,6 +27,14 @@ from typing import List, Optional, Tuple
 # 命令前缀里的 VAR=value（`LANG=en_US.UTF-8 mosh-server new …`）
 ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
+# 客户端能指定的环境变量白名单。这些赋值会作用到**在 ECS 本机启动**的
+# mosh-server 上，等于客户端能往中继机的进程环境里写东西。放开就等于
+# 交出 ForceCommand 逃逸：`LD_PRELOAD=/tmp/x.so mosh-server new` 会在中继机上
+# 以该 relay 用户身份执行任意代码，而这个用户本来只应该能借道转发、
+# 拿不到 ECS 上的 shell。同类的还有 BASH_ENV / GCONV_PATH / PYTHONSTARTUP …
+# 与其逐个拉黑（永远漏），不如只放行 locale/终端这几个真实用途。
+SAFE_ENV_NAME_RE = re.compile(r"^(LANG|LANGUAGE|LC_[A-Z_]+|TERM)$")
+
 
 def required_env(name: str) -> str:
     """路由参数没有默认值 —— 缺了就断连,不猜。
@@ -133,6 +141,23 @@ def mosh_invocation_index(argv: List[str]) -> Optional[int]:
     ):
         return index
     return None
+
+
+def validated_env_prefix(assignments: List[str]) -> List[str]:
+    """白名单外的赋值一律拒绝连接，不是悄悄丢掉。
+
+    悄悄丢掉的话，客户端指定的 locale 明明没生效却毫无提示（就是上一版的 bug）；
+    而一个被拒的 LD_PRELOAD 更应该让人立刻看见，而不是当作噪音抹掉。
+    """
+    for assignment in assignments:
+        name = assignment.split("=", 1)[0]
+        if not SAFE_ENV_NAME_RE.match(name):
+            sys.stderr.write(
+                f"coding-anywhere-forwarder: 不接受环境变量 {name}"
+                "（只允许 LANG / LANGUAGE / LC_* / TERM）\n"
+            )
+            raise SystemExit(78)  # EX_CONFIG
+    return assignments
 
 
 def client_requested_tty() -> bool:
@@ -254,7 +279,10 @@ def main() -> int:
         backend_command = render_remote_command(remote_command)
         # 用 `env VAR=val …` 而不是改 os.environ：赋值会出现在日志的 argv 和 ps 里，
         # 排查 locale 问题时看得见，不用去猜进程继承了什么。
-        launcher = ["/usr/bin/env", *env_prefix] if env_prefix else []
+        # `--` 是第二道保险：赋值本身已经过 ENV_ASSIGNMENT_RE 校验（不可能以 - 开头），
+        # 加上它之后任何 token 都不会被 env 当成自己的选项。
+        env_prefix = validated_env_prefix(env_prefix)
+        launcher = ["/usr/bin/env", "--", *env_prefix] if env_prefix else []
         emit(
             "mosh-server",
             [

@@ -117,6 +117,17 @@ mosh-server 是数据不是命令，按子串匹配会把它劫持到 ECS 本机
 用户真正想跑的命令根本送不到后端。要支持新的包装形态就往 `mosh_candidates()` 里
 显式加一条。
 
+> [!warning] 环境变量前缀必须白名单，这是 ForceCommand 逃逸面
+> `LANG=… mosh-server new` 里的赋值会作用到**在 ECS 本机启动**的 mosh-server 上 ——
+> 等于客户端能往中继机的进程环境里写东西。原样转发就等于交出逃逸：
+> `LD_PRELOAD=/tmp/x.so mosh-server new` 会在中继机上以该 relay 用户身份执行
+> 任意代码，而这个用户本来只应该能借道转发、拿不到 ECS 上的 shell。
+> 同类的还有 `BASH_ENV` / `GCONV_PATH` / `PYTHONSTARTUP` / `NODE_OPTIONS` …
+>
+> 脚本只放行 `LANG` / `LANGUAGE` / `LC_*` / `TERM`，其余**拒绝连接**（exit 78）
+> 而不是悄悄丢掉 —— 被拒的 `LD_PRELOAD` 应该让人立刻看见。
+> 逐个拉黑的思路不要用，那个名单永远漏。
+
 | 环境变量 | 必填 | 说明 |
 |---|---|---|
 | `CA_IDENTITY_FILE` | ✅ | ECS 回跳后端用的私钥 |
