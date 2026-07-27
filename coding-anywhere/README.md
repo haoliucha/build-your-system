@@ -33,15 +33,28 @@
 
 ### 一键在线安装
 
-**不需要先装插件**，一条命令装好这一个能力：
+**不需要先装插件，也不用填任何地址**——在你正连着远端的那台 Mac 上跑：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/install-dropfile.sh | bash -s -- user@your-host
+curl -fsSL https://cdn.jsdelivr.net/gh/haoliucha/build-your-system@main/coding-anywhere/scripts/install-dropfile.sh | bash -s
+```
+
+目标主机**从你当前的 SSH 会话自动识别**：你的 `ssh user@host -t "tmux ..."`
+命令行里就写着 `user@host`，安装器直接读它，并在开头打印出来确认。
+
+认不出来（当前没开 ssh），或者要装到别的机器时，显式指定：
+
+```bash
+curl -fsSL <同上> | bash -s -- jliu@192.168.1.10
 ```
 
 安装器会：取脚本（本地优先，否则按 `raw → jsDelivr → ghfast` 回退下载）→
 检查依赖 → 验证免密 SSH → 装远端脚本与清理任务 → 装本地命令与配置 →
 写 Karabiner 快捷键 → **推一个测试文件自检**。
+
+> 用 jsDelivr 是因为国内可达性更好。要拿刚发布的最新版可换成
+> `https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/install-dropfile.sh`
+> ——但 raw 有几分钟 CDN 缓存，刚合并时反而可能更旧。
 
 | 选项 | 说明 |
 |------|------|

@@ -1,11 +1,15 @@
 #!/bin/bash
 # install-dropfile.sh — 只安装「终端远程传文件」能力（dropfile），不装整个插件。
 #
-# 在线一键安装（推荐）：
-#   curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/install-dropfile.sh | bash -s -- user@host
+# 在线一键安装（推荐）—— 目标主机会从你当前的 SSH 会话自动识别：
+#   curl -fsSL https://cdn.jsdelivr.net/gh/haoliucha/build-your-system@main/coding-anywhere/scripts/install-dropfile.sh | bash -s
+#
+# 认不出来，或要装到别的机器时，显式指定：
+#   curl -fsSL <同上> | bash -s -- jliu@192.168.1.10
 #
 # 本地安装（仓库/插件目录内）：
-#   bash install-dropfile.sh user@host
+#   bash install-dropfile.sh              # 自动识别
+#   bash install-dropfile.sh user@host    # 显式指定
 #
 # 选项：
 #   --key <组合>        全局快捷键，默认 ctrl+opt+v；格式如 cmd+shift+i
@@ -73,7 +77,66 @@ err()  { printf '  \033[31m✗\033[0m %s\n' "$1" >&2; }
 step() { printf '\n\033[1m[%s]\033[0m %s\n' "$1" "$2"; }
 die()  { err "$1"; exit 1; }
 
-[[ -n "$DROP_HOST" ]] || die "缺少目标主机。用法: ... | bash -s -- user@host"
+# ---------- 目标主机：没给就从当前 SSH 会话认出来 ----------
+#
+# 安装器需要知道目标机是为了把 drop-file.sh scp 过去，但没理由让人手打 ——
+# 你正在用的那条 ssh 命令行里就写着 user@host：
+#     94725 ttys081  ssh jliu@192.168.71.181 -t tmux new-session -A -s vault
+#
+# 这份逻辑与 dropfile 里的是重复的，但安装器必须自包含：它要能在一台
+# 什么都还没装的机器上跑起来，不能依赖尚未安装的 dropfile。
+#
+# 陷阱：ps 里还有 LaunchAgent 维持的后台反向隧道（ssh -N -T -R ... root@relay），
+# 盲目抓第一个 ssh 会把服务端脚本装到中继机上。靠 tty 区分 ——
+# 交互式 ssh 有真实 tty，后台隧道是 "??"，所以只认 ttys* 开头的行。
+_parse_ssh_target() {
+  local -a toks=($1); local i=1 n=${#toks[@]} t
+  local witharg=" -i -o -p -L -R -D -F -l -E -b -c -m -O -Q -S -w -J -W -B -e "
+  while (( i < n )); do
+    t="${toks[$i]}"
+    if [[ "$t" == -* ]]; then
+      [[ "$witharg" == *" $t "* ]] && (( i++ ))
+      (( i++ )); continue
+    fi
+    printf '%s' "$t"; return 0
+  done
+  return 1
+}
+
+_detect_drop_host() {
+  local lines fgtty hit fg t=""
+  lines="$(/bin/ps -axo tty=,args= | /usr/bin/grep -E '^ttys[0-9]+ +(/usr/bin/)?ssh ' || true)"
+  [[ -n "$lines" ]] || return 1
+
+  # 优先前台终端窗口那条连接：开多个 ssh 时才不会认错
+  fg="$(/usr/bin/osascript -e 'tell application "System Events" to return name of first process whose frontmost is true' 2>/dev/null || true)"
+  case "$fg" in
+    iTerm2|iTerm) t="$(/usr/bin/osascript -e 'tell application "iTerm2" to tell current session of current window to get tty' 2>/dev/null || true)" ;;
+    Terminal)     t="$(/usr/bin/osascript -e 'tell application "Terminal" to get tty of selected tab of front window' 2>/dev/null || true)" ;;
+  esac
+  fgtty="${t#/dev/}"
+  if [[ -n "$fgtty" ]]; then
+    hit="$(printf '%s\n' "$lines" | /usr/bin/awk -v t="$fgtty" '$1==t {print; exit}')"
+    [[ -n "$hit" ]] && _parse_ssh_target "${hit#* }" && return 0
+  fi
+
+  # 回退：全机恰好只有一条交互式 ssh，没什么可歧义的
+  if [[ "$(printf '%s\n' "$lines" | /usr/bin/wc -l | /usr/bin/tr -d ' ')" == "1" ]]; then
+    _parse_ssh_target "${lines#* }" && return 0
+  fi
+  return 1
+}
+
+HOST_SRC="参数"
+if [[ -z "$DROP_HOST" ]]; then
+  if _d="$(_detect_drop_host)" && [[ -n "$_d" ]]; then
+    DROP_HOST="$_d"
+    HOST_SRC="自动识别自当前 SSH 会话"
+  else
+    die "认不出目标主机：当前没有可识别的 SSH 会话。请显式指定，例如:
+       curl -fsSL <url> | bash -s -- jliu@192.168.1.10"
+  fi
+fi
 [[ "$(uname)" == "Darwin" ]] || die "客户端目前只支持 macOS（依赖 NSPasteboard / osascript）"
 
 # 管道执行时 BASH_SOURCE 不是真实文件，此时走在线下载
@@ -109,7 +172,9 @@ fetch() {
 
 echo "══════════════════════════════════════════════"
 echo "  dropfile 安装器（终端远程传文件）"
-echo "  目标主机 : $DROP_HOST"
+echo "  目标主机 : ${DROP_HOST}（${HOST_SRC}）"
+# ↑ 花括号不能省：全角括号紧跟变量名时，set -u 下 bash 会把多字节首字节
+#   吞进变量名，报 "DROP_HOST?: unbound variable"
 echo "  快捷键   : $([[ $WITH_KARABINER == 1 ]] && echo "$HOTKEY" || echo "(不配置)")"
 echo "  大小上限 : ${MAX_MB}MB"
 echo "  远端目录 : $REMOTE_DIR"

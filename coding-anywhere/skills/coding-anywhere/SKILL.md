@@ -138,13 +138,13 @@ Home Mac
 一键安装（**在线**，只装这一个能力，不需要先装插件）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/install-dropfile.sh | bash -s -- <user@host>
+curl -fsSL https://cdn.jsdelivr.net/gh/haoliucha/build-your-system@main/coding-anywhere/scripts/install-dropfile.sh | bash -s
 ```
 
 已经装了插件的话也可以走本地：
 
 ```bash
-bash ${CLAUDE_PLUGIN_ROOT}/scripts/install-dropfile.sh <user@host>
+bash ${CLAUDE_PLUGIN_ROOT}/scripts/install-dropfile.sh
 ```
 
 安装器做六件事并自检：取脚本（本地优先，否则按 raw → jsDelivr → ghfast 回退下载）
