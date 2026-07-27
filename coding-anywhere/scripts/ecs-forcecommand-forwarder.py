@@ -64,6 +64,9 @@ BACKEND_HOST = os.environ.get("CA_BACKEND_HOST", "127.0.0.1")
 DRY_RUN = os.environ.get("CA_FORCECOMMAND_DRY_RUN") == "1"
 FORCED_MOSH_PORT = os.environ.get("CA_FORCED_MOSH_PORT", "").strip()
 LOG_FILE = os.environ.get("CA_LOG_FILE", "/tmp/coding-anywhere-forwarder.log")
+# 后端登录 shell 的**未展开**表达式：由后端自己的 shell 求值，所以后端是
+# macOS(zsh) 还是 Linux(bash) 都不用这边操心。要钉死可以设 CA_BACKEND_SHELL。
+BACKEND_SHELL_EXPR = os.environ.get("CA_BACKEND_SHELL", '"${SHELL:-/bin/sh}"')
 
 
 def backend_ssh_base(force_tty: bool, subsystem: bool = False) -> List[str]:
@@ -88,9 +91,30 @@ def backend_ssh_base(force_tty: bool, subsystem: bool = False) -> List[str]:
     return argv
 
 
+def open_log():
+    """日志按 0600 建，且不跟随符号链接。
+
+    每条记录都含完整的 SSH_ORIGINAL_COMMAND —— 客户端往命令里塞 token、
+    临时密码、签名 URL 都很常见，默认 umask 建出来的 0644 等于把它们摊给
+    这台中继上的所有本地账号。O_NOFOLLOW 则是因为默认路径在 /tmp：
+    别人可以抢先把这个名字做成指向别处的软链接。
+    """
+    fd = os.open(
+        LOG_FILE,
+        os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+        0o600,
+    )
+    # 老版本留下的 0644 日志不会因为 O_CREAT 的 mode 自动收紧，补一刀。
+    try:
+        os.fchmod(fd, 0o600)
+    except OSError:
+        pass
+    return os.fdopen(fd, "a", encoding="utf-8")
+
+
 def emit(mode: str, argv: List[str]) -> None:
     try:
-        with open(LOG_FILE, "a", encoding="utf-8") as fh:
+        with open_log() as fh:
             fh.write(
                 json.dumps(
                     {
@@ -158,13 +182,16 @@ def is_sftp_subsystem_request(original: str) -> bool:
     （`Subsystem sftp internal-sftp -d /srv`），要求整条只有一个 token 会把这类
     服务器的 sftp 请求判掉。
 
+    **不认裸的 `sftp`**：那是 sftp **客户端**的名字，服务端不会拿它当子系统命令
+    （`Subsystem sftp sftp` 没有意义）。认了的话，`ssh -T relay 'sftp otherhost'`
+    这种"我就是要在后端跑 sftp 客户端"会被劫持成子系统请求，`otherhost` 直接丢掉。
+
     当普通命令转发过去的话，后端会去执行 sftp 那个**客户端**程序，
     协议对不上直接 `Connection closed` —— 症状就是走中继的 scp 全挂
     （dropfile 安装器把 DROP_HOST 指向中继时就踩这个）。
     """
     argv = safe_split(original)
     return bool(argv) and os.path.basename(argv[0]) in {
-        "sftp",
         "internal-sftp",
         "sftp-server",
     }
@@ -230,10 +257,17 @@ def render_remote_command(remote_command: List[str]) -> str:
     remote_command = normalize_tmux_args(remote_command)
     if remote_command[0] != "tmux":
         return shell_join(remote_command)
+    # 用后端用户自己的登录 shell，不写死 /bin/zsh —— 后端可以是 Linux，
+    # 那边 /bin/zsh 常常不存在，整条 mosh+tmux 流程会在 tmux 起来之前就失败。
+    # $SHELL 由后端 sshd 从 passwd 里设好，这里让**后端的 shell** 去展开它，
+    # 所以不能经 shell_join 引号化。
+    backend_shell = BACKEND_SHELL_EXPR
     # ssh concatenates remote command argv into a single shell string, so the
-    # zsh -lc wrapper must already be shell-quoted as one argument.
-    shell_command = f"DISABLE_AUTO_TMUX=1 {shell_join(remote_command)}; exec /bin/zsh -l"
-    return shell_join(["/bin/zsh", "-lc", shell_command])
+    # -lc wrapper must already be shell-quoted as one argument.
+    shell_command = (
+        f"DISABLE_AUTO_TMUX=1 {shell_join(remote_command)}; exec {backend_shell} -l"
+    )
+    return f"{backend_shell} -lc {shlex.quote(shell_command)}"
 
 
 def mosh_candidates(original: str) -> List[List[str]]:
