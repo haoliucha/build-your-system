@@ -43,6 +43,18 @@ BIN_DIR="$HOME/.local/bin"
 CONFIG_DIR="$HOME/.config/dropimg"
 REMOTE_BIN='$HOME/bin'
 
+# 选一个**真能用**的 python3：Homebrew 的 python 可能因 pyexpat 与系统 libexpat
+# 版本不匹配而 import plistlib 直接失败（实测 3.14.4 就是坏的），而 PATH 里
+# 解析到的往往正是它。只查 `command -v python3` 存在是不够的，得实际试一下。
+pick_python() {
+  local p
+  for p in /usr/bin/python3 "$(command -v python3 2>/dev/null || true)"; do
+    [[ -x "$p" ]] || continue
+    "$p" -c 'import json, plistlib' >/dev/null 2>&1 && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$1"; }
 err()  { printf '  \033[31m✗\033[0m %s\n' "$1" >&2; }
@@ -82,8 +94,8 @@ if [[ -z "$PNGPASTE" ]]; then
 fi
 ok "pngpaste: ${PNGPASTE:-(将安装)}"
 
-command -v python3 >/dev/null 2>&1 || die "需要 python3（用于安全地修改 Karabiner 的 JSON 配置）"
-ok "python3: $(command -v python3)"
+PY3="$(pick_python)" || die "找不到可用的 python3（需要能 import json 与 plistlib）"
+ok "python3: $PY3"
 
 # ---------- 2. 免密 SSH ----------
 step 2/6 "验证到 $DROP_HOST 的免密 SSH"
@@ -212,7 +224,7 @@ if [[ $WITH_KARABINER == 1 ]]; then
     cp "$KJSON" "$KJSON.bak.$(date +%Y%m%d_%H%M%S)"
     # 用 if 包住而不是事后取 $? —— set -e 下 python3 一旦非 0 会直接终止脚本，
     # 后面的错误分支永远走不到
-    if HOTKEY="$HOTKEY" BIN_DIR="$BIN_DIR" python3 <<'PY'
+    if HOTKEY="$HOTKEY" BIN_DIR="$BIN_DIR" "$PY3" <<'PY'
 import json, os, sys, datetime
 
 path = os.path.expanduser("~/.config/karabiner/karabiner.json")

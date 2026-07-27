@@ -99,6 +99,18 @@ BIN_DIR="$HOME/.local/bin"
 CONFIG_DIR="$HOME/.config/dropimg"
 REMOTE_BIN='$HOME/bin'
 
+# 选一个**真能用**的 python3：Homebrew 的 python 可能因 pyexpat 与系统 libexpat
+# 版本不匹配而 import plistlib 直接失败（实测 3.14.4 就是坏的），而 PATH 里
+# 解析到的往往正是它。只查 `command -v python3` 存在是不够的，得实际试一下。
+pick_python() {
+  local p
+  for p in /usr/bin/python3 "$(command -v python3 2>/dev/null || true)"; do
+    [[ -x "$p" ]] || continue
+    "$p" -c 'import json, plistlib' >/dev/null 2>&1 && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$1"; }
 err()  { printf '  \033[31m✗\033[0m %s\n' "$1" >&2; }
@@ -251,8 +263,8 @@ if [[ -z "$PNGPASTE" ]]; then
   fi
 fi
 [[ -n "$PNGPASTE" ]] && ok "pngpaste: $PNGPASTE"
-command -v python3 >/dev/null 2>&1 || die "需要 python3（用于安全地修改 Karabiner 的 JSON 配置）"
-ok "python3: $(command -v python3)"
+PY3="$(pick_python)" || die "找不到可用的 python3（需要能 import json 与 plistlib）"
+ok "python3: $PY3"
 
 # ---------- 3. 免密 SSH ----------
 step 3/6 "验证到 $DROP_HOST 的免密 SSH"
@@ -362,37 +374,119 @@ esac
 
 # ---------- 6. 快捷键 ----------
 if [[ "$HOTKEY_MODE" == "iterm2" ]]; then
-  step 6/6 "iTerm2 Coprocess 方式（打印配置步骤，不修改你的偏好设置）"
-  # 刻意不自动写 iTerm2 偏好：
-  #   1) 偏好由 cfprefsd 托管，外部改完必须**重启 iTerm2** 才生效，
-  #      而重启会关掉你当前所有窗口；在 GUI 里加则立即生效
-  #   2) 全局快捷键属于持久化配置，值得让人自己过一眼
-  cat <<EOF
-
-    iTerm2 → Settings（⌘,）→ Keys → Key Bindings → 左下角 "+"
-
-      Keyboard Shortcut : 按下 ${HOTKEY}
-      Action            : Run Coprocess…
-      命令              : /bin/bash -c 'DROPFILE_COPROCESS=1 exec ${BIN_DIR}/dropfile 2>/dev/null'
-
-    加完立刻生效，不用重启 iTerm2、不用装 Karabiner、不用给任何系统权限。
-
-    原理：Coprocess 的 stdout 会被 iTerm2 **当作你输入的内容注入当前 session**。
-    dropfile 的 coprocess 模式因此只吐一行路径、末尾补空格、不带换行
-    （带换行等于替你按了回车），stderr 全部丢弃以免提示信息被打进输入框。
-
-EOF
-  # 不能只看 /Applications：不想输管理员密码的人普遍把 app 装在 ~/Applications
-  # （跟 Homebrew 有 /opt/homebrew 与 /usr/local 两个前缀是同一类问题）
-  ITERM_APP=""
-  for p in /Applications/iTerm.app "$HOME/Applications/iTerm.app"; do
-    [[ -d "$p" ]] && ITERM_APP="$p" && break
-  done
-  [[ -z "$ITERM_APP" ]] && ITERM_APP="$(mdfind "kMDItemCFBundleIdentifier == 'com.googlecode.iterm2'" 2>/dev/null | head -1)"
-  if [[ -n "$ITERM_APP" ]]; then
-    ok "已检测到 iTerm2: $ITERM_APP"
-  else
+  step 6/6 "配置 iTerm2 Coprocess 快捷键 $HOTKEY"
+  if [[ -z "$ITERM_APP" ]]; then
     warn "没找到 iTerm2 —— 确认在装了 iTerm2 的机器上操作"
+    warn "手动绑定命令: DROPFILE_COPROCESS=1 $BIN_DIR/dropfile"
+  elif [[ $DRY_RUN == 1 ]]; then
+    echo "    (dry-run) 向 iTerm2 GlobalKeyMap 写入 $HOTKEY → Run Coprocess"
+  else
+    ok "iTerm2: $ITERM_APP"
+    mkdir -p "$CONFIG_DIR"
+    ITERM_BAK="$CONFIG_DIR/iterm2-prefs-backup-$(date +%Y%m%d_%H%M%S).plist"
+    defaults export com.googlecode.iterm2 "$ITERM_BAK" 2>/dev/null \
+      && ok "偏好已备份 → $ITERM_BAK" \
+      || warn "备份失败（本次只新增一个键，影响有限）"
+
+    if HOTKEY="$HOTKEY" BIN_DIR="$BIN_DIR" ITERM_BAK="$ITERM_BAK" "$PY3" <<'PY'
+import os, plistlib, subprocess, sys
+
+hotkey = os.environ["HOTKEY"].lower()
+bindir = os.environ["BIN_DIR"]
+
+# macOS 虚拟键码（字母键足够：快捷键几乎都用字母）
+KEYCODE = {'a':0,'s':1,'d':2,'f':3,'h':4,'g':5,'z':6,'x':7,'c':8,'v':9,'b':11,
+           'q':12,'w':13,'e':14,'r':15,'y':16,'t':17,'o':31,'u':32,'i':34,'p':35,
+           'l':37,'j':38,'k':40,'n':45,'m':46}
+MODMASK = {'shift':0x20000,'ctrl':0x40000,'control':0x40000,
+           'opt':0x80000,'option':0x80000,'alt':0x80000,
+           'cmd':0x100000,'command':0x100000}
+
+parts = [x.strip() for x in hotkey.split('+') if x.strip()]
+key = parts[-1]
+if key not in KEYCODE:
+    sys.exit(f"暂不支持的按键: {key}（目前只支持字母键）")
+mods = 0
+for x in parts[:-1]:
+    if x not in MODMASK:
+        sys.exit(f"不认识的修饰键: {x}")
+    mods |= MODMASK[x]
+
+# iTerm2 的键格式: 0x<字符>-0x<修饰键掩码>-0x<虚拟键码>
+kid = f"0x{ord(key):x}-0x{mods:x}-0x{KEYCODE[key]:x}"
+
+# Action 35 = Run Coprocess：stdout 会被当作用户输入注入当前 session。
+# 命令只能吐路径，所以 stderr 丢弃、dropfile 的 coprocess 模式不带换行。
+cmd = f"/bin/bash -c 'DROPFILE_COPROCESS=1 exec {bindir}/dropfile 2>/dev/null'"
+entry = {                 # 这五个字段的类型必须对：写成字符串 iTerm2 会静默忽略整条
+    "Action": 35,         # int
+    "Apply Mode": 0,      # int
+    "Escaping": 2,        # int
+    "Text": cmd,          # str
+    "Version": 2,         # int
+}
+
+raw = subprocess.run(['defaults','export','com.googlecode.iterm2','-'],
+                     capture_output=True).stdout
+if not raw:
+    sys.exit("读不到 iTerm2 偏好")
+d = plistlib.loads(raw)
+gm = d.setdefault("GlobalKeyMap", {})
+
+old = gm.get(kid)
+if old and "dropfile" not in str(old.get("Text","")) and "dropimg" not in str(old.get("Text","")):
+    print("  ! 该组合键原本绑着别的动作，已覆盖（可从备份还原）:")
+    print(f"    {str(old.get('Text',''))[:80]}")
+
+# 写入前记下所有键：defaults export/import 往返曾经丢过条目，
+# 而"条目数不变"会掩盖它（一加一减刚好抵消）—— 必须逐键核对，不能只看数量
+before = set(gm.keys())
+
+gm[kid] = entry
+subprocess.run(['defaults','import','com.googlecode.iterm2','-'],
+               input=plistlib.dumps(d), check=True)
+
+# 核对：原有的键一个都不能少；少了就从刚才的备份补回来
+chk = plistlib.loads(subprocess.run(['defaults','export','com.googlecode.iterm2','-'],
+                                    capture_output=True).stdout).get("GlobalKeyMap", {})
+lost = before - set(chk.keys())
+if lost:
+    print(f"  ! 写入过程中丢了 {len(lost)} 条原有绑定，正在从备份恢复…")
+    bak = os.environ.get("ITERM_BAK", "")
+    if bak and os.path.exists(bak):
+        with open(bak, "rb") as f:
+            obak = plistlib.load(f).get("GlobalKeyMap", {})
+        d2 = plistlib.loads(subprocess.run(['defaults','export','com.googlecode.iterm2','-'],
+                                           capture_output=True).stdout)
+        g2 = d2.setdefault("GlobalKeyMap", {})
+        for k in lost:
+            if k in obak:
+                g2[k] = obak[k]
+        subprocess.run(['defaults','import','com.googlecode.iterm2','-'],
+                       input=plistlib.dumps(d2), check=True)
+        print(f"  \033[32m✓\033[0m 已恢复 {len(lost)} 条")
+    else:
+        print(f"  \033[31m✗\033[0m 备份不可用，丢失的键: {sorted(lost)}")
+else:
+    print(f"  \033[32m✓\033[0m 原有 {len(before)} 条绑定完好")
+
+print(f"  \033[32m✓\033[0m 已写入 {kid} → Run Coprocess")
+
+# 同一功能的旧实现（自己拼 pngpaste+scp 那种）留着会撞键，提示一下
+for k, v in gm.items():
+    t = str(v.get("Text",""))
+    if k != kid and v.get("Action") == 35 and "pngpaste" in t and "dropfile" not in t:
+        print(f"  ! 另有一条同类的旧 coprocess 绑定 {k}，确认无用后可在")
+        print(f"    iTerm2 -> Settings -> Keys -> Key Bindings 里删除")
+PY
+    then
+      # iTerm2 认不认新绑定，取决于它读 NSUserDefaults 的时机 —— 没有实测结论，
+      # 所以这里不打包票：先直接试，不行再重启。
+      echo "      按一下 ${HOTKEY} 试试；若无反应，退出 iTerm2 再打开"
+      echo "      （远端 tmux 会话不受影响，重连就在）"
+    else
+      err "写入 iTerm2 偏好失败，备份在 $ITERM_BAK"
+    fi
   fi
 elif [[ "$HOTKEY_MODE" == "karabiner" ]]; then
   step 6/6 "配置 Karabiner 全局快捷键 $HOTKEY"
@@ -406,7 +500,7 @@ elif [[ "$HOTKEY_MODE" == "karabiner" ]]; then
   else
     cp "$KJSON" "$KJSON.bak.$(date +%Y%m%d_%H%M%S)"
     # 用 if 包住而不是事后取 $?：set -e 下 python3 非 0 会直接终止脚本
-    if HOTKEY="$HOTKEY" BIN_DIR="$BIN_DIR" python3 <<'PY'
+    if HOTKEY="$HOTKEY" BIN_DIR="$BIN_DIR" "$PY3" <<'PY'
 import json, os, sys
 
 path   = os.path.expanduser("~/.config/karabiner/karabiner.json")

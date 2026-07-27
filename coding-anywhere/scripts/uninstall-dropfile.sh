@@ -28,11 +28,26 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# 选一个**真能用**的 python3：Homebrew 的 python 可能因 pyexpat 与系统 libexpat
+# 版本不匹配而 import plistlib 直接失败（实测 3.14.4 就是坏的），而 PATH 里
+# 解析到的往往正是它。只查 `command -v python3` 存在是不够的，得实际试一下。
+pick_python() {
+  local p
+  for p in /usr/bin/python3 "$(command -v python3 2>/dev/null || true)"; do
+    [[ -x "$p" ]] || continue
+    "$p" -c 'import json, plistlib' >/dev/null 2>&1 && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$1"; }
 skip() { printf '  \033[90m·\033[0m %s\n' "$1"; }
 sec()  { printf '\n\033[1m── %s\033[0m\n' "$1"; }
 run()  { if [[ $DRY_RUN == 1 ]]; then echo "    (dry-run) $*"; else eval "$@"; fi; }
+
+# 卸载只是尽力而为：没有可用 python 时跳过依赖它的两节，不中断整体流程
+PY3="$(pick_python || true)"
 
 BIN_DIR="$HOME/.local/bin"
 CONFIG_DIR="$HOME/.config/dropimg"
@@ -71,7 +86,7 @@ sec "3. Karabiner 规则"
 KJSON="$HOME/.config/karabiner/karabiner.json"
 if [[ -f "$KJSON" ]]; then
   if [[ $DRY_RUN == 1 ]]; then
-    python3 - <<'PY'
+    "$PY3" - <<'PY'
 import json, os
 d = json.load(open(os.path.expanduser("~/.config/karabiner/karabiner.json")))
 n = sum(1 for pr in d.get("profiles", [])
@@ -82,7 +97,7 @@ print(f"    (dry-run) 会移除 {n} 条 drop 相关规则")
 PY
   else
     cp "$KJSON" "$KJSON.bak.$(date +%Y%m%d_%H%M%S)"
-    python3 - <<'PY'
+    "$PY3" - <<'PY'
 import json, os
 p = os.path.expanduser("~/.config/karabiner/karabiner.json")
 d = json.load(open(p))
@@ -104,7 +119,7 @@ fi
 sec "4. iTerm2 Coprocess 绑定"
 # 刻意只检测不自动删：这条是你在 GUI 里手动加的，而且改 plist 需要重启 iTerm2
 # 才生效（偏好由 cfprefsd 托管），在 GUI 里删则立即生效
-if python3 - 2>/dev/null <<'PY'
+if "$PY3" - 2>/dev/null <<'PY'
 import plistlib, subprocess, sys
 raw = subprocess.run(['defaults','export','com.googlecode.iterm2','-'],
                      capture_output=True).stdout
