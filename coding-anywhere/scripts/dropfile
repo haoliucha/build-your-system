@@ -266,6 +266,35 @@ for i in "${!PATHS[@]}"; do
   if [[ -z "$results" ]]; then results="$r"; else results="$results"$'\n'"$r"; fi
 done
 
+# ---------- 图片：可选走远端剪贴板，拿到原生 [Image #N] ----------
+#
+# Claude Code 收图有三种方式（官方文档）：拖拽、Ctrl+V 粘贴剪贴板、给路径。
+# 给路径完全可用（Claude 会用 Read 读图），但显示成一行文本；
+# Ctrl+V 那种才会变成 [Image #N] 直接进上下文，省掉一次 Read 调用。
+#
+# 难点在于：图在**本地**剪贴板，Claude Code 跑在**远端** —— SSH 传不了剪贴板二进制。
+# 但图已经被我们推到远端了，那就在远端把它塞进那台机器的剪贴板，
+# 再注入 Ctrl+V 的字节(0x16)让 Claude Code 自己粘。
+#
+# 代价：多一次 SSH 往返(~0.2-1s)，且要求远端有已登录的 GUI 会话（pasteboard 才存在）。
+# 所以默认关闭，DROPFILE_IMAGE_MODE=clipboard 开启。
+if [[ "${DROPFILE_IMAGE_MODE:-path}" == "clipboard" && "${#PATHS[@]}" == "1" ]]; then
+  _mime="$(/usr/bin/file -b --mime-type "${PATHS[0]}" 2>/dev/null || echo "")"
+  if [[ "$_mime" == image/* ]]; then
+    if "$SSH" -n -o BatchMode=yes -o ConnectTimeout=8 "$DROP_HOST" \
+         "osascript -e 'set the clipboard to (read (POSIX file \"$results\") as «class PNGf»)'" 2>/dev/null; then
+      if [[ "${DROPFILE_COPROCESS:-0}" == "1" ]]; then
+        printf '\026'      # 0x16 = Ctrl+V，交给 Claude Code 自己完成粘贴
+        exit 0
+      fi
+      echo "$results"
+      echo "已放入远端剪贴板，在 Claude Code 里按 Ctrl+V 可得原生图片附件" >&2
+      exit 0
+    fi
+    echo "dropfile: 远端剪贴板写入失败，回退为路径" >&2
+  fi
+fi
+
 # 不带尾随换行：否则粘进 Claude Code 会立刻提交，来不及补充说明文字
 # （多文件时中间的换行保留 —— Claude Code 会把每一行都识别为 attachment）
 printf '%s' "$results" | "$PBCOPY"
