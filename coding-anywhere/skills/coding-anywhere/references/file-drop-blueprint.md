@@ -233,10 +233,10 @@ fi
 
 ## 6. 安装
 
-**在线一键**（只装 dropfile，不装整个插件）：
+**在线一键**（只装 dropfile，不装整个插件；目标主机从当前 SSH 会话自动识别，不用填）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/install-dropfile.sh | bash -s -- user@host
+curl -fsSL https://cdn.jsdelivr.net/gh/haoliucha/build-your-system@main/coding-anywhere/scripts/install-dropfile.sh | bash -s
 ```
 
 安装器按 `raw → jsDelivr → ghfast` 顺序回退取脚本（raw 保证最新，
