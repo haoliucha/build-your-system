@@ -138,7 +138,7 @@ Home Mac
 一键安装（**在线**，只装这一个能力，不需要先装插件）：
 
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/haoliucha/build-your-system@main/coding-anywhere/scripts/install-dropfile.sh | bash -s
+curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/install-dropfile.sh | bash -s
 ```
 
 已经装了插件的话也可以走本地：

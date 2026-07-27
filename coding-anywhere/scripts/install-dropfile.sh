@@ -2,7 +2,7 @@
 # install-dropfile.sh — 只安装「终端远程传文件」能力（dropfile），不装整个插件。
 #
 # 在线一键安装（推荐）—— 目标主机会从你当前的 SSH 会话自动识别：
-#   curl -fsSL https://cdn.jsdelivr.net/gh/haoliucha/build-your-system@main/coding-anywhere/scripts/install-dropfile.sh | bash -s
+#   curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/coding-anywhere/scripts/install-dropfile.sh | bash -s
 #
 # 认不出来，或要装到别的机器时，显式指定：
 #   curl -fsSL <同上> | bash -s -- jliu@192.168.1.10
