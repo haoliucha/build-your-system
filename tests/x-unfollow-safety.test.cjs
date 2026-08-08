@@ -46,7 +46,8 @@ assert.ok(policy.UNFOLLOW_WAIT_MIN_MS >= 45000, 'unfollow cadence must be at lea
 
 const runSh = fs.readFileSync(path.join(codexSkill, 'run.sh'), 'utf8');
 assert.match(runSh, /run-lock\.cjs" claim/, 'run.sh must claim the exclusive network-run token');
-assert.match(runSh, /trap release_run_lock EXIT INT TERM/, 'run.sh must release its lock on every exit path');
+assert.match(runSh, /^trap release_run_lock EXIT$/m, 'run.sh must release its lock from the EXIT trap');
+assert.doesNotMatch(runSh, /^trap release_run_lock EXIT INT TERM$/m, 'run.sh must not swallow INT/TERM termination');
 assert.match(runSh, /post-action snapshot/, 'run.sh must verify with one post-action following-list scan');
 assert.match(runSh, /PROFILE_MAX_PER_RUN/, 'run.sh must expose the capped profile-refresh batch');
 

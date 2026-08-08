@@ -57,6 +57,54 @@ test('a lock owned by a dead process is reclaimed', () => {
   assert.strictEqual(claimed.status, 0, claimed.stderr);
   assert.notStrictEqual(claimed.stdout.trim(), 'stale');
 });
+test('run.sh keeps INT/TERM default termination while EXIT releases the lock', () => {
+  const runSh = fs.readFileSync(path.join(SCRIPTS, '..', 'run.sh'), 'utf8');
+  assert.match(runSh, /^trap release_run_lock EXIT$/m);
+  assert.doesNotMatch(runSh, /^trap release_run_lock EXIT INT TERM$/m);
+
+  const harness = String.raw`
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { spawn } = require('child_process');
+    const signal = process.argv[1];
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xu-exit-trap-'));
+    const marker = path.join(dir, 'released');
+    const program = [
+      'release_run_lock() { printf released > "$MARKER"; }',
+      'trap release_run_lock EXIT',
+      'printf "READY\\n"',
+      'while :; do :; done',
+    ].join('\n');
+    const child = spawn('bash', ['-c', program], {
+      env: { ...process.env, MARKER: marker },
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    let sent = false;
+    const timeout = setTimeout(() => {
+      child.kill('SIGKILL');
+      process.exit(2);
+    }, 3000);
+    child.stdout.on('data', (chunk) => {
+      if (!sent && chunk.toString().includes('READY')) {
+        sent = true;
+        child.kill(signal);
+      }
+    });
+    child.on('exit', (code, exitSignal) => {
+      clearTimeout(timeout);
+      const released = fs.existsSync(marker) && fs.readFileSync(marker, 'utf8') === 'released';
+      if (!sent || code !== null || exitSignal !== signal || !released) {
+        console.error(JSON.stringify({ sent, code, exitSignal, released }));
+        process.exit(1);
+      }
+    });
+  `;
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    const result = spawnSync(process.execPath, ['-e', harness, signal], { encoding: 'utf8', timeout: 5000 });
+    assert.strictEqual(result.status, 0, `${signal}: ${result.stderr || result.stdout}`);
+  }
+});
 
 // -------------------------------------------- bulk verification from /following snapshot
 group('bulk unfollow verification (one following-list scan + local set diff)');

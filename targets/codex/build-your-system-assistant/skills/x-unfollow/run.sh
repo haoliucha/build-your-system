@@ -88,7 +88,9 @@ release_run_lock() {
     XU_RUN_TOKEN=""
   fi
 }
-trap release_run_lock EXIT INT TERM
+# Keep INT/TERM default termination semantics. EXIT still runs on signal-driven
+# shell termination, so the network-run lock is released without swallowing stop.
+trap release_run_lock EXIT
 cleanup_locks
 
 halt_on_anomaly() { # $1 = exit code from a node browser step
