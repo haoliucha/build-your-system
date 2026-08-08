@@ -1,0 +1,51 @@
+{
+  "controls": [
+    {
+      "name": "subscribe button reusing an unfollow testid",
+      "handle": "yangyi",
+      "control": { "ariaLabel": "订阅 到 @yangyi", "text": "订阅", "testid": "3122661542-unfollow" },
+      "expected": false
+    },
+    {
+      "name": "exact Chinese following control",
+      "handle": "yangyi",
+      "control": { "ariaLabel": "正在关注 @yangyi", "text": "正在关注", "testid": "3122661542-unfollow" },
+      "expected": true
+    },
+    {
+      "name": "different target control",
+      "handle": "yangyi",
+      "control": { "ariaLabel": "取消关注 @other", "text": "取消关注", "testid": "other-unfollow" },
+      "expected": false
+    }
+  ],
+  "profileScopes": [
+    {
+      "name": "unrelated sidebar says follows you",
+      "scope": {
+        "userNameText": "Yangyi\n@yangyi",
+        "profileHeaderText": "Yangyi\n@yangyi\n604 正在关注",
+        "pageText": "你可能会喜欢\nAlice 关注了你"
+      },
+      "expected": false
+    },
+    {
+      "name": "target profile username region says follows you",
+      "scope": {
+        "userNameText": "Alice\n@alice\n关注了你",
+        "profileHeaderText": "Alice\n@alice\n关注了你",
+        "pageText": ""
+      },
+      "expected": true
+    },
+    {
+      "name": "target profile header says Follows you",
+      "scope": {
+        "userNameText": "Bob\n@bob",
+        "profileHeaderText": "Bob\n@bob\nFollows you",
+        "pageText": ""
+      },
+      "expected": true
+    }
+  ]
+}

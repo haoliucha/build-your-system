@@ -1,19 +1,20 @@
 {
   "name": "build-your-system-assistant",
-  "version": "0.1.0",
-  "description": "Personal assistant workflows for Obsidian Vaults in Codex.",
+  "version": "0.3.0",
+  "description": "Personal assistant workflows for Obsidian Vaults plus conservative X follow hygiene in Codex.",
   "skills": "./skills",
   "interface": {
     "displayName": "Build Your System Assistant",
-    "shortDescription": "Obsidian Vault assistant workflows for Codex",
-    "longDescription": "Capture, review, timeline, weekly summary, export, and related Obsidian Vault workflows adapted from the original Claude assistant plugin.",
+    "shortDescription": "Vault workflows and safe X follow hygiene",
+    "longDescription": "Capture, review, timeline, weekly summary, export, and rate-limited X follow hygiene workflows adapted for Codex.",
     "developerName": "J. Liu",
     "category": "Productivity",
-    "capabilities": ["Skills", "Vault workflow", "Task management"],
+    "capabilities": ["Skills", "Vault workflow", "Task management", "Rate-limited X follow hygiene"],
     "defaultPrompt": [
       "帮我把这条内容捕获到 inbox 并打标签",
       "基于今天的记录做一次每日回顾",
-      "把这次对话导出成 Obsidian 笔记"
+      "把这次对话导出成 Obsidian 笔记",
+      "生成 X 未回关候选报告，不要取关"
     ],
     "brandColor": "#2D6A4F"
   }

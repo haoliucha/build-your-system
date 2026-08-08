@@ -9,11 +9,11 @@
 | Claude Code | `assistant/` | 1.0.0 | 个人 AI 助手:任务捕获、每日回顾、知识分发(基于 Obsidian Vault) |
 | Claude Code | `media/` | 1.0.0 | 短视频创作工作流:选题评估、Hook 设计、逐字稿生成 |
 | Claude Code | `claude-notify/` | 1.0.0 | macOS 通知与跳转辅助(任务完成/需要权限时提醒) |
-| Claude Code | `x/` | 2.0.0 | X (Twitter) 工具集:`/x:x-follow` 精准批量关注、`/x:x-unfollow` 关注卫生、`/x:image` 经 Codex Rescue 生成文章封面和插图 |
+| Claude Code | `x/` | 2.2.0 | X (Twitter) 工具集:`/x:x-follow` 精准批量关注、`/x:x-unfollow` 互斥低频关注卫生、`/x:image` 经 Codex Rescue 生成文章封面和插图 |
 | Claude Code | `goal-creator/` | 0.1.0 | `/goal` 命令提示词工程辅助(引导式 brainstorm) |
 | Claude Code | `coding-anywhere/` | 1.0.0 | 远程开发栈:mosh + tmux + SSH 中继一键搭建 |
 | Claude Code | `bid/` | 0.1.0 | To-B 投标/交付物方法论:单一真源生成器、口径级联、成本/排期、对抗审校、去AI味、图表与中文PDF管线;10 skills + 6 命令(`/bid:init·meeting·sync·handoff·review·status`),附 HTML 方法论导读(含系统动态演示) |
-| Codex | `targets/codex/build-your-system-assistant/` | — | Obsidian Vault 助手的 Codex 适配版 |
+| Codex | `targets/codex/build-your-system-assistant/` | 0.3.0 | Obsidian Vault 助手 + 与 Claude 同源的互斥低频 `x-unfollow` |
 | Codex | `targets/codex/x-image/` | 0.1.0 | 原生文章图片插件:封面、头图、解释图、数据图和竖版插图,每个资产一次 ImageGen |
 
 ## 为什么是单仓多目标
@@ -92,7 +92,7 @@ build-your-system/
    git config core.hooksPath scripts/githooks
    ```
 4. **版本纪律**:插件有实质变更 → bump `<plugin>/.claude-plugin/plugin.json` 的 `version`,并同步根 `.claude-plugin/marketplace.json` 对应条目(两处都要改)。未发布版本可用 `claude --plugin-dir "$PWD/<plugin>"` 验收;持久更新需要发布后再通过 `/plugin` 更新。
-5. Codex 助手改动落在 `targets/codex/build-your-system-assistant/`;图片能力的共享规则位于 `x/shared/x-image/`,Codex 适配层位于 `targets/codex/x-image/`。
+5. Codex 助手改动落在 `targets/codex/build-your-system-assistant/`;`x-unfollow` 以该目标内的 skill 为规范源码，并通过 `scripts/sync-x-unfollow-targets.cjs` 同步到 Claude 的 `x/skills/x-unfollow/`;图片能力的共享规则位于 `x/shared/x-image/`,Codex 适配层位于 `targets/codex/x-image/`。
 
 ## 许可证
 

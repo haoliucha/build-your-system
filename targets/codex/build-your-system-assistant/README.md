@@ -7,6 +7,7 @@
 - 保留原 assistant 的核心工作流：capture、pause、tasks、review、timeline、weekly、export
 - 在同一个源仓库里维护 Claude 与 Codex 两个宿主目标
 - 通过本地 Codex plugin + skills 方式接入，不依赖独立副本仓库
+- 提供保守限速的 `x-unfollow`，并作为 Claude/Codex 双端规范源码
 
 ## 当前路径
 
@@ -46,4 +47,5 @@ python3 "$HOME/plugins/build-your-system-assistant/scripts/analyze-codex-activit
 ```bash
 cd targets/codex/build-your-system-assistant
 python3 -m unittest discover -s tests -p 'test_*.py' -v
+node ../../../tests/x-unfollow-safety.test.cjs
 ```
