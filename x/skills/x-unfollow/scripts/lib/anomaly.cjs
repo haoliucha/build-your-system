@@ -44,8 +44,9 @@ const EXIT_CODES = {
   LOGIN_REDIRECT: 12,
   ACCOUNT_RESTRICTED: 13,
   WEBDRIVER_DETECTED: 14,
-  CONSECUTIVE_ERRORS: 15,
+  PAGE_DRIFT: 15,
   EMPTY_PAGE: 16,
+  COUNT_ANOMALY: 17,
 };
 
 // PURE classifier. input: { bodyText, userText, path, webdriver, hasCaptcha }

@@ -75,7 +75,7 @@ function log(msg) { const line = `[${new Date().toISOString()}] ${msg}\n`; try {
 
 function loadCandidates() {
   if (HANDLES_ARG) return HANDLES_ARG.split(',').map((s) => s.trim().replace(/^@/, '')).filter(Boolean);
-  const file = path.join(REPORTS_DIR, `non-recip-reasons-${DATE}.json`);
+  const file = path.join(REPORTS_DIR, 'latest-non-recip.json');
   if (!fs.existsSync(file)) { console.error(`FATAL: classify report not found: ${file} (run classify.cjs first)`); process.exit(2); }
   const obj = JSON.parse(fs.readFileSync(file, 'utf8'));
   return (obj.rows || []).filter((r) => r.decision === 'candidate_unfollow').map((r) => r.handle);
@@ -159,7 +159,8 @@ function buildUnfollowJs(handle, settle, dryRun, allowMutual, explicitHandles) {
 async function main() {
   assertRunToken();
   ensureDir(REPORTS_DIR);
-  const actionReport = path.join(REPORTS_DIR, `unfollow-${DATE}.json`);
+  const actionReport = process.env.XU_ACTION_REPORT || path.join(DATA_DIR, '.staging', process.env.XU_RUN_TOKEN || 'manual', 'unfollow.json');
+  ensureDir(path.dirname(actionReport));
   const existingResults = loadResults(actionReport);
   const alreadyDone = new Set(existingResults.filter((row) => row.action === 'unfollowed').map((row) => normalizeHandle(row.handle)));
   let candidates = loadCandidates();

@@ -6,14 +6,15 @@
 // Ported from the Codex public-profile-counts.cjs. Two input modes:
 //   node profile-counts.cjs handle1 @handle2 https://x.com/handle3   # explicit handles
 //   node profile-counts.cjs --from-classify[=YYYY-MM-DD]            # all needs_profile_refresh rows
-// With --from-classify it writes XU_DATA_DIR/reports/profile-refresh-<date>.json so a
-// re-run of classify.cjs can move those rows past the refresh gate.
+// With --from-classify it updates follower-count evidence directly in the current
+// relationship rows. No dated profile history is created.
 // Env: XU_DATA_DIR.
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { todayInShanghai } = require(path.join(__dirname, 'lib', 'hygiene.cjs'));
+const Store = require(path.join(__dirname, 'lib', 'current-store.cjs'));
 const { assertRunToken } = require(path.join(__dirname, 'lib', 'rate-gate.cjs'));
 const {
   PROFILE_MAX_PER_RUN,
@@ -108,8 +109,8 @@ async function fetchProfile(handle, retries = PROFILE_RETRIES) {
   return last;
 }
 
-function handlesFromClassify(date) {
-  const file = path.join(REPORTS_DIR, `non-recip-reasons-${date}.json`);
+function handlesFromClassify() {
+  const file = path.join(REPORTS_DIR, 'latest-non-recip.json');
   if (!fs.existsSync(file)) throw new Error(`Missing classify report: ${file} (run classify.cjs first)`);
   const obj = JSON.parse(fs.readFileSync(file, 'utf8'));
   return (obj.rows || []).filter((r) => r.needs_profile_refresh).map((r) => r.handle);
@@ -119,10 +120,10 @@ async function main() {
   assertRunToken();
   const argv = process.argv.slice(2);
   const fromClassifyArg = argv.find((a) => a === '--from-classify' || a.startsWith('--from-classify='));
-  let inputs, writeDate = null;
+  let inputs, updateCurrent = false;
   if (fromClassifyArg) {
-    writeDate = fromClassifyArg.includes('=') ? fromClassifyArg.split('=')[1] : todayInShanghai();
-    inputs = handlesFromClassify(writeDate);
+    updateCurrent = true;
+    inputs = handlesFromClassify();
   } else {
     inputs = argv;
     if (inputs.length === 0 && !process.stdin.isTTY) inputs = fs.readFileSync(0, 'utf8').split(/\s+/).filter(Boolean);
@@ -131,7 +132,7 @@ async function main() {
   const allHandles = [...new Set(inputs.map(normalizeHandle).filter(Boolean))];
   const handles = allHandles.slice(0, MAX_PER_RUN);
   if (handles.length === 0) {
-    if (writeDate) { process.stderr.write('[profile-counts] no accounts need refresh\n'); console.log('[]'); return; }
+    if (updateCurrent) { process.stderr.write('[profile-counts] no accounts need refresh\n'); console.log('[]'); return; }
     console.error('Usage: profile-counts.cjs handle1 @handle2 https://x.com/handle3  |  --from-classify[=DATE]');
     process.exit(2);
   }
@@ -155,19 +156,17 @@ async function main() {
     }
   }
 
-  if (writeDate) {
-    if (!fs.existsSync(REPORTS_DIR)) fs.mkdirSync(REPORTS_DIR, { recursive: true });
-    const file = path.join(REPORTS_DIR, `profile-refresh-${writeDate}.json`);
-    // Merge with existing data so repeated runs accumulate results instead of clobbering them.
-    const prev = [];
-    if (fs.existsSync(file)) {
-      try { const d = JSON.parse(fs.readFileSync(file, 'utf8')); if (Array.isArray(d.results)) prev.push(...d.results); } catch {}
-    }
-    const byHandle = new Map(prev.map((r) => [r.handle, r]));
-    for (const r of results) byHandle.set(r.handle, r);
-    const merged = [...byHandle.values()];
-    fs.writeFileSync(file, JSON.stringify({ generatedAt: new Date().toISOString(), results: merged }, null, 2) + '\n', 'utf8');
-    process.stderr.write(`[profile-counts] refreshed ${results.length}/${allHandles.length} pending (cap=${MAX_PER_RUN}), total merged=${merged.length} -> ${file}\n`);
+  if (updateCurrent) {
+    const file = path.join(DATA_DIR, 'current', 'relationships.jsonl');
+    const current = Store.readJsonl(file);
+    if (!current) throw new Error(`Missing current relationships: ${file}`);
+    const successful = new Map(results.filter((row) => row.ok && Number.isFinite(row.followers_count)).map((row) => [normalizeHandle(row.handle).toLowerCase(), row]));
+    const updated = current.map((row) => {
+      const refresh = successful.get(normalizeHandle(row.handle).toLowerCase());
+      return refresh ? { ...row, refreshedFollowersCount: refresh.followers_count, refreshedAt: refresh.refreshedAt } : row;
+    });
+    Store.atomicWrite(file, updated.map((row) => JSON.stringify(row)).join('\n') + (updated.length ? '\n' : ''));
+    process.stderr.write(`[profile-counts] refreshed ${successful.size}/${allHandles.length} pending (cap=${MAX_PER_RUN}); evidence embedded in current relationships\n`);
   }
   process.stdout.write(JSON.stringify(results, null, 2) + '\n');
 }

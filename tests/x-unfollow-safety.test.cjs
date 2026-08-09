@@ -46,12 +46,13 @@ assert.ok(policy.UNFOLLOW_WAIT_MIN_MS >= 45000, 'unfollow cadence must be at lea
 
 const runSh = fs.readFileSync(path.join(codexSkill, 'run.sh'), 'utf8');
 assert.match(runSh, /run-lock\.cjs" claim/, 'run.sh must claim the exclusive network-run token');
-assert.match(runSh, /^trap release_run_lock EXIT$/m, 'run.sh must release its lock from the EXIT trap');
-assert.doesNotMatch(runSh, /^trap release_run_lock EXIT INT TERM$/m, 'run.sh must not swallow INT/TERM termination');
-assert.match(runSh, /post-action snapshot/, 'run.sh must verify with one post-action following-list scan');
-assert.match(runSh, /PROFILE_MAX_PER_RUN/, 'run.sh must expose the capped profile-refresh batch');
+assert.match(runSh, /^trap cleanup_and_release EXIT$/m, 'run.sh must clean staging and release its lock from EXIT');
+assert.doesNotMatch(runSh, /^trap .* INT TERM$/m, 'run.sh must not swallow INT/TERM termination');
+assert.match(runSh, /one post-action following scan/, 'run.sh must verify with one post-action following-list scan');
+for (const mode of ['report', 'unfollow', 'followers-report', 'relationships-report']) assert.match(runSh, new RegExp(mode), `run.sh missing ${mode}`);
+assert.match(runSh, /PAGE_DRIFT \(exit 15\)/, 'run.sh must stop on page drift');
 
-for (const script of ['snapshot.cjs', 'profile-counts.cjs', 'unfollow.cjs']) {
+for (const script of ['list-snapshot.cjs', 'profile-counts.cjs', 'unfollow.cjs']) {
   const source = fs.readFileSync(path.join(codexSkill, 'scripts', script), 'utf8');
   assert.match(source, /assertRunToken\(\)/, `${script} must reject direct execution without run.sh's token`);
 }
@@ -62,5 +63,13 @@ assert.doesNotMatch(verify, /assertRunToken\(\)/, 'local verification must not r
 
 const smoke = fs.readFileSync(path.join(codexSkill, 'scripts/smoke-test.cjs'), 'utf8');
 assert.doesNotMatch(smoke, /https:\/\/x\.com/, 'smoke-test must remain local-only and make zero X requests');
+
+const scanner = fs.readFileSync(path.join(codexSkill, 'scripts/list-snapshot.cjs'), 'utf8');
+assert.match(scanner, /framenavigated/, 'scanner must listen for top-level navigation');
+assert.match(scanner, /usableForNegativeDiff/, 'scanner must separately gate negative diffs');
+assert.doesNotMatch(scanner, /scrollHeight\s*>/, 'scrollHeight must not reset stable progress');
+
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'x/.claude-plugin/plugin.json'))).version, '3.0.0');
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'targets/codex/build-your-system-assistant/.codex-plugin/plugin.json'))).version, '0.4.0');
 
 console.log('x-unfollow safety and Codex/Claude parity checks passed');

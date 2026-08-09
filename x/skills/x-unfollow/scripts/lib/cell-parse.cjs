@@ -70,6 +70,17 @@ function parseCell(raw) {
   return { handle, name, followers: parseFollowersFromText(raw.innerText), isFollowingMe };
 }
 
+// A followers-list cell is itself positive membership evidence. It does not need an
+// action button or a "follows you" badge to be accepted, but still uses the same strict
+// UserCell handle extraction and nav/mis-scrape rejection.
+function parseMembershipCell(raw) {
+  if (!raw) return null;
+  const handle = handleFromAvatarTestId(raw.avatarTestId) || handleFromHrefs(raw.hrefs);
+  if (!handle || isNavOrMiscrape(handle)) return null;
+  const name = String(raw.nameText || '').trim() || handle;
+  return { handle, name };
+}
+
 // everTrue-wins merge into Map(normalizedHandle -> row): a true observation upgrades
 // an earlier false; a false NEVER downgrades a true (badge absence may be a render
 // race). Keeps the first-seen original-case handle; backfills name/followers.
@@ -93,6 +104,6 @@ module.exports = {
   handleFromAvatarTestId,
   handleFromHrefs,
   parseFollowersFromText,
-  parseCell,
+  parseCell, parseMembershipCell,
   mergeObservation,
 };

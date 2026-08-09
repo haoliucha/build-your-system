@@ -7,6 +7,14 @@ const crypto = require('crypto');
 const LOCK_DIRNAME = '.network-run.lock';
 const OWNER_FILENAME = 'owner.json';
 const INCOMPLETE_LOCK_GRACE_MS = 30000;
+const STATE_FILENAME = 'network-run-state.json';
+
+function writeRunState(dataDir, state) {
+  const file = path.join(dataDir, STATE_FILENAME);
+  const temp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  fs.renameSync(temp, file);
+}
 
 function pathsFor(dataDir) {
   const lockDir = path.join(dataDir, LOCK_DIRNAME);
@@ -53,6 +61,7 @@ function claimLock(dataDir, ownerPid, now = new Date()) {
         policy: 'single-concurrent-network-run',
       };
       fs.writeFileSync(ownerFile, `${JSON.stringify(owner, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+      writeRunState(dataDir, { status: 'active', ...owner });
       return owner;
     } catch (error) {
       if (error.code !== 'EEXIST') {
@@ -86,11 +95,13 @@ function releaseLock(dataDir, token) {
     throw error;
   }
   fs.rmSync(lockDir, { recursive: true, force: true });
+  writeRunState(dataDir, { status: 'idle', lastRunToken: owner.token, ownerPid: owner.ownerPid, startedAt: owner.startedAt, finishedAt: new Date().toISOString(), policy: owner.policy });
   return owner;
 }
 
 module.exports = {
   LOCK_DIRNAME,
+  STATE_FILENAME,
   pathsFor,
   readOwner,
   isPidAlive,
