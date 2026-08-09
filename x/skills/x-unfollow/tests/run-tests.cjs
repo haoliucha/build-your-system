@@ -78,6 +78,14 @@ test('本地验证不导入 Playwright、不访问个人主页', () => {
   assert.doesNotMatch(source, /playwright|https:\/\/x\.com/);
 });
 
+test('SKILL.md 只保留运行时指令，维护者验证与同步流程留在 README', () => {
+  const skill = fs.readFileSync(path.join(ROOT, 'SKILL.md'), 'utf8');
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  assert.doesNotMatch(skill, /^## 开发与验证$/m);
+  assert.doesNotMatch(skill, /node tests\/run-tests\.cjs|bash -n run\.sh|同步脚本/);
+  assert.match(readme, /node tests\/run-tests\.cjs/);
+});
+
 process.on('exit', () => {
   if (!process.exitCode) console.log(`\n${passed} top-level checks passed`);
 });

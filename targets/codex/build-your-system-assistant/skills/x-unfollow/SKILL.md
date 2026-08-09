@@ -81,12 +81,3 @@ followers-report 不访问个人主页、不刷新公开粉丝数、不改变任
 默认 `MIN_DAYS=3`（严格大于）和 `FOLLOWER_THRESHOLD=2000`（严格小于才候选）。`MODE=report` 不访问个人主页；`MODE=unfollow` 才会对已过等待期且缺少计数的账号按每次最多 5 个、30–60 秒间隔刷新公开粉丝数。
 
 取关后只追加一次完整 following 扫描，然后用本地大小写无关集合差验证全部目标，不逐主页复查。
-
-## 开发与验证
-
-```bash
-node tests/run-tests.cjs
-bash -n run.sh
-```
-
-修改规范源码后运行仓库同步脚本，确保 Claude 镜像与 Codex 源码逐字一致。详见 [`README.md`](./README.md)。
