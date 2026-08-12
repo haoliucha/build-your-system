@@ -58,7 +58,7 @@
       "name": "x",
       "source": "./x",
       "description": "X (Twitter) 工具集：x-follow、x-unfollow，以及 x-image `/x:image` 封面和 article illustrations。图片任务经 Codex Rescue 交给原生 Codex，以 one-call ImageGen 完整生成且无后处理。",
-      "version": "3.0.0",
+      "version": "3.0.1",
       "category": "productivity",
       "homepage": "https://github.com/haoliucha/build-your-system/tree/main/x"
     }

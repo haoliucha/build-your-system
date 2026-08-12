@@ -1,59 +1,41 @@
-# x-unfollow v3 架构
+# x-unfollow v4 架构
 
-v3 是破坏性状态模型升级：不再保存日期快照，只维护 following、followers 两张最新原始表和一个派生关系并集。
+v4 维护 following、followers 两张最新原始表和一个派生关系并集。列表页由 X 正常滚动触发请求，扫描器被动解析分页响应，不主动调用私有 GraphQL。
 
 ## 数据流
 
 ```text
-旧 current ───────┐
-                  ├─ 本地差异/关系合并 ── latest reports ── 原子替换 current
-新 .staging/run ──┘                         │
-        │                                  └─ 成功后删除 staging
-        └─ URL/覆盖率/数量/异常失败 ────────── 保留旧 current
+X 列表页 ──页面请求──> Followers / Following 响应
+   │                         │
+   └─ 主列表 DOM 兜底         ├─ 50 个 TimelineUser → handle/name/关系证据
+                             └─ Bottom cursor → 分页连续性/末页证据
+                                      │
+旧 current ────────────────────────────┼─ 本地一次差异报告
+新 .staging/run ───────────────────────┘
+                                      └─ 校验成功后原子晋升 current/latest
 ```
 
-| 模式 | 扫描 | 结果 |
-|---|---|---|
-| `report` | following | latest non-recip + following changes |
-| `followers-report` | followers | latest follower changes；首跑只建基线 |
-| `relationships-report` | following → followers | coherent 完整并集 |
-| `unfollow` | following + 必要动作 + following | 显式取关与本地批量复核 |
-
-## 扫描状态机
-
-```text
-navigate target
-  ├─ URL 不精确 / 顶层跳转 → PAGE_DRIFT(15)
-  └─ 每轮 collect
-       ├─ unique 下降或超过 header+容差 → 17
-       ├─ unique 增长 → stable=0
-       ├─ unique 不变 → stable++（忽略 scrollHeight）
-       ├─ stable=8 & coverage≥95% → stable stop
-       └─ stable=8 & coverage<95% → 最多恢复2次，否则17
-```
-
-负向集合差额外要求 `stable stop && coverage>=99%`。最大轮和停止轮之后不再执行 60 秒休息，元数据中的 `rounds` 是实际执行轮数，不偏一。
+主路径以无 Bottom cursor，或同 cursor 连续两次无新增结束；响应完全不可见时才用主列表 DOM 稳定到底。网络响应一旦出现，最终账号只取响应集合，不合并 DOM。分页间隔 1–3 秒，每 25 个真实响应暂停 10 秒，总时长看门狗为 45 分钟。
 
 ## 关键模块
 
-- `run.sh`：四模式编排、互斥锁、staging 清理。
-- `scripts/list-snapshot.cjs`：following/followers 通用扫描器、页面漂移与覆盖率防护。
-- `scripts/promote-current.cjs`：读取 staging 并晋升 current。
-- `scripts/lib/current-store.cjs`：原子文件替换、latest reports。
-- `scripts/lib/relationship-state.cjs`：并集、连续未回关压缩、差异与证据冲突。
-- `scripts/lib/list-scan-state.cjs`：URL、计数、稳定停止与休息边界纯逻辑。
-- `scripts/classify.cjs`：只读 current relationship 的未回关分类。
-- `scripts/profile-counts.cjs`：仅 unfollow 流程按需刷新，并把最新计数嵌回关系行。
-- `scripts/unfollow.cjs`：精确语义控件取关，拒绝“订阅”按钮。
-- `scripts/verify-unfollow.cjs`：只读 current/following 的本地集合差。
+- `scripts/list-snapshot.cjs`：被动响应监听、页面滚动、URL/异常防护、DOM 兜底。
+- `scripts/lib/browser-launch.cjs`：扫描和取关共用的 Chrome 启动参数；默认无头，只有 `XU_HEADLESS=0` 才进入可见调试，且无头失败不自动回退。
+- `scripts/lib/capture-source.cjs`：网络响应优先与 DOM fallback 数据源选择。
+- `scripts/lib/timeline-response.cjs`：TimelineUser 提取、cursor 链、重复页与断链校验。
+- `scripts/lib/current-store.cjs`：current/latest 原子写入与旧污染基线重建。
+- `scripts/lib/relationship-state.cjs`：关系并集、单次粉丝差异与证据冲突。
+- `run.sh`：模式编排、互斥锁、staging 清理和安全退出。
 
 ## 离线测试
 
 ```bash
 node tests/run-tests.cjs
 node tests/v3-current-state.test.cjs
+node tests/v4-pagination.test.cjs
 bash -n run.sh
 node --check scripts/list-snapshot.cjs
+node --check scripts/lib/timeline-response.cjs
 ```
 
-测试覆盖两表与并集、关系类型、大小写去重、只留最新 current/latest、非连续日期重置、页面 URL 漂移、`scrollHeight` 不影响稳定停止、数量异常、低覆盖、证据冲突、最大轮休息边界、中止清理和并发锁。测试不访问 X。
+测试不访问 X，覆盖50用户＋2 cursor、末页、重复页、断链、响应错误、网络/DOM 隔离、单次粉丝变化报告、污染基线重建、原子晋升和取关安全。

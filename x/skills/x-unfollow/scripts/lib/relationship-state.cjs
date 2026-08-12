@@ -83,12 +83,26 @@ function buildRelationships({ previous = [], followingRows, followersRows, follo
   };
 }
 
-function diffFollowers({ previousRows, currentRows = [], followingRows = [], scanMeta = {} }) {
+function baselineHasDomContamination(previousRows, previousMeta) {
+  return Array.isArray(previousRows)
+    && previousMeta?.captureMode === 'network_response'
+    && previousMeta?.cursorChainComplete === true
+    && Number.isInteger(previousMeta.userEntriesSeen)
+    && previousRows.length > previousMeta.userEntriesSeen;
+}
+
+function diffFollowers({ previousRows, previousMeta = null, currentRows = [], followingRows = [], scanMeta = {} }) {
   if (!Array.isArray(previousRows)) return { status: 'baseline_created', comparable: false, rows: [] };
+  if (baselineHasDomContamination(previousRows, previousMeta)) {
+    return { status: 'baseline_repaired', comparable: false, rows: [] };
+  }
   const before = mapRows(previousRows); const now = mapRows(currentRows); const following = mapRows(followingRows) || new Map();
   const changes = [];
   for (const [key, row] of now) if (!before.has(key)) changes.push({ handle: row.handle, name: row.name || row.handle, change: 'new_follower' });
-  if (!scanMeta.usableForNegativeDiff) return { status: 'negative_diff_withheld', comparable: false, rows: changes };
+  if (!scanMeta.usableForNegativeDiff) {
+    return { status: 'negative_diff_withheld', comparable: false, rows: changes };
+  }
+
   for (const [key, row] of before) {
     if (now.has(key)) continue;
     const evidence = following.get(key);
@@ -111,4 +125,4 @@ function diffFollowing({ previousRows, currentRows = [], scanMeta = {} }) {
   return { status: 'compared', comparable: true, rows: changes };
 }
 
-module.exports = { mapRows, buildRelationships, diffFollowers, diffFollowing };
+module.exports = { mapRows, buildRelationships, baselineHasDomContamination, diffFollowers, diffFollowing };

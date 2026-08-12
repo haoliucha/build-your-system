@@ -20,6 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { chromium } = require('playwright');
+const { persistentContextOptions } = require(path.join(__dirname, 'lib', 'browser-launch.cjs'));
 const { gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
 const { detectAnomaly, writeAlert, EXIT_CODES } = require(path.join(__dirname, 'lib', 'anomaly.cjs'));
 const { todayInShanghai } = require(path.join(__dirname, 'lib', 'hygiene.cjs'));
@@ -171,10 +172,10 @@ async function main() {
   log(`SAFETY: clicks ONLY an explicit Following/正在关注 or Unfollow/取消关注 aria-label for the exact target, then requires a matching unfollow menu/dialog; skips if it now follows you; never subscribe/follow/like/comment/block/settings.`);
   if (!candidates.length) { log('No candidates to unfollow.'); console.log(JSON.stringify({ date: DATE, results: [], counts: {} }, null, 2)); return; }
 
-  const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-    channel: 'chrome', headless: false, viewport: { width: 1280, height: 820 },
-    ignoreDefaultArgs: ['--enable-automation'], args: ['--disable-blink-features=AutomationControlled'],
-  });
+  const ctx = await chromium.launchPersistentContext(
+    PROFILE_DIR,
+    persistentContextOptions({ width: 1280, height: 820 }),
+  );
   const page = ctx.pages()[0] || await ctx.newPage();
 
   // Startup login gate.

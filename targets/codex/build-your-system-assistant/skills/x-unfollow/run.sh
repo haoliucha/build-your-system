@@ -1,5 +1,5 @@
 #!/bin/bash
-# x-unfollow v3 — current-only state, staged promotion, one exclusive network run.
+# x-unfollow v4 — current-only state, passive cursor-chain capture, one exclusive network run.
 set -o pipefail
 export NO_COLOR=1 NODE_DISABLE_COLORS=1 FORCE_COLOR=0
 
@@ -15,14 +15,22 @@ DATE="${SNAPSHOT_DATE:-$(TZ=Asia/Shanghai date +%F)}"
 LIMIT="${LIMIT:-5}"
 EXPLICIT_HANDLES="${EXPLICIT_HANDLES:-}"
 ALLOW_MUTUAL="${ALLOW_MUTUAL:-0}"
+XU_HEADLESS="${XU_HEADLESS-1}"
 ALERT="$XU_DATA_DIR/ALERT.txt"
-export XU_DATA_DIR PROFILE_DIR SNAPSHOT_DATE="$DATE" ALERT_PATH="$ALERT"
+export XU_DATA_DIR PROFILE_DIR SNAPSHOT_DATE="$DATE" ALERT_PATH="$ALERT" XU_HEADLESS
 
 say() { echo "[run $(date +%H:%M:%S)] $*"; }
 cleanup_browser_locks() { pkill -9 -f "user-data-dir=$PROFILE_DIR" 2>/dev/null || true; rm -f "$PROFILE_DIR"/Singleton* 2>/dev/null || true; }
 
 if [ -z "$MY_HANDLE" ]; then say "FATAL: MY_HANDLE required"; exit 2; fi
 case "$MODE" in report|unfollow|followers-report|relationships-report) ;; *) say "FATAL: MODE must be report|unfollow|followers-report|relationships-report"; exit 2 ;; esac
+case "$XU_HEADLESS" in 0|1) ;; *) say "FATAL: XU_HEADLESS must be 0 or 1"; exit 2 ;; esac
+if [ "$XU_HEADLESS" = "1" ]; then
+  say "browser=headless"
+else
+  say "browser=headed-debug"
+  say "WARNING: visible browser debug override is active; do not interact with the controlled window"
+fi
 if [ -n "$EXPLICIT_HANDLES" ] && [ "$MODE" != "unfollow" ]; then say "FATAL: MODE=unfollow is required when EXPLICIT_HANDLES is set"; exit 2; fi
 if [ "$ALLOW_MUTUAL" = "1" ] && [ -z "$EXPLICIT_HANDLES" ]; then say "FATAL: ALLOW_MUTUAL=1 requires EXPLICIT_HANDLES"; exit 2; fi
 if [ -n "$EXPLICIT_HANDLES" ] && ! [[ "$EXPLICIT_HANDLES" =~ ^@?[A-Za-z0-9_]{1,15}(,@?[A-Za-z0-9_]{1,15})*$ ]]; then say "FATAL: invalid EXPLICIT_HANDLES"; exit 2; fi
@@ -49,7 +57,7 @@ trap cleanup_and_release EXIT
 halt_browser_step() {
   case "$1" in
     15) say "PAGE_DRIFT (exit 15): controlled page left the target list; old current preserved. See $ALERT"; exit 15 ;;
-    17) say "scan rejected (exit 17): low coverage/unstable/count anomaly; old current preserved. See $ALERT"; exit 17 ;;
+    17) say "scan rejected (exit 17): response/cursor/watchdog anomaly; old current preserved. See $ALERT"; exit 17 ;;
     10|11|12|13|14|16) say "X anomaly (exit $1); old current preserved. See $ALERT"; exit "$1" ;;
     0) ;;
     *) say "browser step failed (exit $1); old current preserved"; exit "$1" ;;
@@ -58,7 +66,7 @@ halt_browser_step() {
 
 scan_list() {
   local type="$1"
-  say "target list=$type; hard cap=160 rounds; worst case per table≈37–48 minutes; cadence remains 8–12s + 60s every 10 rounds"
+  say "target list=$type; passive response capture; 1–3s between data pages + 10s every 25 responses; 45-minute watchdog"
   MY_HANDLE="$MY_HANDLE" node "$SCRIPTS/list-snapshot.cjs" --list="$type" --run-id="$XU_RUN_TOKEN"
   local result=$?
   halt_browser_step "$result"

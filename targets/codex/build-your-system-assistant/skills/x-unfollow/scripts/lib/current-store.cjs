@@ -37,6 +37,7 @@ function promoteList({ dataDir, listType, rows, meta, observedDate }) {
   ensureLayout(dataDir);
   const current = path.join(dataDir, 'current');
   const oldRows = readJsonl(path.join(current, `${listType}.jsonl`));
+  const oldMeta = readJson(path.join(current, `${listType}.meta.json`));
   const otherType = listType === 'following' ? 'followers' : 'following';
   const otherRows = readJsonl(path.join(current, `${otherType}.jsonl`));
   const oldRelationships = readJsonl(path.join(current, 'relationships.jsonl')) || [];
@@ -48,7 +49,7 @@ function promoteList({ dataDir, listType, rows, meta, observedDate }) {
   const relationship = R.buildRelationships({ previous: oldRelationships, followingRows, followersRows, followingMeta, followersMeta, observedDate, followingRefreshed: listType === 'following' });
   const scanDate = observedDate || meta.observedDate || String(meta.generatedAt || '').slice(0, 10);
   const change = listType === 'followers'
-    ? R.diffFollowers({ previousRows: oldRows, currentRows: rows, followingRows: followingRows || [], scanMeta: meta })
+    ? R.diffFollowers({ previousRows: oldRows, previousMeta: oldMeta, currentRows: rows, followingRows: followingRows || [], scanMeta: meta })
     : R.diffFollowing({ previousRows: oldRows, currentRows: rows, scanMeta: meta });
   const changeBase = listType === 'followers' ? 'latest-follower-changes' : 'latest-relationship-changes';
   const changePayload = { generatedAt: new Date().toISOString(), observedDate: scanDate, status: change.status, comparable: change.comparable, rows: change.rows };
@@ -60,6 +61,7 @@ function promoteList({ dataDir, listType, rows, meta, observedDate }) {
   atomicWrite(path.join(current, `${listType}.meta.json`), `${JSON.stringify({ ...meta, observedDate: scanDate, count: rows.length }, null, 2)}\n`);
   atomicWrite(path.join(current, 'relationships.jsonl'), jsonl(relationship.rows));
   atomicWrite(path.join(current, 'relationships.meta.json'), `${JSON.stringify(relationship.meta, null, 2)}\n`);
+  if (listType === 'followers') fs.rmSync(path.join(current, 'follower-removal-pending.json'), { force: true });
   writeReport(dataDir, changeBase, changePayload);
   writeReport(dataDir, 'latest-non-recip', { generatedAt: new Date().toISOString(), observedDate: scanDate, rows: nonRecipRows });
   return { relationship, change };
@@ -75,10 +77,11 @@ function promoteBoth({ dataDir, followingRows, followingMeta, followersRows, fol
   const current = path.join(dataDir, 'current');
   const oldFollowing = readJsonl(path.join(current, 'following.jsonl'));
   const oldFollowers = readJsonl(path.join(current, 'followers.jsonl'));
+  const oldFollowersMeta = readJson(path.join(current, 'followers.meta.json'));
   const oldRelationships = readJsonl(path.join(current, 'relationships.jsonl')) || [];
   const relationship = R.buildRelationships({ previous: oldRelationships, followingRows, followersRows, followingMeta, followersMeta, observedDate, followingRefreshed: true });
   const followingDiff = R.diffFollowing({ previousRows: oldFollowing, currentRows: followingRows, scanMeta: followingMeta });
-  const followerDiff = R.diffFollowers({ previousRows: oldFollowers, currentRows: followersRows, followingRows, scanMeta: followersMeta });
+  const followerDiff = R.diffFollowers({ previousRows: oldFollowers, previousMeta: oldFollowersMeta, currentRows: followersRows, followingRows, scanMeta: followersMeta });
   const nonRecipRows = relationship.rows.filter((row) => row.inFollowing && row.followsMeBadge === false && !row.evidenceConflict);
   atomicWrite(path.join(current, 'following.jsonl'), jsonl(followingRows));
   atomicWrite(path.join(current, 'following.meta.json'), `${JSON.stringify({ ...followingMeta, observedDate, count: followingRows.length }, null, 2)}\n`);
@@ -86,6 +89,7 @@ function promoteBoth({ dataDir, followingRows, followingMeta, followersRows, fol
   atomicWrite(path.join(current, 'followers.meta.json'), `${JSON.stringify({ ...followersMeta, observedDate, count: followersRows.length }, null, 2)}\n`);
   atomicWrite(path.join(current, 'relationships.jsonl'), jsonl(relationship.rows));
   atomicWrite(path.join(current, 'relationships.meta.json'), `${JSON.stringify(relationship.meta, null, 2)}\n`);
+  fs.rmSync(path.join(current, 'follower-removal-pending.json'), { force: true });
   writeReport(dataDir, 'latest-follower-changes', { generatedAt: new Date().toISOString(), observedDate, status: followerDiff.status, comparable: followerDiff.comparable, rows: followerDiff.rows });
   writeReport(dataDir, 'latest-relationship-changes', { generatedAt: new Date().toISOString(), observedDate, status: followingDiff.status, comparable: followingDiff.comparable, rows: followingDiff.rows });
   writeReport(dataDir, 'latest-non-recip', { generatedAt: new Date().toISOString(), observedDate, rows: nonRecipRows });
