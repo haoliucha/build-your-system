@@ -86,7 +86,7 @@ test('raw followers 与 followsMeBadge 冲突时显式标记且不累计未回�
   assert.strictEqual(row.nonRecipSince, null);
 });
 
-test('followers 差异：confirmed / unresolved / conflict 不混淆', () => {
+test('followers 一次完整差异立即输出 confirmed / unresolved / conflict', () => {
   const diff = R.diffFollowers({
     previousRows: [{ handle: 'A' }, { handle: 'B' }, { handle: 'C' }],
     currentRows: [],
@@ -95,10 +95,12 @@ test('followers 差异：confirmed / unresolved / conflict 不混淆', () => {
       { handle: 'B', isFollowingMe: true },
     ],
     scanMeta: { usableForNegativeDiff: true },
+    observedDate: '2026-08-09',
   });
   assert.deepStrictEqual(diff.rows.map((r) => [r.handle.toLowerCase(), r.change]), [
     ['a', 'confirmed_unfollowed'], ['b', 'evidence_conflict'], ['c', 'unresolved_removed'],
   ]);
+  assert.strictEqual('pendingRows' in diff, false);
 });
 
 test('低覆盖或不稳定扫描拒绝输出负向差异', () => {

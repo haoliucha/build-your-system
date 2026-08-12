@@ -34,9 +34,12 @@ assertTreesEqual(codexSkill, claudeSkill);
 
 const policy = require(path.join(codexSkill, 'scripts/lib/rate-policy.cjs'));
 assert.strictEqual(Object.prototype.hasOwnProperty.call(policy, 'FULL_RUN_COOLDOWN_MS'), false, 'full runs must have no time-based cooldown');
-assert.ok(policy.SNAPSHOT_WAIT_MIN_MS >= 8000, 'snapshot scroll cadence must be at least 8 seconds');
-assert.ok(policy.SNAPSHOT_LONG_BREAK_EVERY <= 10, 'snapshot must take a long break at least every 10 rounds');
-assert.ok(policy.SNAPSHOT_LONG_BREAK_MS >= 60000, 'snapshot long break must be at least 60 seconds');
+assert.strictEqual(policy.SNAPSHOT_WAIT_MIN_MS, 1000, 'passive response pages must wait at least 1 second');
+assert.strictEqual(policy.SNAPSHOT_WAIT_MAX_MS, 3000, 'passive response page jitter must cap at 3 seconds');
+assert.strictEqual(policy.SNAPSHOT_LONG_BREAK_EVERY, 25, 'snapshot must pause every 25 response pages');
+assert.strictEqual(policy.SNAPSHOT_LONG_BREAK_MS, 10000, 'snapshot response-page break must be 10 seconds');
+assert.strictEqual(policy.SNAPSHOT_WATCHDOG_MS, 45 * 60 * 1000, 'each list scan must have a 45-minute watchdog');
+assert.strictEqual(Object.prototype.hasOwnProperty.call(policy, 'SNAPSHOT_MAX_ROUNDS'), false, 'cursor completion, not a fixed round cap, must end scans');
 assert.ok(policy.PROFILE_MAX_PER_RUN <= 5, 'profile refresh batch must be capped at 5');
 assert.ok(policy.PROFILE_WAIT_MIN_MS >= 30000, 'profile refresh cadence must be at least 30 seconds');
 assert.strictEqual(policy.PROFILE_RETRIES, 0, 'profile refresh must not immediately retry failures');
@@ -51,6 +54,8 @@ assert.doesNotMatch(runSh, /^trap .* INT TERM$/m, 'run.sh must not swallow INT/T
 assert.match(runSh, /one post-action following scan/, 'run.sh must verify with one post-action following-list scan');
 for (const mode of ['report', 'unfollow', 'followers-report', 'relationships-report']) assert.match(runSh, new RegExp(mode), `run.sh missing ${mode}`);
 assert.match(runSh, /PAGE_DRIFT \(exit 15\)/, 'run.sh must stop on page drift');
+assert.match(runSh, /browser=headless/, 'run.sh must report the default headless mode');
+assert.match(runSh, /browser=headed-debug/, 'run.sh must report the explicit visible debug override');
 
 for (const script of ['list-snapshot.cjs', 'profile-counts.cjs', 'unfollow.cjs']) {
   const source = fs.readFileSync(path.join(codexSkill, 'scripts', script), 'utf8');
@@ -66,10 +71,22 @@ assert.doesNotMatch(smoke, /https:\/\/x\.com/, 'smoke-test must remain local-onl
 
 const scanner = fs.readFileSync(path.join(codexSkill, 'scripts/list-snapshot.cjs'), 'utf8');
 assert.match(scanner, /framenavigated/, 'scanner must listen for top-level navigation');
-assert.match(scanner, /usableForNegativeDiff/, 'scanner must separately gate negative diffs');
-assert.doesNotMatch(scanner, /scrollHeight\s*>/, 'scrollHeight must not reset stable progress');
+assert.match(scanner, /timeline-response\.cjs/, 'scanner must parse passive timeline responses');
+assert.match(scanner, /page\.on\(['"]response['"]/, 'scanner must listen to page-owned responses');
+assert.match(scanner, /SNAPSHOT_WATCHDOG_MS/, 'scanner must enforce the list watchdog');
+assert.doesNotMatch(scanner, /MAX_SCROLL_ROUNDS|SNAPSHOT_MAX_ROUNDS/, 'scanner must not truncate cursor chains with a fixed round cap');
 
-assert.strictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'x/.claude-plugin/plugin.json'))).version, '3.0.0');
+const browserLaunch = require(path.join(codexSkill, 'scripts/lib/browser-launch.cjs'));
+assert.strictEqual(browserLaunch.resolveHeadless({}), true, 'browser default must be headless');
+assert.strictEqual(browserLaunch.resolveHeadless({ XU_HEADLESS: '0' }), false, 'only XU_HEADLESS=0 enables visible debug');
+assert.throws(() => browserLaunch.resolveHeadless({ XU_HEADLESS: 'false' }), /XU_HEADLESS must be 0 or 1/);
+for (const script of ['list-snapshot.cjs', 'unfollow.cjs']) {
+  const source = fs.readFileSync(path.join(codexSkill, 'scripts', script), 'utf8');
+  assert.match(source, /browser-launch\.cjs/, `${script} must use the shared browser launch policy`);
+  assert.doesNotMatch(source, /headless:\s*false/, `${script} must not hard-code visible mode`);
+}
+
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'x/.claude-plugin/plugin.json'))).version, '3.0.1');
 assert.strictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'targets/codex/build-your-system-assistant/.codex-plugin/plugin.json'))).version, '0.4.0');
 
 console.log('x-unfollow safety and Codex/Claude parity checks passed');

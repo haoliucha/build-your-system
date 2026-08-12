@@ -9,7 +9,7 @@
 | Claude Code | `assistant/` | 1.0.0 | 个人 AI 助手:任务捕获、每日回顾、知识分发(基于 Obsidian Vault) |
 | Claude Code | `media/` | 1.0.0 | 短视频创作工作流:选题评估、Hook 设计、逐字稿生成 |
 | Claude Code | `claude-notify/` | 1.0.0 | macOS 通知与跳转辅助(任务完成/需要权限时提醒) |
-| Claude Code | `x/` | 3.0.0 | X (Twitter) 工具集:`/x:x-follow` 精准批量关注、`/x:x-unfollow` 当前态双表与页面漂移防护、`/x:image` 经 Codex Rescue 生成文章封面和插图 |
+| Claude Code | `x/` | 3.0.1 | X (Twitter) 工具集:`/x:x-follow` 精准批量关注、`/x:x-unfollow` 当前态双表与页面漂移防护、`/x:image` 经 Codex Rescue 生成文章封面和插图 |
 | Claude Code | `goal-creator/` | 0.1.0 | `/goal` 命令提示词工程辅助(引导式 brainstorm) |
 | Claude Code | `coding-anywhere/` | 1.0.0 | 远程开发栈:mosh + tmux + SSH 中继一键搭建 |
 | Claude Code | `bid/` | 0.1.0 | To-B 投标/交付物方法论:单一真源生成器、口径级联、成本/排期、对抗审校、去AI味、图表与中文PDF管线;10 skills + 6 命令(`/bid:init·meeting·sync·handoff·review·status`),附 HTML 方法论导读(含系统动态演示) |

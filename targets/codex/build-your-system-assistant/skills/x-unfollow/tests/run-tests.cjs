@@ -13,9 +13,14 @@ function test(name, fn) {
   catch (error) { console.error(`  ❌ ${name}\n${error.stack}`); process.exitCode = 1; }
 }
 
-console.log('\nx-unfollow v3 current-state suite');
+console.log('\nx-unfollow v4 suite');
 test('完整 current-state / scan-guard 测试通过', () => {
   const result = spawnSync(process.execPath, [path.join(__dirname, 'v3-current-state.test.cjs')], { encoding: 'utf8' });
+  assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+});
+
+test('分页响应 / cursor / 单次粉丝变化报告测试通过', () => {
+  const result = spawnSync(process.execPath, [path.join(__dirname, 'v4-pagination.test.cjs')], { encoding: 'utf8' });
   assert.strictEqual(result.status, 0, result.stderr || result.stdout);
 });
 
@@ -56,6 +61,64 @@ test('异常词只出现在用户内容时不误报平台限流', () => {
   assert.strictEqual(A.classifyAnomaly({ bodyText: 'x'.repeat(80) + ' 请稍后再试', userText: '请稍后再试', path: '/home' }), null);
   assert.strictEqual(A.EXIT_CODES.PAGE_DRIFT, 15);
   assert.strictEqual(A.EXIT_CODES.COUNT_ANOMALY, 17);
+});
+
+test('受控浏览器默认无头，只有 XU_HEADLESS=0 显式进入可见调试', () => {
+  let Browser = {};
+  try { Browser = require(path.join(SCRIPTS, 'lib', 'browser-launch.cjs')); } catch {}
+  assert.strictEqual(typeof Browser.resolveHeadless, 'function');
+  assert.strictEqual(typeof Browser.persistentContextOptions, 'function');
+  assert.strictEqual(Browser.resolveHeadless({}), true);
+  assert.strictEqual(Browser.resolveHeadless({ XU_HEADLESS: '1' }), true);
+  assert.strictEqual(Browser.resolveHeadless({ XU_HEADLESS: '0' }), false);
+  assert.throws(() => Browser.resolveHeadless({ XU_HEADLESS: 'false' }), /XU_HEADLESS must be 0 or 1/);
+  assert.strictEqual(Browser.persistentContextOptions({ width: 1400, height: 1000 }, {}).headless, true);
+});
+
+test('扫描和取关入口统一使用共享浏览器配置，不硬编码可见模式', () => {
+  for (const file of ['list-snapshot.cjs', 'unfollow.cjs']) {
+    const source = fs.readFileSync(path.join(SCRIPTS, file), 'utf8');
+    assert.match(source, /browser-launch\.cjs/, file);
+    assert.match(source, /persistentContextOptions/, file);
+    assert.doesNotMatch(source, /headless:\s*false/, file);
+  }
+});
+
+test('run.sh 在任何 X 请求前校验并报告浏览器模式', () => {
+  const run = fs.readFileSync(path.join(ROOT, 'run.sh'), 'utf8');
+  assert.match(run, /XU_HEADLESS/);
+  assert.match(run, /browser=headless/);
+  assert.match(run, /browser=headed-debug/);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xu-invalid-headless-'));
+  const result = spawnSync('bash', [path.join(ROOT, 'run.sh')], {
+    env: {
+      ...process.env,
+      MY_HANDLE: 'haoliucha',
+      XU_HEADLESS: 'false',
+      XU_DATA_DIR: dir,
+      PROFILE_DIR: path.join(dir, 'missing-profile'),
+    },
+    encoding: 'utf8',
+  });
+  assert.strictEqual(result.status, 2, result.stderr || result.stdout);
+  assert.match(`${result.stdout}\n${result.stderr}`, /XU_HEADLESS must be 0 or 1/);
+});
+
+test('异常提示假定受控上下文已关闭，不要求打开仍在运行的窗口', () => {
+  const A = require(path.join(SCRIPTS, 'lib', 'anomaly.cjs'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xu-alert-copy-'));
+  const file = path.join(dir, 'ALERT.txt');
+  A.writeAlert(file, { type: 'CAPTCHA', text: 'challenge' });
+  const alert = fs.readFileSync(file, 'utf8');
+  assert.doesNotMatch(alert, /Open the Chrome window \(still running\)/);
+  assert.match(alert, /controlled browser context has closed/i);
+});
+
+test('技能说明声明默认无头、显式调试覆盖和禁止自动回退', () => {
+  const skill = fs.readFileSync(path.join(ROOT, 'SKILL.md'), 'utf8');
+  assert.match(skill, /默认无头/);
+  assert.match(skill, /XU_HEADLESS=0/);
+  assert.match(skill, /不自动回退到可见模式/);
 });
 
 test('活动实现不再引用 snapshots 或 dated reports', () => {
