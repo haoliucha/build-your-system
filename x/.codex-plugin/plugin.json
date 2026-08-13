@@ -1,0 +1,20 @@
+{
+  "name": "x",
+  "version": "4.0.0",
+  "description": "X 工作流：安全的关注卫生与图像生成；Codex 不暴露 Claude-only 的批量关注入口。",
+  "author": {"name": "haoliucha", "url": "https://github.com/haoliucha"},
+  "repository": "https://github.com/haoliucha/build-your-system",
+  "license": "MIT",
+  "keywords": ["x", "twitter", "x-unfollow", "x-image"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "X",
+    "shortDescription": "X 关注卫生与原生图像工作流",
+    "longDescription": "Codex 提供显式授权的 x-unfollow 和原生 x-image；Claude 额外提供其专属的 x-follow 和 Rescue 入口。",
+    "developerName": "haoliucha",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write", "Image generation"],
+    "defaultPrompt": ["生成 X 未回关报告，不要取关", "为这篇 X 文章生成一张封面", "检查 X 关注关系的变化"],
+    "brandColor": "#1DA1F2"
+  }
+}

@@ -1,7 +1,6 @@
 ---
-name: Vault Structure
+name: vault-structure
 description: This skill should be used when the user asks about "Obsidian Vault paths", "file locations", "task format", "frontmatter templates", or needs to navigate the personal knowledge base structure.
-version: 1.0.0
 ---
 
 # Vault 结构导航 (CODE+ / PARA + GTD)
@@ -10,7 +9,7 @@ version: 1.0.0
 
 **当前工作目录即为 Vault 根目录。**
 
-所有命令使用相对路径，用户可以在不同的 Vault 目录运行 Claude Code。
+所有工作流默认使用相对路径，用户可以在不同的 Vault 目录运行 Codex。
 
 ## 目录结构
 

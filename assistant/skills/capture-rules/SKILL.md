@@ -1,12 +1,11 @@
 ---
-name: Capture Rules
+name: capture-rules
 description: This skill should be used when the user asks to "capture content", "add to inbox", "tag an item", "dispatch inbox items", "classify content", or mentions type tags (#task, #topic, #idea, #record, #insight). Provides unified tagging and dispatch rules for the personal assistant system.
-version: 1.0.0
 ---
 
 # 捕获识别规则
 
-统一规则，被 a-capture 和 a-review 共同引用。
+统一规则，被 `c-capture` 和 `o-review` 共同引用。
 
 ## 类型标签识别（必选1个）
 

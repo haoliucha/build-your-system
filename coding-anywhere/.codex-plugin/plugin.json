@@ -1,0 +1,20 @@
+{
+  "name": "coding-anywhere",
+  "version": "1.4.0",
+  "description": "随时随地远程开发栈：mosh、tmux、SSH 中继、DDNS 直连与安全的 dropfile 终端传文件。",
+  "author": {"name": "haoliucha", "url": "https://github.com/haoliucha"},
+  "repository": "https://github.com/haoliucha/build-your-system",
+  "license": "MIT",
+  "keywords": ["mosh", "tmux", "ssh", "dropfile", "remote-development"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Coding Anywhere",
+    "shortDescription": "自建移动远程开发与终端传文件",
+    "longDescription": "从手机、平板或笔记本通过 mosh、tmux 和 SSH 中继连接家中 Mac，并使用 dropfile 把截图和文件安全送入远端终端。",
+    "developerName": "haoliucha",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write", "Remote development"],
+    "defaultPrompt": ["帮我搭一套从 iPhone 连回家中 Mac 的远程开发环境", "我想在远程终端里传一张截图给 Codex", "比较 ECS 中继和 DDNS 直连"],
+    "brandColor": "#1F6FEB"
+  }
+}

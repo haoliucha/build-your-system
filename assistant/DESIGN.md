@@ -1,5 +1,7 @@
 # Personal Assistant Plugin 设计文档
 
+> 本文件保留为早期设计记录。当前双宿主架构、版本与安装真源以仓库根目录 `README.md`、`CLAUDE.md`、`docs/assistant-architecture.md` 和 `skills/vault-structure/references/host-adaptation.md` 为准；其中 Claude commands 是薄入口，Codex 通过共享 Skill 工作。
+
 > 基于 Obsidian Vault 的 AI 个人助手系统
 
 ## 这个插件适合你吗？

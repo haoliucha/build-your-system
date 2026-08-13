@@ -1,28 +1,14 @@
 {
+  "name": "build-your-system",
+  "interface": {
+    "displayName": "Build Your System"
+  },
   "plugins": [
-    {
-      "name": "build-your-system-assistant",
-      "source": {
-        "source": "local",
-        "path": "./targets/codex/build-your-system-assistant"
-      },
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
-      },
-      "category": "Productivity"
-    },
-    {
-      "name": "x-image",
-      "source": {
-        "source": "local",
-        "path": "./targets/codex/x-image"
-      },
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
-      },
-      "category": "Productivity"
-    }
+    {"name": "assistant", "source": {"source": "local", "path": "./assistant"}, "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"}, "category": "Productivity"},
+    {"name": "insights", "source": {"source": "local", "path": "./insights"}, "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"}, "category": "Productivity"},
+    {"name": "media", "source": {"source": "local", "path": "./media"}, "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"}, "category": "Productivity"},
+    {"name": "coding-anywhere", "source": {"source": "local", "path": "./coding-anywhere"}, "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"}, "category": "Productivity"},
+    {"name": "bid", "source": {"source": "local", "path": "./bid"}, "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"}, "category": "Productivity"},
+    {"name": "x", "source": {"source": "local", "path": "./x"}, "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"}, "category": "Productivity"}
   ]
 }

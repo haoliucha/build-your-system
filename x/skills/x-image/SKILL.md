@@ -1,36 +1,141 @@
 ---
 name: x-image
-description: Use when the user wants an X Image style list or preview, article cover, article illustration, explainer, data visual, article hero, vertical image, share image, or custom-ratio article image in Claude Code.
+description: Use when the user wants an X Image style list or preview, article cover, article hero, inline explainer, data visual, vertical illustration, share image, or one or more article illustrations generated from a file, directory, text, data, or image brief.
 ---
 
-# X Image Claude Bridge
+# X Image
 
-Delegate the entire request to the native Codex `x-image` skill. Claude does not own image-generation logic.
+## 宿主适配
 
-## Required delegation
+本 Skill 是共享业务真源。Codex 使用本机原生 ImageGen；Claude Code 收到请求时沿用 `x/commands/image.md` 的 Rescue 入口，并在调用 native Codex 时传入 `Invocation origin: Claude through Codex Rescue`。不要在 Claude 分支复制一套提示词或后处理逻辑，也不要把 Rescue 标记当作 Codex 的默认值。
 
-Invoke `codex:codex-rescue` through the Agent tool exactly once:
+## Overview
 
-- Set `run_in_background: false` on the Agent call.
-- Use a fresh run with `--fresh --wait`.
-- Forward the user's request and the actual current working directory.
-- Include the exact marker `Invocation origin: Claude through Codex Rescue`.
-- Tell Codex to use the native `x-image` skill.
-- Require Codex to own source analysis, asset planning, prompt compilation, one built-in ImageGen call per asset, collision-safe file placement, read-only inspection, and QA.
-- Require Codex to save the output file and return the complete native report beginning exactly with `Host: Claude through Codex Rescue`.
+Generate a complete final raster asset through the installed `imagegen` skill and built-in `image_gen`. Own source analysis, visual planning, prompt compilation, original-file placement, inspection, and QA in the current Codex task.
 
-If the Agent tool still launches the subagent in the background, do not announce that state and do not return early. Call `TaskOutput` once for the same Rescue task with `block: true`, the returned task ID, and a timeout long enough for generation to finish. Do not invoke another Agent, start another Codex task, poll repeatedly, or expose task metadata.
+For each asset, allow exactly one call per planned asset. Use no edit, retry, post-processing, alternate image execution mode, or intermediate image.
 
-Do not announce delegation before the Agent call.
+## Invocation origin
 
-Do not emit progress or status messages while the Agent call is running.
+Default to `native Codex`.
 
-On success, the only user-visible assistant message must be the complete Codex output verbatim, with no text before or after it.
+Only when the incoming task contains the exact line `Invocation origin: Claude through Codex Rescue`, set the report host to `Claude through Codex Rescue`. Preserve that host for every asset in the request. Do not infer or invent another host value.
 
-## Claude boundary
+## Load the canonical contracts
 
-Do not read or analyze the article in Claude. Do not choose the intent, ratio, style, layout, prompt, or destination. Do not inspect output files. Do not call an image tool, retry, repair, or post-process. Do not perform QA in Claude.
+Before planning an image, read these files completely:
 
-If the rescue subagent is unavailable or Codex is unauthenticated, stop and instruct the user to run `/codex:setup`.
+- `references/intent-routing.md`
+- `references/size-presets.md`
+- `references/style-policy.md`
+- `references/layout-patterns.md`
+- `references/prompt-contract.md`
+- `references/qa-checklist.md`
 
-Do not invoke another slash command. The bridge calls the subagent directly.
+After choosing a built-in Style ID, read the matching file under `styles/`. For a custom style, read all five built-in presets first so the task-local Style Spec preserves their level of precision.
+
+## Style preview mode
+
+When the user asks which styles exist, requests style examples, or asks to preview one or all styles, use preview mode before the generation workflow:
+
+1. Read `previews/manifest.json` and select the requested entry or all entries in manifest order.
+2. Return each Style ID, Chinese display name, use case, and the corresponding local static PNG as a Markdown image.
+3. State that each image is a style reference, not a pixel-level promise.
+
+Do not call `image_gen`, load the `imagegen` skill, copy files, or create output files in preview mode. A preview response must use zero generation calls. If preview and generation are requested together without a final style choice, show the previews and wait for the user's selection before generating.
+
+## Workflow
+
+Use this workflow only for generation requests, not style preview mode.
+
+### 1. Resolve the source
+
+Determine whether the input is a file, directory, direct text, structured data, or brief.
+
+- Read a named file directly.
+- For a directory, choose `publish.md`, then `draft.md`, then the only Markdown file.
+- If multiple source files remain plausible, ask one concise source-location question before continuing.
+- Do not modify the source.
+
+### 2. Resolve the complete asset plan
+
+Before the first image call, determine:
+
+- Intent: cover or illustration.
+- Count: default or explicit.
+- Destination directory and requested base filename.
+- Ratio and prompt target dimensions.
+- Style ID and full Style Spec.
+- Layout pattern.
+- Exact visible text and exact data.
+
+For multiple assets, plan every asset's distinct cognitive job and lock the shared style fields before generation.
+
+Record the requested base destination before each call. Do not assume a filename remains unused during generation; final collision resolution happens atomically at placement time.
+
+### 3. Compile the final prompt
+
+Follow `references/prompt-contract.md` exactly. Include all source-derived content, verbatim text, data semantics, ratio, target dimensions, full style, layout, safe margins, constraints, avoid items, and the complete single-call instruction.
+
+Do not call the image tool until the prompt is complete and internally consistent.
+
+### 4. Generate exactly once
+
+Load the installed `imagegen` skill completely and use its default built-in `image_gen` path.
+
+For the current asset:
+
+1. Submit the compiled prompt in one generation call.
+2. Do not call an edit operation.
+3. Do not retry automatically for any reason.
+4. If the call fails or no output file is returned, record the failure and stop remaining assets.
+
+### 5. Place the original file
+
+Use the output path returned by the built-in tool. Place the original with:
+
+```text
+python3 "${X_PLUGIN_ROOT:-$HOME/plugins/x}/scripts/place-original.py" <generated-source> <requested-base-destination>
+```
+
+This helper re-resolves the requested base destination immediately before placement and uses an exclusive atomic claim. If the base or a versioned sibling already exists, it advances to `-v2`, `-v3`, or the first later unused sibling without overwriting. Use the helper's returned path as the saved path.
+
+Do not replace this step with ordinary `cp`, `mv`, or a pre-generation existence check. The helper copies bytes only for atomic placement and removes its temporary file; it does not decode, transform, repair, or re-encode the image. Reading file metadata or calculating a checksum is allowed; changing image bytes is not.
+
+### 6. Inspect and decide QA
+
+Always inspect without editing. Check the original asset against `references/qa-checklist.md`, including:
+
+- Required subject, relationships, text, values, units, category order, and axes.
+- Ratio composition, safe margins, focal point, Style ID, and avoid list.
+- One generation call, zero edit calls, and zero image modification commands.
+- Saved path and actual dimensions when available.
+
+If the asset has a P0 or P1 finding, preserve it, mark it failed, and stop remaining assets. Do not repair or regenerate. A P2 observation may pass when meaning and legibility remain intact.
+
+## Final report
+
+For every attempted asset, report:
+
+```text
+Host: native Codex
+or
+Host: Claude through Codex Rescue
+Status: PASS or FAIL
+Saved path:
+Actual dimensions:
+Style ID:
+Final prompt:
+Generation call count:
+Edit call count:
+Image modification command count:
+Content QA:
+Style QA:
+P2 observations:
+```
+
+For a stopped multi-image request, also list completed, failed, and unattempted assets.
+
+## Hard boundary
+
+Execute directly in the current Codex task. Do not delegate generation to another task or agent. Do not upload, publish, edit the source article, or perform X account actions.

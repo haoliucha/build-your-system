@@ -5,6 +5,8 @@ description: This skill should be used when the user provides a YouTube link, as
 
 # YouTube Transcript Extractor
 
+资源定位遵循 `media/references/host-adaptation.md`。脚本路径按当前 Skill 的相邻 `scripts/` 目录解析；本地开发可设置 `MEDIA_PLUGIN_ROOT`，不要依赖 Claude-only 的插件根变量。
+
 Extract subtitles from YouTube videos as plain text, automatically detecting the best available language.
 
 ## When to Use
@@ -37,7 +39,7 @@ Identify the YouTube URL or video ID from the user's message using regex:
 Execute the fetch script with the URL or video ID:
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/skills/youtube-transcript/scripts/fetch_transcript.py" "<youtube_url_or_video_id>"
+python3 "${MEDIA_PLUGIN_ROOT}/skills/youtube-transcript/scripts/fetch_transcript.py" "<youtube_url_or_video_id>"
 ```
 
 The script will:
@@ -76,7 +78,7 @@ The script automatically selects subtitles in this order:
 
 **Action:**
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/skills/youtube-transcript/scripts/fetch_transcript.py" "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+python3 "${MEDIA_PLUGIN_ROOT}/skills/youtube-transcript/scripts/fetch_transcript.py" "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 ```
 
 **Response:**

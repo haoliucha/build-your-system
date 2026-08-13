@@ -24,11 +24,11 @@
 图片能力还需要:
 
 1. 在 Claude Code 安装 OpenAI Codex 插件并运行 `/codex:setup`。
-2. 安装仓库内原生 Codex `x-image` 插件:
+2. Codex 与 Claude 共用本插件的 `x-image` Skill；Claude 的 `/x:image` 通过 Rescue 调用 Codex 原生 ImageGen:
 
    ```bash
-   cd targets/codex/x-image
-   zsh scripts/install-local-plugin.sh
+   cd x
+   codex plugin add x@local-build-your-system
    ```
 
 Claude 的 `/x:image` 只负责通过 Codex Rescue 转发;文章分析、ImageGen 调用、文件落盘与 QA 都在原生 Codex 中完成。
@@ -101,7 +101,7 @@ Claude 的 `/x:image` 只负责通过 Codex Rescue 转发;文章分析、ImageGe
 | 3. 异常感知 | 验证码/限流/登录跳转/账号锁/webdriver 注入 → 立即 STOP + alert 用户 |
 | 4. 不可逆操作保护 | click 前严格白名单选择器、只 click "关注 @{handle}",绝不模糊匹配 |
 
-详见 `skills/x-follow/references/pacing-anti-detection.md`。
+Claude-only 的 `x-follow` 位于 `claude-components/x-follow/`；Codex 不加载该入口。
 
 ## 前置条件
 

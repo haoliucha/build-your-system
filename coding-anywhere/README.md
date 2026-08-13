@@ -2,7 +2,7 @@
 
 > 让你的 Mac 24/7 留在家里。你在哪里都能从手机/平板/任意笔记本回到它的 shell，回到上一秒离开的 tmux 会话。
 
-一个 Claude Code 插件，把"自建 mosh + tmux + SSH 中继 + DDNS 直连"这套远程开发栈做成了**一段提示词**。复制 → 粘贴 → 让 Claude 引导你完成搭建。
+一个同时支持 Claude Code 与 Codex 的插件，把“自建 mosh + tmux + SSH 中继 + DDNS 直连”这套远程开发栈做成了**一段提示词**。复制 → 粘贴 → 让当前宿主引导你完成搭建。
 
 ---
 
@@ -13,16 +13,18 @@
 - **不依赖 Tailscale/ZeroTier 的可用性** — 全部自建，路径短、延迟低
 - **覆盖任何客户端** — iPhone Blink / iPad Termius / 桌面 mosh CLI / 朋友的 Linux 笔记本
 - **两套架构按需切换** — ECS Relay（稳定，需公网 ECS）或 DDNS + IPv6 直连（最快，需家里有公网 IPv6）
-- **终端里能"贴图"和传文件** — 截图/选文件 → 按一个快捷键 → 远端路径出现在 Claude Code 输入框（见文末 [dropfile](#附终端里传图传文件dropfile)）
+- **终端里能“贴图”和传文件** — 截图/选文件 → 按一个快捷键 → 远端路径出现在当前 Codex 或 Claude Code 输入框（见文末 [dropfile](#附终端里传图传文件dropfile)）
 
 ---
 
 ## 安装
 
-### 方式 1：通过 Claude Code marketplace 安装
+### 方式 1：通过对应宿主的 marketplace 安装
 
 ```
-/plugin install coding-anywhere
+Claude：`/plugin install coding-anywhere`
+
+Codex：`codex plugin add coding-anywhere@local-build-your-system`
 ```
 
 （marketplace: `build-your-system`）
@@ -38,7 +40,7 @@ git clone https://github.com/haoliucha/build-your-system.git ~/.claude/plugins/m
 
 ## 一键复刻提示词（核心用法）
 
-安装好插件后，把下面这段**整段复制**粘贴到 Claude Code 对话框里。Claude 会读取 `coding-anywhere` skill，自动引导你完成所有配置。
+安装好插件后，把下面这段**整段复制**粘贴到 Claude Code 或 Codex 对话框里。当前宿主会读取 `coding-anywhere` Skill，自动引导你完成所有配置。
 
 ```
 我想搭建一套"随时随地远程开发"的方案。
@@ -121,7 +123,7 @@ coding-anywhere/
 
 > 这是上面那套远程开发栈的配套小工具，可以单独装、单独用。
 
-远程写代码时想给 Claude Code 看一张截图或一份文件，终端里 `⌘V` 贴不了。
+远程写代码时想给 Codex 或 Claude Code 看一张截图或一份文件，终端里 `⌘V` 贴不了。
 **这不是 mosh 的锅**：PTY 是字符设备，终端收到 `⌘V` 只取剪贴板的纯文本类型，
 图片和文件引用都没有通道——普通 `ssh -t` 一样贴不了。
 
@@ -174,7 +176,7 @@ curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/co
 ## 支持的运行环境
 
 - **Claude Code**（macOS / Linux / Windows）
-- **Codex**（适配版本见 `targets/codex/coding-anywhere/`）
+- **Codex**（与 Claude 共用本目录的 `skills/coding-anywhere`，manifest 位于 `.codex-plugin/`）
 
 ---
 

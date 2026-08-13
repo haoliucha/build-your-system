@@ -1,0 +1,20 @@
+{
+  "name": "assistant",
+  "version": "2.0.0",
+  "description": "统一的个人助手工作流：Vault 捕获、回顾、任务、知识整理与对话导出。",
+  "author": {"name": "haoliucha", "url": "https://github.com/haoliucha"},
+  "repository": "https://github.com/haoliucha/build-your-system",
+  "license": "MIT",
+  "keywords": ["vault", "capture", "review", "assistant"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Assistant",
+    "shortDescription": "统一的 Vault 个人助手工作流",
+    "longDescription": "在 Codex 中提供捕获、整理、回顾、任务、时间线、周报和对话导出工作流；宿主相关的活动分析由 Codex 适配层选择。",
+    "developerName": "haoliucha",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write", "Vault workflow"],
+    "defaultPrompt": ["把这条内容捕获到 inbox 并打标签", "基于今天的记录做一次每日回顾", "把这次对话导出成 Obsidian 笔记"],
+    "brandColor": "#2D6A4F"
+  }
+}

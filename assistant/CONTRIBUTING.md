@@ -6,7 +6,7 @@
 
 ### 前置要求
 
-- Claude Code CLI (v2.0+)
+- Claude Code CLI 或 Codex CLI（用于对应宿主的本地插件验证）
 - Obsidian (可选，用于测试)
 - Python 3.8+ (用于活动分析脚本)
 
@@ -18,16 +18,15 @@
    cd build-your-system
    ```
 
-2. 链接到 Claude Code plugins 目录
+2. 链接到对应宿主的插件目录
    ```bash
-   ln -s $(pwd)/assistant ~/.claude/plugins/assistant-dev
+   ln -s "$(pwd)/assistant" "$HOME/plugins/assistant-dev"
    ```
 
 3. 在 Obsidian Vault 中测试
    ```bash
    cd /path/to/your/vault
-   claude
-   /a-setup  # 初始化
+   # Claude：/assistant:a-setup；Codex：$a-setup
    ```
 
 ## 项目结构

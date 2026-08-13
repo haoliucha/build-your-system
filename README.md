@@ -1,99 +1,55 @@
 # Build Your System
 
-个人效率系统插件仓库,"单仓多目标"结构:Claude Code 插件(marketplace)在仓库根目录,Codex 目标在 `targets/codex/` 下统一版本管理。
+这是一个双宿主插件仓库：共享能力放在插件根目录，Claude Code 与 Codex 各自只加载自己的 manifest 和宿主适配。`targets/codex/` 是历史目录，不再是当前真源。
 
-## 当前目标
+## 当前插件
 
-| 宿主 | 目标 | 版本 | 说明 |
-|------|------|------|------|
-| Claude Code | `assistant/` | 1.0.0 | 个人 AI 助手:任务捕获、每日回顾、知识分发(基于 Obsidian Vault) |
-| Claude Code | `media/` | 1.0.0 | 短视频创作工作流:选题评估、Hook 设计、逐字稿生成 |
-| Claude Code | `claude-notify/` | 1.0.0 | macOS 通知与跳转辅助(任务完成/需要权限时提醒) |
-| Claude Code | `x/` | 3.0.1 | X (Twitter) 工具集:`/x:x-follow` 精准批量关注、`/x:x-unfollow` 当前态双表与页面漂移防护、`/x:image` 经 Codex Rescue 生成文章封面和插图 |
-| Claude Code | `goal-creator/` | 0.1.0 | `/goal` 命令提示词工程辅助(引导式 brainstorm) |
-| Claude Code | `coding-anywhere/` | 1.0.0 | 远程开发栈:mosh + tmux + SSH 中继一键搭建 |
-| Claude Code | `bid/` | 0.1.0 | To-B 投标/交付物方法论:单一真源生成器、口径级联、成本/排期、对抗审校、去AI味、图表与中文PDF管线;10 skills + 6 命令(`/bid:init·meeting·sync·handoff·review·status`),附 HTML 方法论导读(含系统动态演示) |
-| Codex | `targets/codex/build-your-system-assistant/` | 0.4.0 | Obsidian Vault 助手 + 与 Claude 同源的当前态双表、互斥低频 `x-unfollow` |
-| Codex | `targets/codex/x-image/` | 0.1.0 | 原生文章图片插件:封面、头图、解释图、数据图和竖版插图,每个资产一次 ImageGen |
+| 插件 | 宿主 | 版本 | 说明 |
+|---|---|---:|---|
+| `assistant/` | Claude + Codex | 2.0.0 | 19 个 Vault 捕获、回顾、任务、时间线、周报与导出 Skill；Claude 命令为薄入口 |
+| `insights/` | Codex-only | 0.1.0 | `$insights` 五层洞察、七 lens、一次质检和离线 HTML 报告 |
+| `x/` | Claude + Codex | 4.0.0 | 共享 `x-unfollow` 与 `x-image`；`x-follow` 仅 Claude |
+| `coding-anywhere/` | Claude + Codex | 1.4.0 | mosh、tmux、SSH 中继、DDNS 与 dropfile |
+| `bid/` | Claude + Codex | 0.1.0 | To-B 投标与交付物方法论 |
+| `media/` | Claude + Codex | 1.1.0 | 共享选题、Hook、结构、逐字稿、标题与发布工作流；Claude 命令为薄入口 |
+| `goal-creator/` | Claude-only | 0.1.0 | 依赖 Claude `/goal` evaluator |
+| `claude-notify/` | Claude-only | 1.0.0 | 依赖 Claude hooks |
 
-## 为什么是单仓多目标
+## 安装 Codex 插件
 
-- `build-your-system` 作为唯一 source of truth
-- 停止维护独立的 `build-your-system-codex` 副本
-- 保留各宿主自己的包装层,不强行合并为同一原生插件格式
-- 后续接入 Cursor 或 MCP 共享层可在同一仓库演进
-
-## 安装方式
-
-### Claude Code
+公开安装 `insights`：
 
 ```bash
-# 在 Claude Code 中运行
-/plugin
-
-# Add Marketplace:
-haoliucha/build-your-system
-
-# 然后安装需要的插件:
-# assistant / media / claude-notify / x / goal-creator / coding-anywhere
+codex plugin marketplace add haoliucha/build-your-system
+codex plugin add insights@build-your-system
 ```
 
-### Codex
+安装后新建一个 Codex 任务，显式输入 `$insights`。默认使用简体中文，报告写入 `~/.codex/usage-data/insights/report.html`。Claude Code 使用其原生 `/insights`，不会加载顶层 Codex-only 插件。
 
-Codex 目标位于 `targets/codex/`,仓库内已提供 repo marketplace(`.agents/plugins/marketplace.json`)。本机按需安装:
+仓库 marketplace 位于 `.agents/plugins/marketplace.json`，名称为 `build-your-system`。本地开发环境若使用个人 marketplace `local-build-your-system`，仍可从对应本地真源安装各插件；该名称不是公开安装入口。
 
-```bash
-cd targets/codex/build-your-system-assistant
-./scripts/install-local-plugin.sh
-
-cd ../x-image
-./scripts/install-local-plugin.sh
-```
-
-## 首次设置
-
-- **assistant(Claude Code)**:在 Vault 目录里运行 `/a-setup`。推荐 Vault 结构:`00-Inbox / 10-Projects / 20-Areas / 30-Resources / 40-Archives / 50-GTD / 60-Memory`。
-- **Codex 助手**:在 Vault 目录用自然语言触发,详见 `targets/codex/build-your-system-assistant/README.md` 与 `docs/user-guide.md`。
-- **x-image**:在 Codex 中直接说“给这篇文章生成封面/插图”;Claude 中使用 `/x:image`,并先通过 `/codex:setup` 完成 Codex Rescue 配置。
-- 各插件的用法见对应目录的 `README.md`(如 `x/README.md`)。
-
-## 仓库结构
+## 目录原则
 
 ```text
 build-your-system/
-├── .claude-plugin/
-│   └── marketplace.json          # Claude marketplace(插件清单 + 版本)
-├── .agents/
-│   └── plugins/marketplace.json  # Codex repo marketplace
-├── assistant/                    # Claude 插件(下同:.claude-plugin/ + commands/ + skills/)
-├── media/
-├── claude-notify/
-├── x/                            # x-follow / x-unfollow / image(封面与文章插图)
-├── goal-creator/
-├── coding-anywhere/
-├── targets/codex/build-your-system-assistant/
-├── targets/codex/x-image/
-├── scripts/
-│   ├── sync-to-cache.sh          # 源码 → Claude Code 运行时 cache
-│   └── githooks/post-commit      # 提交后自动跑 sync(见下)
-├── examples/minimal-vault/
-└── docs/
+├── assistant/          # 双宿主共享业务真源
+├── bid/                # 双宿主
+├── coding-anywhere/    # 双宿主，含 dropfile
+├── insights/           # Codex-only
+├── x/                  # 双宿主；x-follow 位于 Claude-only 组件
+├── media/              # 双宿主；Claude 命令为薄入口
+├── goal-creator/       # Claude-only
+└── claude-notify/      # Claude-only
 ```
 
-## 开发说明(改插件必读)
+历史设计与迁移记录保留在 `docs/superpowers/`，不作为当前安装路径。
 
-1. **本地统一路径 = `~/Projects/build-your-system`**;git 身份 haoliucha(origin 走 SSH alias `github.com-haoliucha`)。
-2. Claude Code **不直接加载本仓库**,它按 `~/.claude/plugins/installed_plugins.json` 钉死的版本目录加载 `~/.claude/plugins/cache/build-your-system/<plugin>/<version>/`。改完源码必须同步:
-   ```bash
-   bash scripts/sync-to-cache.sh   # 只同步本机已安装且版本目录存在的插件
-   ```
-3. **自动同步 hook**(每个 clone 启用一次,之后每次 commit 自动同步):
-   ```bash
-   git config core.hooksPath scripts/githooks
-   ```
-4. **版本纪律**:插件有实质变更 → bump `<plugin>/.claude-plugin/plugin.json` 的 `version`,并同步根 `.claude-plugin/marketplace.json` 对应条目(两处都要改)。未发布版本可用 `claude --plugin-dir "$PWD/<plugin>"` 验收;持久更新需要发布后再通过 `/plugin` 更新。
-5. Codex 助手改动落在 `targets/codex/build-your-system-assistant/`;`x-unfollow` 以该目标内的 skill 为规范源码，并通过 `scripts/sync-x-unfollow-targets.cjs` 同步到 Claude 的 `x/skills/x-unfollow/`;图片能力的共享规则位于 `x/shared/x-image/`,Codex 适配层位于 `targets/codex/x-image/`。
+## 验证
 
-## 许可证
+```bash
+python3 -m unittest discover -s insights/tests -p 'test_*.py' -v
+python3 "$HOME/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py" insights
+git diff --check
+```
 
-MIT License - 见 [LICENSE](LICENSE)
+所有对外 X 操作仍需用户手动执行；仓库不自动发布、不提交、不推送。

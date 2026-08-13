@@ -1,0 +1,20 @@
+{
+  "name": "media",
+  "version": "1.1.0",
+  "description": "短视频创作助手：共享选题、Hook、结构、逐字稿、标题与发布工作流。",
+  "author": {"name": "haoliucha", "url": "https://github.com/haoliucha"},
+  "repository": "https://github.com/haoliucha/build-your-system",
+  "license": "MIT",
+  "keywords": ["media", "video", "script", "content"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Media 创作助手",
+    "shortDescription": "跨 Claude Code 与 Codex 的短视频创作工作流",
+    "longDescription": "共享选题评估、热点、关键词、Hook、结构、逐字稿、标题封面和发布检查 Skills；Claude 额外提供薄命令入口。",
+    "developerName": "haoliucha",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "defaultPrompt": ["使用 media Skills 帮我完成短视频创作流程。"],
+    "brandColor": "#F97316"
+  }
+}

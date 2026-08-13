@@ -1,7 +1,6 @@
 ---
-name: Interstitial Journaling
+name: interstitial-journaling
 description: This skill should be used when the user asks about "interstitial journaling", "pause journaling", "task transition tracking", "time awareness", "distraction tracking", or mentions concepts like "context switching", "procrastination awareness", "mental reset between tasks". Provides methodology and implementation guidelines for interstitial journaling in the personal assistant system.
-version: 1.0.0
 ---
 
 # Interstitial Journaling 方法论

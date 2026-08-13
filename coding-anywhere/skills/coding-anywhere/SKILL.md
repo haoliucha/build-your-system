@@ -1,7 +1,7 @@
 ---
 name: Coding Anywhere
 description: This skill should be used when the user wants to set up remote development access from mobile devices (iPhone/iPad/Android) or any laptop to a home Mac/Linux box. Trigger on keywords like "mosh", "tmux remote", "ssh from iPhone", "Blink shell setup", "always-on Mac", "reverse SSH relay", "DDNS direct connection", "build my own Tailscale alternative", "remote development setup", "code from anywhere", or when the user asks "how do I keep coding when I'm not at my desk". ALSO trigger for pasting images into a remote terminal session - keywords like "dropimg", "paste image over ssh", "send screenshot to remote Claude Code", "Cmd+V does not work in terminal", "how do I show Claude a screenshot when working remotely", "贴图", "粘贴图片", "传图", "截图给 Claude", "远程终端发图片". Also trigger when the user references this plugin's GitHub README and wants to replicate the stack.
-version: 1.3.0
+version: 1.4.0
 ---
 
 # Coding Anywhere - 随时随地远程开发栈
@@ -144,7 +144,7 @@ curl -fsSL https://raw.githubusercontent.com/haoliucha/build-your-system/main/co
 已经装了插件的话也可以走本地：
 
 ```bash
-bash ${CLAUDE_PLUGIN_ROOT}/scripts/install-dropfile.sh
+bash "${CODING_ANYWHERE_PLUGIN_ROOT:-${PLUGIN_ROOT:-$HOME/plugins/coding-anywhere}}/scripts/install-dropfile.sh"
 ```
 
 安装器做六件事并自检：取脚本（本地优先，否则按 raw → jsDelivr → ghfast 回退下载）
