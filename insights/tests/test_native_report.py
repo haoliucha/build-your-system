@@ -329,11 +329,19 @@ class NativeReportParityTests(unittest.TestCase):
     def test_remaining_sessions_show_semantic_coverage_limit(self):
         report = render(
             self.m,
-            coverage={"eligible": 14, "cached": 2, "selected": 10, "remaining": 2},
+            coverage={
+                "eligible": 14,
+                "cached": 2,
+                "selected": 10,
+                "remaining": 2,
+                "snapshot_at": "2026-08-14T09:12:34Z",
+            },
         )
         self.assertIn("仍有 2 个合格会话尚未完成语义分析", report)
         self.assertIn("确定性统计覆盖 14 个", report)
         self.assertIn("叙事洞察覆盖 10 个", report)
+        self.assertIn("分析快照时间", report)
+        self.assertIn("2026-08-14T09:12:34Z", report)
 
 
 if __name__ == "__main__":

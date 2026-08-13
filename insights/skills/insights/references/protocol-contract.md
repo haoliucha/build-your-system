@@ -1,158 +1,67 @@
-# 长驻 JSONL 协议契约
+# Runner 契约（0.3）
 
-本页逐字段记录当前 `scripts/insights.py` 的 protocol_version 4 调用面。模型分析只能填 helper 发出的 job；会话发现、helper-owned 字段、聚合、报告和持久化均由同一个 helper 进程控制。
+## 所有权
 
-## 启动与传输
+`scripts/runner.py` 是唯一调度器。主 Agent 不读取 Prompt、不生成模型 JSON、不操作 job ID。Runner 负责会话发现、模型分层、SQLite 队列、校验、聚合、报告和原子提交。
 
-令 `INSIGHTS_SKILL_DIR` 为已加载 `SKILL.md` 的目录，在 PTY 中启动且不传 helper 参数：
+## 启动
 
-```sh
-stty -echo -icanon min 1 time 0; exec python3 -u "$INSIGHTS_SKILL_DIR/scripts/insights.py"
+```bash
+python3 -u "$INSIGHTS_SKILL_DIR/scripts/runner.py" \
+  --max-new-sessions 200 \
+  --language zh-CN
 ```
 
-启动工具调用至少等待一次轮询，确认终端的 `ECHO` 与 `ICANON` 均已关闭后再发送请求。`-icanon min 1 time 0` 让 helper 能持续读取大于终端 canonical 行缓冲的 JSON 请求；响应仍由换行分帧。不要使用 `--request`，因为它每次只处理一个无状态请求，不能保留 run；不要创建项目内或 `/tmp` 中继脚本。stdin 每行一个 UTF-8 JSON 对象；stdout 对应返回一行 JSON 并立即 flush，且每条响应（包括换行）不超过 65,536 字节。整个运行只由主代理持有该进程。
+参数默认即为 200 与 zh-CN。不得通过 PTY JSONL、`next_jobs`、`read_job` 或 `submit_jobs` 驱动；这些接口在 0.3 已删除。Runner 前台运行，不使用项目或 `/tmp` 中继，不设置 timeout 或 TTL。
 
-`prepare` 最长允许 180 秒，每次工具轮询不超过 30 秒；一次空输出只表示 helper 仍在扫描，不能据此重启或宣布失败。失败答复记录最后一个真正收到 `ok:true` 的 op/stage；未实际发送 commit 时不得称为提交失败。
-
-生产 JSONL 模式在进程启动时绑定 `$CODEX_HOME`（未设置时为 `~/.codex`）；prepare 不得改指向其他目录，`output_dir` 只能等于该 home 下的 `usage-data/insights`。成功响应统一为 `{"ok":true,"result":{...}}`。失败响应有两种 next：
+若 `runs/*/run.sqlite3` 存在 running/paused 运行且调用方没有选择，Runner 以退出码 2 返回：
 
 ```json
-{"ok":false,"error":{"type":"<exception class>","message":"<single reason>","next":{"op":"next_jobs","run_id":"<still-live run_id>"}}}
-{"ok":false,"error":{"type":"<exception class>","message":"<single reason>","next":{"op":"prepare"}}}
+{"status":"resume_choice_required","unfinished_runs":["<run-id>"],"message":"发现未完成的兼容运行；请让用户选择 --resume <run-id> 或 --new。"}
 ```
 
-第一种表示 helper 仍持有该 run；失败的 submit_jobs 整批零接受。只有能从同一批已签发 jobs 重新生成真实合规对象时，才发送该 next 并重做整批。否则发送 `{"op":"abort","run_id":"<run_id>"}` 后停止。第二种表示没有可恢复 run；不自动 prepare。非 JSON、EOF、缺字段、源/state 漂移、隐私、锁/CAS/HTML/事务完整性错误也停止，不猜测恢复。
+新运行在清单阶段读取源会话一次，把确定性 meta、标准化/脱敏后的 Facet 材料、选中 session key、source fingerprint 与 inventory 冻结到 `run.sqlite3`，并记录内容 hash 与 `snapshot_at`。快照不包含原始路径或未脱敏正文。
 
-run 的闲置 TTL 为 4 小时；成功的 next_jobs 或 submit_jobs 会刷新 TTL。每次请求前 helper 清理到期 run；过期后 run_id 等同未知。无需继续时显式 abort：
+恢复直接读取该快照，不重新扫描活跃 JSONL，也不要求十几分钟内源文件保持不变。源文件在快照后追加不会改变当前报告；下一轮发现新的 source fingerprint 时自然使对应 facet 缓存失效。恢复仍核对语言、快照 hash 与已提交 Insights state hash；不一致则 fail closed。
 
-```json
-{"op":"abort","run_id":"<run_id>"}
-{"ok":true,"result":{"run_id":"<run_id>","aborted":true,"next":{"op":"prepare"}}}
-```
+## 队列与模型
 
-abort 的 next 不表示自动重启；本次失败仍应结束。
+SQLite 使用 WAL、FULL synchronous 和单写者事务。Job 状态只有 `queued/running/succeeded/skipped`。进程崩溃或主动暂停后，running 重排 queued；succeeded 保留。成功 commit 后清除 SQLite 中的分析材料快照，只保留运行元数据与结果状态。
 
-## Prepare、选择与覆盖量
+| Job | 模型 | effort | 失败策略 |
+|---|---|---:|---|
+| chunk_summary | gpt-5.6-luna | low | 两次额外重试后使用块前 2,000 字符 |
+| session_facet | gpt-5.6-terra | medium | 两次额外重试后 skipped |
+| 7 lenses | gpt-5.6-sol | high | 两次额外重试后省略并记录 concern |
+| At-a-Glance | gpt-5.6-sol | high | 两次额外重试后降级为 concern |
 
-请求只传用户明确给出的参数；正常运行不传 `codex_home`、`output_dir` 或 `current_thread_id`，helper 使用进程绑定的 home、环境中的当前任务 ID 和固定输出目录：
+每个 `codex exec` 使用 stdin Prompt、stdout JSONL、stderr 并发排空、`--ephemeral --json --output-schema --output-last-message --ignore-user-config --ignore-rules --sandbox read-only`。Fast 通过 `service_tier="fast"` 开启；Shell、Web、MCP、Apps、浏览器、Computer Use、图片和多代理关闭。隔离 HOME/CODEX_HOME 只桥接现有登录凭据，不加载个人 Skill、插件或项目规则。
 
-无参数 `$insights` 使用正式默认值 200：
+进程池从 6 开始；连续 20 个成功 Job 加 1，最高 12。显式限流暂停新派发，按 CLI/服务端信号等待并回到 6；限流不计重试。没有 Runner timeout、Job timeout、停滞终止或运行 TTL。
 
-```json
-{"op":"prepare","max_new_sessions":200,"language":"zh-CN"}
-```
+## 进度
 
-只有用户显式输入 `$insights MAX_NEW_SESSIONS=10` 时才发送 10。
+冻结工作量：
 
-响应形状：
+- 清单 5
+- chunk 每个 2
+- facet 每个 5
+- lens 每个 8
+- At-a-Glance 5
+- render 2
+- commit 1
 
-```json
-{"ok":true,"result":{"run_id":"<32 hex>","language":"zh-CN","stats":{"physical_source_files":120,"parsed_source_files":119,"parse_failed":1,"logical_sessions":116,"duplicate_source_files":3,"logical_id_collisions":0,"eligible":100,"excluded":16,"excluded_current":1,"excluded_insights":2,"excluded_short_messages":8,"excluded_short_duration":5,"cached":84,"selected":10,"remaining":6,"historical_cached":0},"legacy_cache_detected":false,"next":{"op":"next_jobs","run_id":"<same run_id>"}}}
-```
+每 60 秒心跳、每 5 分钟完整仪表盘。任何输出都同时显示全部阶段、总体百分比、语义覆盖、并发、吞吐、P50/P90 与 ETA；未来阶段不得隐藏。单 Job 10 分钟无事件只显示告警。
 
-`MAX_NEW_SESSIONS` 是 0–200 的整数。helper 先去重、排除无效会话，再把 eligible 会话按 `updated_at` 降序排列；相同时间按 opaque session key 降序。缓存只有在分析版本链有效、session/source fingerprint 匹配、facet 文件路径与内容均通过校验时才复用。随后从未缓存队列选前 N 条。
+## 暂停与提交
 
-覆盖恒等式只使用当前发现的 eligible 会话：
+SIGINT/SIGTERM 触发：立即终止所有在途 `codex exec`，删除 `.partial`，running 改 queued，已成功结果保留。恢复不重复成功 Job。
+
+只有所有终态结果完成后才渲染。commit 不重新读取源 JSONL，只核验 helper 所有的分析快照 hash 与 Insights state snapshot；随后使用锁、generation CAS、staging、备份、manifest hash、回滚和 state-last。新报告提交成功后才隔离并删除旧引擎 facet/state/manifest；旧 report 在此之前不变。
+
+完成对象必须含 report、timestamp report、manifest、coverage 与性能数据。覆盖口径：
 
 ```text
-eligible = cached + selected + remaining
-has_unprocessed_sessions = (remaining > 0)
+eligible = analyzed + skipped + remaining
+selected = succeeded + skipped
 ```
-
-`historical_cached` 是 protocol_version 4 的兼容统计位，当前固定为 0。只有本次仍被发现、通过 manifest/state/facet 完整性检查且 source fingerprint 匹配的缓存会话才进入 cached、聚合和 facet_count；已不在当前来源中的旧 state 条目不进入报告。
-
-## next 与 job envelope
-
-prepare 或 submit_jobs 成功后，原样发送 `result.next`；它会是 next_jobs：
-
-```json
-{"op":"next_jobs","run_id":"<run_id>"}
-```
-
-next_jobs 成功响应的 `result` 固定含 `run_id`、`stage`、`jobs`、`next`。`jobs` 只含小型 descriptor，不含 prompt、material、schema 或 HTML：
-
-```json
-{"ok":true,"result":{"run_id":"<run_id>","stage":"session_facets","jobs":[{"job_id":"job-<20 hex>","kind":"session_facet","session_key":"session-<16 hex>","prompt_sha256":"<64 hex>","prompt_parts":2}],"next":{"op":"submit_jobs","run_id":"<run_id>","results":"<job results>"}}}
-```
-
-对每个 descriptor，按 `part=0..prompt_parts-1` 读取：
-
-```json
-{"op":"read_job","run_id":"<run_id>","job_id":"job-<20 hex>","part":0}
-{"ok":true,"result":{"run_id":"<run_id>","job_id":"job-<20 hex>","part":0,"prompt_parts":2,"prompt_chunk":"<UTF-8 prompt fragment>","prompt_sha256":"<64 hex>","schema":{"required":["..."]}}}
-```
-
-按 part 顺序原样拼接 `prompt_chunk`，以 UTF-8 计算 SHA-256，并与 descriptor/每页的 `prompt_sha256` 比较；schema 在每页相同。所有分片读完后才把重组 Prompt 交给模型。重复、越界、其他 run 的 job、漏读分片都会被拒绝；prompt 和 schema 始终只驻留 helper 进程与当前模型上下文，不落缓存。
-
-`results` 的字符串值是待替换哨兵，不是可提交值。只把它替换为数组；其他字段原样保留。每项必须精确只有 `job_id` 与 `result`，且 `result` 是 JSON 对象，不是包含 JSON 的字符串：
-
-```json
-{"op":"submit_jobs","run_id":"<run_id>","results":[{"job_id":"job-<20 hex>","result":{"underlying_goal":"修复缓存事务并验证回滚","goal_categories":{"debugging":1,"testing":1},"outcome":"fully_achieved","user_satisfaction_counts":{"satisfied":1},"claude_helpfulness":"very_helpful","session_type":"single_task","friction_counts":{},"friction_detail":"","primary_success":"good_debugging","brief_summary":"修复缓存事务并通过回归测试。","user_instructions_to_codex":["先复现再修复"],"evidence_anchors":["回归与失败注入通过"]}}]}
-```
-
-成功提交返回接受数和下一次 next_jobs：
-
-```json
-{"ok":true,"result":{"run_id":"<run_id>","accepted":1,"next":{"op":"next_jobs","run_id":"<run_id>"}}}
-```
-
-四种 job envelope：
-
-| kind | helper 字段 | result 对象 |
-|---|---|---|
-| chunk_summary | descriptor 含 job_id、kind、session_key、chunk_index、chunk_total、prompt hash/parts；read_job 返回 prompt/schema | 精确 `{"summary":"非空摘要"}`；摘要不超过 8,000 字符 |
-| session_facet | descriptor 含 job_id、kind、session_key、prompt hash/parts；read_job 返回含 material 的完整 prompt/schema | schema 的 required 字段，加零个或多个 optional 字段；不得含 helper-owned 字段 |
-| lens | descriptor 含 job_id、kind、lens_id、prompt hash/parts；read_job 返回 prompt/schema | 精确匹配该 lens JSON Schema |
-| at_a_glance | descriptor 含 job_id、kind、prompt hash/parts；read_job 返回 prompt/schema | 精确四字段：whats_working、whats_hindering、quick_wins、ambitious_workflows |
-
-每个 job 只使用重组后的自身 prompt/schema；prompt 已包含要求的输出语言和 session_facet 所需 material，不另行拼接其他上下文。helper 每次最多发 50 个 descriptor：chunk_summary 与 session_facet 使用 `[:50]`，lenses 固定 7 个，at_a_glance 固定 1 个。可提交当前批次中已经完整读取的非空子集，随后再次请求 next_jobs；submit_jobs 只接受当前阶段签发且已完整读取的 job_id，不能猜后续阶段 ID。整批先完成读取门、schema、隐私和阶段校验，再一次性写入内存；任何一项失败则整批零接受，可按 error.next 取回同一批 descriptor 后继续未读部分或重做结果。
-
-## 阶段与最小闭环
-
-实际 job 内容由会话决定；下面的 `JOBS_*` 表示上一条 next_jobs 响应中的真实 envelope，不是允许提交的占位结果。状态机闭环严格为：
-
-```text
-C→H {"op":"prepare","max_new_sessions":200,"language":"zh-CN"}（显式小范围验收可用 10）
-H→C ok/result.next = {"op":"next_jobs","run_id":"RID"}
-C→H {"op":"next_jobs","run_id":"RID"}
-H→C stage=chunk_summaries 或 session_facets，jobs=DESCRIPTORS_1，next=submit_jobs sentinel
-C→H 对每个 descriptor 逐页 read_job，重组并核对 prompt SHA-256
-C→H {"op":"submit_jobs","run_id":"RID","results":[每个 JOBS_1 的真实对象结果]}
-H→C ok/result.next = next_jobs
-       重复 next_jobs→submit_jobs，直到所有 chunk 完成，再完成所有 facet
-H→C stage=lenses，jobs=7 个异构 lens
-C→H submit_jobs（每个 lens 的真实对象结果）
-H→C ok/result.next = next_jobs
-C→H next_jobs
-H→C stage=at_a_glance，jobs=1
-C→H submit_jobs（四字段真实对象结果）
-H→C ok/result.next = next_jobs
-C→H next_jobs
-H→C stage=ready_to_commit，jobs=[]，preview_bytes/preview_sha256，next={"op":"commit","run_id":"RID"}
-C→H {"op":"commit","run_id":"RID"}
-H→C ok/result={generation,report_path,timestamp_report_path,manifest_path,facet_count,coverage}
-```
-
-ready_to_commit 的精确响应形状：
-
-```json
-{"ok":true,"result":{"run_id":"<run_id>","stage":"ready_to_commit","jobs":[],"preview_bytes":48231,"preview_sha256":"<64 hex>","next":{"op":"commit","run_id":"<run_id>"}}}
-```
-
-`action` 是 `op` 的兼容别名；两者同时出现时必须相等。标准路径只使用 ready.next 中的 `op`。commit 请求只允许 op/action、run_id 和可选的匹配 language；正常情况原样发送 ready 响应中的 next，不附加 facet、lens、prepared、coverage、output_dir 或 preview：
-
-```json
-{"op":"commit","run_id":"<run_id>"}
-```
-
-成功响应字段：
-
-```json
-{"ok":true,"result":{"generation":7,"report_path":"<fixed output>/report.html","timestamp_report_path":"<fixed output>/report-20260813T120000Z.html","manifest_path":"<fixed output>/manifest.json","facet_count":94,"coverage":{"eligible":100,"cached":84,"selected":10,"remaining":6,"historical_cached":0}}}
-```
-
-实际 coverage 还保留 prepare stats 的其余字段。commit 成功后 run_id 被消费；最终路径、计数和 coverage 一律从此响应读取，不自行拼接。
-
-prepare 对 on-disk state 做前后两次 canonical snapshot 检查，并保存 state hash 及当前发现的所有 eligible 来源 fingerprint。commit 持锁后复核一次，并在安装 state.json 前再次复核；任一来源或 state 即使 generation 未变但内容变化，也回滚且不提交。manifest 记录 state_sha256，并在 files 中覆盖 state.json、latest/timestamp reports 和 state 引用的每一个 facet；任一缺失、越界、hash、版本或 facet 内容不匹配都把旧缓存视为 legacy，不复用。
-
-完整预览只保存在 helper-owned run 内存中；ready 只公开字节数与 SHA-256。latest 与 timestamp 报告由同一预览字节写入，manifest 中两者的 SHA-256 必须等于 ready 的 `preview_sha256`；这项文件哈希相等是报告副本恒等性，不能替代上面的覆盖恒等式。

@@ -5,75 +5,59 @@ description: Use only when the user explicitly invokes $insights to review how t
 
 # Codex /insights
 
-复盘用户在 Codex 中做什么、怎样协作、什么最有效、哪里受阻，以及下一步可直接尝试什么。入口必须由用户显式输入 $insights；普通“总结”或“复盘”请求不得触发历史扫描。
+复盘用户在 Codex 中做什么、怎样协作、什么最有效、哪里受阻，以及下一步可直接尝试什么。仅在用户显式输入 `$insights` 时运行；普通“总结”或“复盘”请求不得扫描历史。
 
-本 Skill 以本机 Claude Code 2.1.228 的可观察 /insights 语义为基准，适配 Codex 的 JSONL、AGENTS.md 和可用功能。不要把适配或安全护栏反向宣称为 Claude 产品实现。
+本 Skill 以本机 Claude Code 2.1.229 可观察的分析语义为基准，并适配 Codex。Claude 的直接模型调用、长会话完整分块、每会话 facet、七个异构 lens、独立 At-a-Glance 和 best-effort 输出是语义基线；SQLite 恢复、总体进度、隔离执行和事务提交是 Codex 工程增强，不得冒充 Claude 原生实现。
 
-## 语义来源边界
+## 默认范围
 
-- **Claude 可观察语义**：标准化会话、长会话分块摘要、native-facet-v1 核心字段、确定性聚合、七个异构 lens、独立 At-a-Glance 和固定报告信息架构。
-- **Codex 表面适配**：读取 Codex JSONL；统计 Task/MCP/Web；facet 增加 user_instructions_to_codex 与 evidence_anchors；建议映射为 AGENTS.md additions、Codex features 和 usage patterns。
-- **Codex 安全增强**：输入脱敏、安全项目标签、opaque key/source fingerprint、版本化缓存、长驻 helper-owned run、严格静态 HTML、锁/CAS/staging/备份/回滚/state-last 和事务提交。这些不是新的洞察阶段。详见 references/privacy-contract.md。
-
-## 参数与范围
-
-- MAX_NEW_SESSIONS 默认 200，合法范围 0–200；可用 $insights MAX_NEW_SESSIONS=10 小范围运行。官方文档承诺最多分析 200 个此前未分析会话；本机 Claude Code 2.1.228 可观察实现每轮最多新建 50 个 facet。Codex 版采用官方 200 上限，并把模型 job 分成每批最多 50 个。`new` 指当前没有“版本匹配、source fingerprint 匹配且缓存文件有效”的 facet。先过滤有效会话，再按 `updated_at` 从新到旧、opaque session key 降序打破平局，只从未缓存队列选前 N 条。
-- LANGUAGE=zh-CN；只有用户显式提供合法 BCP 47 标签时覆盖。helper 把该语言写入所有本次模型 prompt 和报告；语言变化不使已缓存 facet 失效。
-- 只读 $CODEX_HOME/sessions/ 与 archived_sessions/；只写 $CODEX_HOME/usage-data/insights/。
+- `MAX_NEW_SESSIONS=200`，合法范围 0–200；仅用户显式提供时覆盖。
+- `LANGUAGE=zh-CN`；仅合法 BCP 47 标签可覆盖。
+- 只读 `$CODEX_HOME/sessions/` 与 `archived_sessions/`；只写 `$CODEX_HOME/usage-data/insights/`。
 - 排除当前任务、Insights 自分析任务、少于 2 条用户消息或跨度不足 60 秒的任务。
-- helper 保证每次 next_jobs 最多返回 50 个 job：chunk 和 facet 分批为 50，lens 为 7，At-a-Glance 为 1。调用方不传 limit，也不自行扩批。
+- 最近 200 条未缓存合格会话按 4 个最多 50 条的波次分析。200 是最近样本，不宣称随机统计代表性。
+- 分析版本变化使旧 facet 失效；语言变化不使 facet 失效。
+- `prepare` 完成时冻结一份脱敏分析材料快照并记录快照时间。运行期间源 JSONL 可以继续追加；当前报告始终基于该快照，变化后的 source fingerprint 只使下一轮缓存失效。
 
-## 分析逻辑
+## 分析语义
 
-    本机会话
-      → 确定性会话统计
+    确定性清单与全量 meta
       → 长会话分块摘要
       → 每会话 native-facet-v1
       → 确定性全局聚合
       → 7 个专属 lens
       → 独立 At-a-Glance
-      → 固定模板 report.html
+      → 固定模板 HTML
+      → state-last commit
 
-1. **确定性会话统计**：消息、时长、工具名、语言、Token、Git commit/push、代码增删行、文件、错误类别、中断、响应时间、Task/MCP/Web 使用、消息时段和 30 分钟多任务并行。
-2. **长会话**：用户文本每条最多 500 字符、助手文本最多 300 字符，工具只保留名称。标准化文本超过 30,000 字符时固定按 25,000 字符连续切块；每块独立总结，按原顺序拼接后再提取 facet，不得漏尾部。
-3. **每会话 facet**：只计算用户明确提出的目标，只依据显式反馈推断满意度；输出目标计数、结果、满意度计数、claude_helpfulness、会话类型、摩擦计数与说明、主要成功类型和摘要。Codex 扩展记录重复用户指令与短事件锚点。详见 references/facet-contract.md。
-4. **全局聚合**：消息、工具、代码行等确定性统计覆盖当前发现的全部合格 meta；目标、结果、摩擦等语义统计只覆盖已有 facet 的缓存会话与本轮分析会话。叙事材料最多使用 50 条摘要、20 条摩擦说明和 15 条重复指令；若仍有 remaining，会在 lens 输入和报告中明确覆盖局限。
-5. **7 个专属 lens**：project_areas、interaction_style、what_works、friction_analysis、suggestions、on_the_horizon、fun_ending。每个 lens 有不同 schema，禁止压成同一种 claim。
-6. **At-a-Glance**：七个 lens 全部完成后再独立综合 whats_working、whats_hindering、quick_wins、ambitious_workflows。
+1. 确定性会话统计（meta）：消息、时长、工具名、语言、Token、Git、代码增删行、文件、错误类别、中断、响应时间、Task/MCP/Web、时段及 30 分钟多任务并行。
+2. 长会话：用户单条最多 500 字符，助手单条最多 300 字符，工具保留名称；标准化材料超过 30,000 字符时按 25,000 字符连续切块，Luna/low 完整摘要后按顺序拼接。
+3. Facet：Terra/medium 只统计用户明确目标与显式反馈，生成 native-facet-v1；字段与判定见 `references/facet-contract.md`。
+4. 聚合：确定性统计覆盖全部本次发现的合格 meta；语义统计覆盖已有有效 facet 与本轮成功 facet。叙事材料最多 50 摘要、20 摩擦说明和 15 重复指令，并明确 remaining。
+5. 七 lens：Sol/high 分别生成 `project_areas`、`interaction_style`、`what_works`、`friction_analysis`、`suggestions`、`on_the_horizon`、`fun_ending`，禁止压成通用 claim。
+6. At-a-Glance：Sol/high 独立综合四部分。不要插入 Repeat/Contradiction/Evolution、模型自报评分或无限修订循环。
 
-不要把 Repeat / Contradiction / Evolution、模型自报评分或无限修订循环插入主流程；它们不是此版本观察到的 Claude /insights 实现。
+模型失败采用 best-effort：chunk 最终失败使用该块前 2,000 字符并标记降级；facet 失败跳过会话；lens/At-a-Glance 失败省略或显示 concern。锁、Insights state CAS、hash、隐私或事务失败禁止提交，旧报告保持不变。
 
-Claude Code 2.1.228 对个别 facet/lens 失败采用 best-effort；本 Codex 版为了避免把缺段报告误作完整洞察，要求当前签发批次和七个 lens 全部有效，否则修正该批或停止。这是 Codex 完整性增强，不是 Claude 的故障语义。
+## 报告
 
-## 报告内容
+输出 `report.html` 与 `report-YYYYMMDDTHHMMSSZ.html`。默认简体中文，显示分析快照时间，含四格总览、五项核心统计、七个语义章节、12 类行为图、AGENTS.md 建议、Codex 功能、可复制工作流、未来机会和难忘时刻。单文件静态 HTML 使用左侧粘性导航，640px 以下顶部导航；单一内联 CSS、严格 CSP、零脚本与外部资源、动态文本转义、打印样式。详见 `references/report-contract.md`。
 
-报告顶部是四格 At-a-Glance，随后是“用户消息、代码行、文件、活跃天数、日均消息”五项统计。正文按项目领域、协作方式、有效做法、摩擦与根因、功能建议、工作流建议、未来机会七个导航章节组织，并展示 12 类行为图：目标、工具、语言、会话类型、响应时间、多任务并行、消息时段、工具错误、有效帮助、结果、摩擦和推断满意度。
+## 执行
 
-suggestions 必须保留三组可行动内容：AGENTS.md additions、Codex features、usage patterns；功能、新用法与未来机会都要包含原因、示例或可复制提示。最后显示定性的难忘时刻。
+先完整读取 `references/protocol-contract.md`。令 `INSIGHTS_SKILL_DIR` 为本文件目录，然后在前台启动确定性 Runner；不要由主 Agent 生成 facet、调度子代理或维持 PTY JSON 协议：
 
-输出是默认简体中文的单文件静态 HTML：report.html 与 report-YYYYMMDDTHHMMSSZ.html。桌面左侧粘性导航，640px 以下顶部导航；单一内联 CSS、严格 CSP、零 JavaScript/外部资源、动态文本转义和打印样式。详见 references/report-contract.md。
+    python3 -u "$INSIGHTS_SKILL_DIR/scripts/runner.py" --max-new-sessions 200 --language zh-CN
 
-## 执行协议
+只有用户显式传参时替换 200 或 zh-CN。Runner 默认 Fast，自己启动 6–12 个隔离、只读、Schema 约束的 `codex exec`；主 Agent 只转呈控制台进度和最终结果。不要创建项目内或 `/tmp` 中继文件，不要后台运行，不要为 Runner 或单 Job 设置 timeout/TTL。
 
-执行前读取 references/protocol-contract.md。令 `INSIGHTS_SKILL_DIR` 为当前 SKILL.md 所在目录，在 PTY 中精确启动并等待至少一次工具轮询，确认已关闭回显和 canonical 行缓冲后再发送请求：
+Runner 每 60 秒显示心跳，每 5 分钟显示完整仪表盘，始终包含总体百分比、所有阶段、语义覆盖、并发、吞吐、P50/P90 和 ETA。10 分钟无模型事件只告警，不中断。用户主动暂停时立即向前台 Runner 发送中断；Runner 终止在途进程、删除 partial、把 running 恢复 queued，保留 succeeded。
 
-    stty -echo -icanon min 1 time 0; exec python3 -u "$INSIGHTS_SKILL_DIR/scripts/insights.py"
+若启动返回 `resume_choice_required`，把未完成 run-id 告知用户并询问恢复还是新建；不得自行选择。恢复使用 `--resume <run-id>`，明确新建使用 `--new`。恢复直接读取 SQLite 中带 hash 的脱敏分析材料快照，不重新扫描活跃 JSONL；快照不兼容、损坏或 Insights state 已被其他运行提交时停止，不伪造恢复。
 
-不要加 `--request`，不要创建项目内或 `/tmp` 中继脚本；保持同一进程和 stdin/stdout 打开。每行发送一个 JSON 请求并读取一行 JSON 响应。若用户没有显式传 `MAX_NEW_SESSIONS`，第一条请求必须使用正式默认值 200：
+成功后返回可点击的 `report_path`、归档路径、运行耗时、性能门结果，以及两个恒等式：
 
-    {"op":"prepare","max_new_sessions":200,"language":"zh-CN"}
+    eligible = analyzed + skipped + remaining
+    selected = succeeded + skipped
 
-只有用户显式输入 `$insights MAX_NEW_SESSIONS=N` 时才把 200 替换为 N。`prepare` 最长等待 180 秒；每次等待不超过 30 秒并继续轮询同一进程，不能因一次空输出误判为失败。
-
-仅在 `ok` 为 true 时推进。`result.next` 是下一请求对象：next_jobs 和 commit 原样发送。next_jobs 只返回小型 job descriptor，不含 prompt、material、schema 或 HTML。对每个 descriptor，按 `part=0..prompt_parts-1` 依次发送 `{"op":"read_job","run_id":"...","job_id":"...","part":N}`；拼接所有 `prompt_chunk`，核对 SHA-256 等于 descriptor 的 `prompt_sha256`，并使用响应里的 schema 生成结果。漏读、重复读、越界或串用其他 run 的分片都会失败；没有读完全部分片不得 submit。
-
-submit_jobs 的 `results` 值是 `"<job results>"` 哨兵，只把该哨兵替换为当前 jobs 的结果数组。每项精确为 `{"job_id":"...","result":{...}}`；`result` 必须是 JSON 对象，不得是 JSON 字符串。每条协议响应硬性不超过 64 KiB；`-icanon` 则保证较大的请求行不会被 PTY 的 canonical 输入缓冲截断。
-
-- 对每个 job，只使用其 prompt 和 schema 生成结果；不要交占位 facet、合成结论或 fallback 冒充模型分析。
-- 可把互斥 job 分给子代理；只有主代理持有 helper 进程并提交结果。
-- helper 未收齐全部 chunk 时不会发 facet；未收齐全部 facet 时不会发 lens；未收齐七 lens 时不会发 At-a-Glance；只有 ready_to_commit 才能 commit。
-- commit 只接受 helper-owned run_id 和匹配语言，不接受调用方重传 facet、lens、目录或 prepared state。
-- ready_to_commit 只返回预览字节数和 SHA-256，不回传完整 HTML；commit 必须使用 helper 内存中的同一预览。
-- submit_jobs 逐批原子校验；某项失败则整批零接受。只有 `ok:false` 明确返回同 run_id 的 next_jobs，且能从同一已签发 jobs 生成真实合规结果时，才修正整批并重试。无法生成真实结果时发送 abort；源/state 漂移、隐私、锁、CAS、HTML、事务、非 JSON、EOF、未知/过期 run 等不可恢复错误立即停止，不自动 prepare、不扩大范围、不绕过，也不提交占位结果。
-
-commit 成功响应必须含 generation、report_path、timestamp_report_path、manifest_path、facet_count 和 coverage。完成后把响应中的 report_path 原值做成可点击的本地报告链接，同时返回 timestamp_report_path、覆盖恒等式 `eligible = cached + selected + remaining` 是否成立，以及 `remaining > 0`（是否仍有未处理会话）；最后邀请用户继续深挖报告中的某一节。不要自行构造路径或计数。失败报告必须给出最后一个已确认成功的 op/stage；只有真正发送 commit 后失败，才能称为“提交阶段失败”。完整 JSONL、job envelope 与闭环样例见 references/protocol-contract.md；聚合结构见 references/aggregation-contract.md。
+主动计算目标不超过 90 分钟、端到端不超过 120 分钟；超过时运行仍继续且报告可保留，但不得据此发布新版本。失败时给出最后成功阶段与唯一阻断原因。

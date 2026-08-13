@@ -1,6 +1,6 @@
 # 聚合、Lens 与 At-a-Glance 契约
 
-本页的确定性聚合、七个异构 lens、独立 At-a-Glance 及其报告职责属于 Claude Code 2.1.228 的可观察 /insights 语义；字段中的 AGENTS.md、Codex features、Task/MCP/Web 和 user_instructions_to_codex 是 Codex 表面适配。脱敏、缓存与事务不属于本页分析阶段。
+本页的确定性聚合、七个异构 lens、独立 At-a-Glance 及其报告职责属于 Claude Code 2.1.229 的可观察 /insights 语义；字段中的 AGENTS.md、Codex features、Task/MCP/Web 和 user_instructions_to_codex 是 Codex 表面适配。脱敏、缓存与事务不属于本页分析阶段。
 
 确定性 meta 聚合覆盖当前发现的全部合格会话：会话、日期、消息、时长、Token、工具、语言、Git、项目、中断、错误、响应时间、Task/MCP/Web、代码行、文件、活跃天数、消息时段和多任务并行。目标、结果、满意度、帮助度、会话类型、摩擦与成功只来自已经拥有有效 facet 的会话；remaining 不得被伪装成已经完成语义分析。报告与 lens material 必须携带 eligible/cached/selected/remaining，remaining 大于零时明确说明叙事结论仅覆盖已分析子集。
 

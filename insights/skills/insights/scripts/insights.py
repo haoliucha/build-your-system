@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Codex Insights orchestration and durable report cache.
 
-The product meaning follows the observable Claude Code 2.1.228 pipeline:
+The product meaning follows the observable Claude Code 2.1.229 pipeline:
 deterministic session metrics, one semantic facet per session, seven distinct
 analysis lenses, a separate At-a-Glance synthesis, and a fixed HTML report.
 Redaction, opaque cache keys, schema versioning, and transactional writes are
@@ -10,7 +10,6 @@ Codex safety guardrails; they are not presented as analysis stages.
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import ipaddress
 import json
@@ -19,7 +18,6 @@ import os
 import re
 import shutil
 import sys
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
@@ -37,15 +35,13 @@ from native_report import render_native_report
 
 
 MAX_NEW_SESSIONS = 200
-MODEL_JOB_BATCH = 50
-PROTOCOL_MAX_RESPONSE_BYTES = 64 * 1024
 LANGUAGE = "zh-CN"
-ANALYSIS_VERSION = "claude-insights-meaning-v1"
+ANALYSIS_VERSION = "codex-exec-runner-v1"
 META_SCHEMA_VERSION = "native-meta-v1"
 NORMALIZER_VERSION = "claude-2.1.228-shape-v1"
-FACET_PROMPT_VERSION = "claude-2.1.228-codex-v1"
+FACET_PROMPT_VERSION = "claude-2.1.229-codex-exec-v1"
 FACET_SCHEMA_VERSION = "native-facet-v1"
-REPORT_SCHEMA_VERSION = "native-report-v1"
+REPORT_SCHEMA_VERSION = "native-report-v2"
 
 OUTCOMES = tuple(sorted(_native_analysis.OUTCOMES))
 HELPFULNESS = tuple(sorted(_native_analysis.HELPFULNESS_LEVELS))
@@ -72,11 +68,6 @@ _SESSION_KEY = re.compile(r"^session-[0-9a-f]{16}$")
 _PROJECT_KEY = re.compile(r"^project-[0-9a-f]{8}$")
 _SESSION_KEY_DOMAIN = "codex-insights-session-native-v1"
 _SELF_MARKER = re.compile(r"(?:^|\s)\$insights(?:\s|$)", re.I)
-_PENDING_RUNS: dict[str, dict[str, Any]] = {}
-_PROCESS_CODEX_HOME = Path(
-    os.environ.get("CODEX_HOME") or (Path.home() / ".codex")
-).expanduser().resolve()
-RUN_TTL_SECONDS = 4 * 60 * 60
 
 
 class InsightsError(RuntimeError):
@@ -720,12 +711,16 @@ def _load_cached_facet(output_dir: Path, state_key: str, entry: Mapping[str, Any
 
 
 def _public_session_meta(meta: Mapping[str, Any], project_alias: str, project_label: str) -> dict[str, Any]:
+    tool_counts: dict[str, int] = {}
+    for raw_name, raw_count in dict(meta.get("tool_counts", {})).items():
+        safe_name = redact_text(raw_name)
+        tool_counts[safe_name] = tool_counts.get(safe_name, 0) + int(raw_count)
     return {
         "start_time": str(meta.get("start_time", "")),
         "duration_minutes": int(meta.get("duration_minutes", 0)),
         "user_message_count": int(meta.get("user_message_count", 0)),
         "assistant_message_count": int(meta.get("assistant_message_count", 0)),
-        "tool_counts": dict(meta.get("tool_counts", {})),
+        "tool_counts": tool_counts,
         "languages": dict(meta.get("languages", {})),
         "git_commits": int(meta.get("git_commits", 0)),
         "git_pushes": int(meta.get("git_pushes", 0)),
@@ -826,7 +821,7 @@ def prepare_run(
     cached: list[dict[str, Any]] = []
     uncached: list[dict[str, Any]] = []
     cached_discovered = 0
-    selected_sessions: dict[str, dict[str, Any]] = {}
+    selected_sessions: dict[str, bool] = {}
     source_snapshots: dict[str, dict[str, Any]] = {}
     eligible_metas: list[dict[str, Any]] = []
     for session in sessions:
@@ -837,7 +832,6 @@ def prepare_run(
         public_meta["session_key"] = key
         eligible_metas.append(public_meta)
         source_snapshots[key] = {
-            "source_path": str(Path(session["source_path"]).resolve()),
             "source_hash": session["source_hash"],
         }
         entry = state["sessions"].get(key)
@@ -853,7 +847,7 @@ def prepare_run(
             cached_discovered += 1
     selected = uncached[:max_new_sessions]
     for session in selected:
-        selected_sessions[session["session_key"]] = session
+        selected_sessions[session["session_key"]] = True
     work_items = [_work_item(session) for session in selected]
     inventory.update(
         {
@@ -861,10 +855,11 @@ def prepare_run(
             "selected": len(work_items),
             "remaining": max(0, inventory["eligible"] - cached_discovered - len(work_items)),
             "historical_cached": 0,
+            "snapshot_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
     )
     return {
-        "protocol_version": 4,
+        "protocol_version": 5,
         "generation": state["generation"],
         "state_hash": state_hash,
         "language": language,
@@ -1107,97 +1102,12 @@ def _model_fields(facet: Mapping[str, Any]) -> dict[str, Any]:
 def _job_id(*parts: Any) -> str:
     return "job-" + hashlib.sha256("\0".join(map(str, parts)).encode("utf-8")).hexdigest()[:20]
 
-
-def _protocol_line_bytes(result: Mapping[str, Any]) -> bytes:
-    return (
-        json.dumps(
-            {"ok": True, "result": result},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        + "\n"
-    ).encode("utf-8")
-
-
-def _prompt_pages(run: dict[str, Any], job: Mapping[str, Any]) -> dict[str, Any]:
-    job_id = str(job["job_id"])
-    cached = run["job_pages"].get(job_id)
-    if isinstance(cached, Mapping):
-        return dict(cached)
-    prompt = str(job["prompt"])
-    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    schema = job["schema"]
-    pages: list[str] = []
-    offset = 0
-    while offset < len(prompt):
-        low = offset + 1
-        high = len(prompt)
-        accepted = offset
-        while low <= high:
-            middle = (low + high) // 2
-            candidate = {
-                "run_id": run["run_id"],
-                "job_id": job_id,
-                "part": 999_999_999,
-                "prompt_parts": 999_999_999,
-                "prompt_chunk": prompt[offset:middle],
-                "prompt_sha256": digest,
-                "schema": schema,
-            }
-            if len(_protocol_line_bytes(candidate)) <= PROTOCOL_MAX_RESPONSE_BYTES:
-                accepted = middle
-                low = middle + 1
-            else:
-                high = middle - 1
-        if accepted == offset:
-            raise InsightsError("job schema leaves no room for a prompt page")
-        pages.append(prompt[offset:accepted])
-        offset = accepted
-    if not pages:
-        pages = [""]
-    value = {"prompt_sha256": digest, "pages": pages, "schema": schema}
-    run["job_pages"][job_id] = value
-    return value
-
-
-def _job_descriptor(run: dict[str, Any], job: Mapping[str, Any]) -> dict[str, Any]:
-    paged = _prompt_pages(run, job)
-    descriptor = {
-        key: job[key]
-        for key in (
-            "job_id",
-            "kind",
-            "session_key",
-            "chunk_index",
-            "chunk_total",
-            "lens_id",
-        )
-        if key in job
-    }
-    descriptor.update(
-        {
-            "prompt_sha256": paged["prompt_sha256"],
-            "prompt_parts": len(paged["pages"]),
-        }
-    )
-    return descriptor
-
-
-def _public_stage(run: dict[str, Any], stage: Mapping[str, Any]) -> dict[str, Any]:
-    result = {key: value for key, value in stage.items() if key != "jobs"}
-    result["jobs"] = [_job_descriptor(run, job) for job in stage.get("jobs", [])]
-    response = {"run_id": run["run_id"], **result}
-    if len(_protocol_line_bytes(response)) > PROTOCOL_MAX_RESPONSE_BYTES:
-        raise InsightsError("next_jobs descriptors exceed the protocol line limit")
-    return response
-
-
 def _chunk_jobs(run: Mapping[str, Any]) -> list[dict[str, Any]]:
     jobs: list[dict[str, Any]] = []
     for item in run["work_items"]:
         for index, chunk in enumerate(item.get("chunks", [])):
             job_id = _job_id(run["run_id"], "chunk", item["session_key"], index)
-            if job_id in run["job_results"]:
+            if job_id in run["job_results"] or job_id in run.get("job_skips", set()):
                 continue
             jobs.append(
                 {
@@ -1239,7 +1149,7 @@ def _facet_jobs(run: Mapping[str, Any]) -> list[dict[str, Any]]:
     jobs: list[dict[str, Any]] = []
     for item in run["work_items"]:
         job_id = _job_id(run["run_id"], "facet", item["session_key"])
-        if job_id in run["job_results"]:
+        if job_id in run["job_results"] or job_id in run.get("job_skips", set()):
             continue
         material = _session_material(run, item)
         if material is None:
@@ -1296,7 +1206,7 @@ def _lens_jobs(run: dict[str, Any]) -> list[dict[str, Any]]:
     for value in generated:
         lens_id = value["lens_id"]
         job_id = _job_id(run["run_id"], "lens", lens_id)
-        if job_id in run["job_results"]:
+        if job_id in run["job_results"] or job_id in run.get("job_skips", set()):
             continue
         jobs.append({**value, "job_id": job_id})
     return jobs
@@ -1314,16 +1224,42 @@ def _lens_results(run: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 
 def _glance_job(run: dict[str, Any]) -> dict[str, Any] | None:
     lenses = _lens_results(run)
-    if set(lenses) != set(LENS_IDS):
+    terminal = set(lenses) | {
+        lens_id
+        for lens_id in LENS_IDS
+        if _job_id(run["run_id"], "lens", lens_id) in run.get("job_skips", set())
+    }
+    if terminal != set(LENS_IDS):
         return None
     job_id = _job_id(run["run_id"], "at-a-glance")
-    if job_id in run["job_results"]:
+    if job_id in run["job_results"] or job_id in run.get("job_skips", set()):
         return None
-    value = build_at_a_glance_job(
-        {"aggregate": run["aggregate"], "lens_material": run["lens_material"]},
-        lenses,
-        language=run["language"],
-    )
+    if set(lenses) == set(LENS_IDS):
+        value = build_at_a_glance_job(
+            {"aggregate": run["aggregate"], "lens_material": run["lens_material"]},
+            lenses,
+            language=run["language"],
+        )
+    else:
+        payload = json.dumps(
+            {
+                "aggregate": run["aggregate"],
+                "lens_material": run["lens_material"],
+                "completed_lenses": lenses,
+                "missing_lenses": sorted(set(LENS_IDS) - set(lenses)),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        value = {
+            "kind": "at_a_glance",
+            "prompt": (
+                f"Generate the four-field Codex Insights overview in {run['language']}. "
+                "Use only the completed evidence below; explicitly acknowledge missing sections and do not infer them. "
+                f"Return only JSON matching this schema: {json.dumps(_native_analysis.AT_A_GLANCE_SCHEMA, ensure_ascii=False)}\n{payload}"
+            ),
+            "schema": _native_analysis.AT_A_GLANCE_SCHEMA,
+        }
     return {**value, "job_id": job_id}
 
 
@@ -1371,7 +1307,10 @@ def render_report(
 def _preview(run: dict[str, Any]) -> str:
     glance = run["job_results"].get(_job_id(run["run_id"], "at-a-glance"))
     if not isinstance(glance, Mapping):
-        raise InsightsError("At-a-Glance must complete before preview")
+        if _job_id(run["run_id"], "at-a-glance") not in run.get("job_skips", set()):
+            raise InsightsError("At-a-Glance must complete before preview")
+        concern = "At-a-Glance 模型调用失败；本节已降级，其他成功章节仍保留。"
+        glance = {field: concern for field in _native_analysis.AT_A_GLANCE_FIELDS}
     report = render_report(
         _combined_facets(run),
         language=run["language"],
@@ -1396,10 +1335,10 @@ def _ensure_preview(run: dict[str, Any]) -> str:
 def _stage(run: dict[str, Any]) -> dict[str, Any]:
     chunks = _chunk_jobs(run)
     if chunks:
-        return {"stage": "chunk_summaries", "jobs": chunks[:MODEL_JOB_BATCH]}
+        return {"stage": "chunk_summaries", "jobs": chunks}
     facets = _facet_jobs(run)
     if facets:
-        return {"stage": "session_facets", "jobs": facets[:MODEL_JOB_BATCH]}
+        return {"stage": "session_facets", "jobs": facets}
     lenses = _lens_jobs(run)
     if lenses:
         return {"stage": "lenses", "jobs": lenses}
@@ -1500,14 +1439,16 @@ def _timestamp_filename() -> str:
 
 
 def _verify_run_snapshot(run: Mapping[str, Any]) -> None:
+    """Verify only Insights-owned state.
+
+    Transcript files are append-only live inputs.  The run analyzes the
+    immutable, redacted material captured during prepare; later source changes
+    intentionally invalidate the next cache lookup, not the current commit.
+    """
+
     output = Path(run["output_dir"])
     if _state_snapshot_hash(output) != run.get("state_hash"):
         raise StaleRunError("state changed after prepare")
-    for snapshot in run.get("source_snapshots", {}).values():
-        path = Path(snapshot["source_path"])
-        rows = _read_jsonl(path)
-        if not rows or compute_source_fingerprint(rows) != snapshot["source_hash"]:
-            raise StaleRunError("a report transcript changed after prepare")
 
 
 def _verify_sources(run: Mapping[str, Any]) -> None:
@@ -1656,268 +1597,3 @@ def commit_run(run: dict[str, Any], failpoint: str | None = None) -> dict[str, A
             lock.unlink()
         except FileNotFoundError:
             pass
-
-
-def _public_prepare(prepared: Mapping[str, Any], run_id: str) -> dict[str, Any]:
-    return {
-        "run_id": run_id,
-        "language": prepared["language"],
-        "stats": prepared["inventory"],
-        "legacy_cache_detected": prepared["legacy_cache_detected"],
-        "next": {"op": "next_jobs", "run_id": run_id},
-    }
-
-
-def _cleanup_pending_runs(
-    pending: dict[str, dict[str, Any]], *, now: float | None = None
-) -> list[str]:
-    cutoff = time.monotonic() if now is None else float(now)
-    removed = sorted(
-        run_id
-        for run_id, run in pending.items()
-        if isinstance(run.get("expires_at"), (int, float))
-        and float(run["expires_at"]) <= cutoff
-    )
-    for run_id in removed:
-        pending.pop(run_id, None)
-    return removed
-
-
-def _protocol_home(request: Mapping[str, Any], bind_process_home: bool) -> Path:
-    if not bind_process_home:
-        return Path(request.get("codex_home", _PROCESS_CODEX_HOME)).expanduser().resolve()
-    requested = request.get("codex_home")
-    if requested is not None and Path(requested).expanduser().resolve() != _PROCESS_CODEX_HOME:
-        raise InsightsError("production prepare is bound to the process CODEX_HOME")
-    return _PROCESS_CODEX_HOME
-
-
-def handle_request(
-    request: dict[str, Any],
-    pending_runs: dict[str, dict[str, Any]] | None = None,
-    *,
-    bind_process_home: bool = False,
-) -> dict[str, Any]:
-    if not isinstance(request, dict):
-        raise InsightsError("request must be an object")
-    op = request.get("op")
-    action = request.get("action")
-    if op is None and isinstance(action, str):
-        op = action
-    elif op is not None and action is not None and op != action:
-        raise InsightsError("op and action aliases disagree")
-    if not isinstance(op, str):
-        raise InsightsError("request requires op")
-    pending = _PENDING_RUNS if pending_runs is None else pending_runs
-    _cleanup_pending_runs(pending)
-
-    if op == "prepare":
-        home = _protocol_home(request, bind_process_home)
-        output = (home / "usage-data" / "insights").resolve()
-        if request.get("output_dir") is not None and Path(request["output_dir"]).expanduser().resolve() != output:
-            raise InsightsError("output_dir is fixed to $CODEX_HOME/usage-data/insights")
-        prepared = prepare_run(
-            home,
-            output,
-            current_thread_id=request.get("current_thread_id"),
-            max_new_sessions=request.get("max_new_sessions", MAX_NEW_SESSIONS),
-            language=request.get("language", LANGUAGE),
-        )
-        run_id = uuid.uuid4().hex
-        run = {
-            **prepared,
-            "run_id": run_id,
-            "job_results": {},
-            "job_pages": {},
-            "job_reads": {},
-            "aggregate": None,
-            "lens_material": None,
-            "preview_html": None,
-            "expires_at": time.monotonic() + RUN_TTL_SECONDS,
-        }
-        pending[run_id] = run
-        result = _public_prepare(prepared, run_id)
-    elif op == "next_jobs":
-        run_id = request.get("run_id")
-        run = pending.get(run_id) if isinstance(run_id, str) else None
-        if run is None:
-            raise InsightsError("unknown run_id")
-        run["expires_at"] = time.monotonic() + RUN_TTL_SECONDS
-        result = _public_stage(run, _stage(run))
-        result["next"] = (
-            {"op": "commit", "run_id": run_id}
-            if result["stage"] == "ready_to_commit"
-            else {"op": "submit_jobs", "run_id": run_id, "results": "<job results>"}
-        )
-    elif op == "read_job":
-        allowed = {"op", "action", "run_id", "job_id", "part"}
-        if set(request) - allowed:
-            raise InsightsError("read_job accepts only run_id, job_id and part")
-        run_id = request.get("run_id")
-        run = pending.get(run_id) if isinstance(run_id, str) else None
-        if run is None:
-            raise InsightsError("unknown run_id")
-        job_id = request.get("job_id")
-        current = _stage(run)
-        expected = {job["job_id"]: job for job in current["jobs"]}
-        job = expected.get(job_id) if isinstance(job_id, str) else None
-        if job is None:
-            raise InsightsError("unknown or currently blocked job")
-        part = request.get("part")
-        paged = _prompt_pages(run, job)
-        if isinstance(part, bool) or not isinstance(part, int) or not 0 <= part < len(paged["pages"]):
-            raise InsightsError("prompt part is out of range")
-        already_read = run["job_reads"].setdefault(job_id, set())
-        if part in already_read:
-            raise InsightsError("prompt part was already read")
-        result = {
-            "run_id": run_id,
-            "job_id": job_id,
-            "part": part,
-            "prompt_parts": len(paged["pages"]),
-            "prompt_chunk": paged["pages"][part],
-            "prompt_sha256": paged["prompt_sha256"],
-            "schema": paged["schema"],
-        }
-        if len(_protocol_line_bytes(result)) > PROTOCOL_MAX_RESPONSE_BYTES:
-            raise InsightsError("read_job response exceeds the protocol line limit")
-        already_read.add(part)
-        run["expires_at"] = time.monotonic() + RUN_TTL_SECONDS
-    elif op == "submit_jobs":
-        run_id = request.get("run_id")
-        run = pending.get(run_id) if isinstance(run_id, str) else None
-        values = request.get("results")
-        if run is None:
-            raise InsightsError("unknown run_id")
-        if not isinstance(values, list) or not values:
-            raise InsightsError("submit_jobs requires a non-empty results array")
-        current = _stage(run)
-        expected = {job["job_id"]: job for job in current["jobs"]}
-        staged: dict[str, dict[str, Any]] = {}
-        for value in values:
-            if not isinstance(value, Mapping) or set(value) != {"job_id", "result"}:
-                raise InsightsError("each submission needs job_id and result")
-            job_id = str(value["job_id"])
-            if job_id in run["job_results"] or job_id in staged:
-                raise InsightsError(f"job already submitted: {job_id}")
-            job = expected.get(job_id)
-            if job is None:
-                raise InsightsError(f"unknown or currently blocked job: {job_id}")
-            paged = _prompt_pages(run, job)
-            if run["job_reads"].get(job_id, set()) != set(range(len(paged["pages"]))):
-                raise InsightsError(f"all prompt parts must be read before submitting job: {job_id}")
-            staged[job_id] = _validated_job_result(run, job, value["result"])
-        run["job_results"].update(staged)
-        run["expires_at"] = time.monotonic() + RUN_TTL_SECONDS
-        result = {
-            "run_id": run_id,
-            "accepted": len(values),
-            "next": {"op": "next_jobs", "run_id": run_id},
-        }
-    elif op == "commit":
-        allowed = {"op", "action", "run_id", "language"}
-        if set(request) - allowed:
-            raise InsightsError("commit accepts only run_id and optional matching language")
-        run_id = request.get("run_id")
-        run = pending.get(run_id) if isinstance(run_id, str) else None
-        if run is None:
-            raise InsightsError("unknown or consumed run_id")
-        if request.get("language", run["language"]) != run["language"]:
-            raise InsightsError("commit language must match prepare")
-        result = commit_run(run)
-        pending.pop(run_id, None)
-    elif op == "abort":
-        allowed = {"op", "action", "run_id"}
-        if set(request) - allowed:
-            raise InsightsError("abort accepts only run_id")
-        run_id = request.get("run_id")
-        if not isinstance(run_id, str) or run_id not in pending:
-            raise InsightsError("unknown run_id")
-        pending.pop(run_id, None)
-        result = {"run_id": run_id, "aborted": True, "next": {"op": "prepare"}}
-    elif op == "render":
-        result = {
-            "html": render_report(
-                request.get("facets", []),
-                language=request.get("language", LANGUAGE),
-                coverage=request.get("coverage"),
-                aggregate=request.get("aggregate"),
-                lenses=request.get("lenses"),
-                at_a_glance=request.get("at_a_glance"),
-            )
-        }
-    else:
-        raise InsightsError(f"unsupported op: {op}")
-    return {"ok": True, "result": result}
-
-
-def serve_json_lines(input_stream=sys.stdin, output_stream=sys.stdout) -> int:
-    pending_runs: dict[str, dict[str, Any]] = {}
-    for line in input_stream:
-        if not line.strip():
-            continue
-        request: Any = None
-        try:
-            request = json.loads(line)
-            response = handle_request(
-                request,
-                pending_runs,
-                bind_process_home=True,
-            )
-        except Exception as exc:
-            run_id = request.get("run_id") if isinstance(request, Mapping) else None
-            recoverable = isinstance(run_id, str) and run_id in pending_runs
-            response = {
-                "ok": False,
-                "error": {
-                    "type": type(exc).__name__,
-                    "message": str(exc),
-                    "next": (
-                        {"op": "next_jobs", "run_id": run_id}
-                        if recoverable
-                        else {"op": "prepare"}
-                    ),
-                },
-            }
-        output_stream.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
-        output_stream.flush()
-    return 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Deterministic helper for $insights")
-    parser.add_argument("--request", help="handle one stateless JSON request")
-    args = parser.parse_args(argv)
-    if args.request:
-        request: Any = None
-        try:
-            request = json.loads(args.request)
-            response = handle_request(request, bind_process_home=True)
-        except Exception as exc:
-            run_id = request.get("run_id") if isinstance(request, Mapping) else None
-            recoverable = isinstance(run_id, str) and run_id in _PENDING_RUNS
-            print(
-                json.dumps(
-                    {
-                        "ok": False,
-                        "error": {
-                            "type": type(exc).__name__,
-                            "message": str(exc),
-                            "next": (
-                                {"op": "next_jobs", "run_id": run_id}
-                                if recoverable
-                                else {"op": "prepare"}
-                            ),
-                        },
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            return 1
-        print(json.dumps(response, ensure_ascii=False))
-        return 0
-    return serve_json_lines()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

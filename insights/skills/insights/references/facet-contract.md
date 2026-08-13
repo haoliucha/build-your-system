@@ -1,6 +1,6 @@
 # native-facet-v1 契约
 
-模型字段与本机 Claude Code 2.1.228 的可观察 facet 语义一致：
+模型字段与本机 Claude Code 2.1.229 的可观察 facet 语义一致：
 
     underlying_goal: 用户根本想完成什么
     goal_categories: {category: count}
@@ -17,6 +17,6 @@
 
 只计算用户明确提出的目标，不把 Codex 自主探索、计划或子任务算成用户目标。短设置、问候或热身使用 goal_categories.warmup_minimal，不把 warmup_minimal 当 session_type。
 
-满意度使用 Claude Code 2.1.228 可观察提示中的显式信号：Yay/great/perfect→happy，thanks/looks good/that works→satisfied，ok now let's… 且无抱怨继续→likely_satisfied，that's not right/try again→dissatisfied，this is broken/I give up→frustrated；单纯继续对话不等于满意。摩擦优先使用 misunderstood_request、wrong_approach、buggy_code、user_rejected_action、excessive_changes 等提示给出的类别，同一事件不得重复计算。
+满意度使用 Claude Code 2.1.229 可观察提示中的显式信号：Yay/great/perfect→happy，thanks/looks good/that works→satisfied，ok now let's… 且无抱怨继续→likely_satisfied，that's not right/try again→dissatisfied，this is broken/I give up→frustrated；单纯继续对话不等于满意。摩擦优先使用 misunderstood_request、wrong_approach、buggy_code、user_rejected_action、excessive_changes 等提示给出的类别，同一事件不得重复计算。
 
 helper 另外持久化版本、opaque session key、source hash、日期、安全项目标签、来源和确定性 session meta。模型不得生成或改写这些字段。analysis_origin 必须为 model；占位、fallback 或手工模板不得写入已分析缓存。

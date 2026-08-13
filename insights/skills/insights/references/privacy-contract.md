@@ -1,16 +1,15 @@
-# 安全与持久化护栏
+# 隔离、隐私与提交边界
 
-这些规则全部是 Codex 安全与持久化增强，不是 Claude /insights 的产品 meaning，也不宣称是 Claude 2.1.228 的专属脱敏、缓存或事务实现。Claude 可观察语义只决定洞察分析与报告信息架构；本页规则不得作为额外 lens、评分或结论写入报告。
+这些是 Codex 工程护栏，不是 Claude `/insights` 的产品 meaning，也不是新的分析视角。
 
-- 原始 sessions/ 与 archived_sessions/ 只读。
-- 模型材料在不破坏目标、结果、文件类型、错误和反馈语义的前提下，拦截密钥、Bearer、Cookie、邮箱、IP、私人绝对路径和疑似高熵凭据。
-- 使用安全项目 basename/标签保留领域语义；不把所有项目磨成不可读编号。
-- 原始正文、原始绝对路径和原始 session ID 不进入 facet、state、manifest 或报告；缓存使用 opaque key 与 source fingerprint。
-- 输出目录固定为 $CODEX_HOME/usage-data/insights。
-- helper-owned run state 仅驻留同一长驻进程；commit 不接受调用方提供目录、prepared、facet 或 lens。
-- next_jobs 只公开不含正文的 job descriptor；模型 Prompt 通过 read_job 以内存分页读取，单条协议响应不超过 64 KiB。PTY 同时关闭回显与 canonical 行缓冲，避免大请求被终端驱动截断。全部分片未读完时拒绝提交，Prompt 分片不落缓存或项目临时文件。
-- 版本、manifest/state/facet hash、cached/selected source fingerprint、锁、generation CAS、staging、备份、回滚和 state-last 任一检查失败即不提交；commit 在持锁后和安装 state 前各复核 run snapshot。
-- submit_jobs 是当前签发阶段内的原子批次；模型结果错误只允许按 helper 返回的同 run next_jobs 重做整批。无法产生真实结果时 abort；源/state、隐私、锁、CAS、HTML 或事务错误终止本次运行，不猜测恢复或绕过校验。
-- helper run 闲置 4 小时过期；成功 next_jobs/submit_jobs 刷新 TTL。结束不了的 run 必须显式 abort，不留待占位或 fallback 补齐。
-
-正则脱敏是保守护栏，不是匿名性证明。若拦截会让核心洞察失真，停止并报告，而不是静默删除关键语义或虚构替代内容。
+- 会话源只读；输出固定为 `$CODEX_HOME/usage-data/insights/`。
+- 原始 session ID 只用于发现与去重；持久 facet 使用 opaque key、source fingerprint 和安全项目标签。
+- 模型输入先拦截 secret、Bearer、Cookie、邮箱、IP 与私人绝对路径；仍保留目标、错误、反馈和结果语义。
+- 每个 `codex exec` 使用隔离 HOME/CODEX_HOME、现有登录凭据、只读 sandbox、忽略用户配置与项目规则，并关闭 Shell、Web、MCP、Apps、浏览器、Computer Use、图片与多代理。
+- stdout JSONL 和 stderr 必须同时持续排空；Schema 结果先写 `.partial`，通过验证后原子接纳。暂停或失败删除 partial。
+- SQLite 队列权限 0600，WAL + FULL synchronous；成功 facet 立即持久化，running 在恢复时回到 queued。
+- 清单阶段把标准化、脱敏后的分析材料冻结到 SQLite，支持崩溃恢复；不持久化原始 JSONL、原始路径或原始 session ID，成功提交后清除材料快照。
+- 分析版本、meta、normalizer、facet prompt 与 source fingerprint 共同决定缓存有效性；语言变化不使 facet 失效。
+- 当前运行基于 `snapshot_at` 时刻的不可变分析材料；源 JSONL 后续追加只让下一轮 source fingerprint 失配，不阻断当前提交。
+- commit 核验分析材料 hash 与 Insights state，使用独占锁、generation CAS、staging、备份、manifest/state/facet hash、回滚和 state-last。
+- 锁、Insights state CAS、hash、隐私或事务错误 fail closed；旧报告在新提交成功前保持可用。

@@ -73,6 +73,7 @@ _TEXT = {
         "cached": "沿用缓存",
         "selected": "本轮分析",
         "remaining": "尚待处理",
+        "snapshot_at": "分析快照时间",
         "no_data": "暂无数据",
         "median": "中位数",
         "average": "平均",
@@ -135,6 +136,7 @@ _TEXT = {
         "cached": "Cached",
         "selected": "Analyzed now",
         "remaining": "Remaining",
+        "snapshot_at": "Analysis snapshot",
         "no_data": "No data",
         "median": "Median",
         "average": "Average",
@@ -504,6 +506,12 @@ def render_native_report(
         f'<span><strong>{_escape(t[key])}</strong> {_number(coverage.get(key))}</span>'
         for key in ("eligible", "cached", "selected", "remaining")
     )
+    snapshot_html = ""
+    if coverage.get("snapshot_at"):
+        snapshot_html = (
+            f'<p><strong>{_escape(t["snapshot_at"])}：</strong>'
+            f'{_escape(coverage.get("snapshot_at"))}</p>'
+        )
     remaining = _count(coverage.get("remaining"))
     coverage_notice = ""
     if remaining:
@@ -583,7 +591,7 @@ def render_native_report(
 {_paragraph(horizon.get("intro"), "lead")}<h3 class="subsection-title">{_escape(t["opportunities"])}</h3>{_opportunities(horizon, t)}
 <aside class="fun-ending"><h3>{_escape(t["memorable"])}：{_escape(fun_ending.get("headline"))}</h3>{_paragraph(fun_ending.get("detail"))}</aside></section>
 
-<footer class="method"><h2>{_escape(t["method"])}</h2><div class="coverage">{coverage_html}</div></footer>
+<footer class="method"><h2>{_escape(t["method"])}</h2><div class="coverage">{coverage_html}</div>{snapshot_html}</footer>
 </main>
 </div>
 </body>
