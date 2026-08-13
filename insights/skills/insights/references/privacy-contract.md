@@ -8,6 +8,7 @@
 - 原始正文、原始绝对路径和原始 session ID 不进入 facet、state、manifest 或报告；缓存使用 opaque key 与 source fingerprint。
 - 输出目录固定为 $CODEX_HOME/usage-data/insights。
 - helper-owned run state 仅驻留同一长驻进程；commit 不接受调用方提供目录、prepared、facet 或 lens。
+- next_jobs 只公开不含正文的 job descriptor；模型 Prompt 通过 read_job 以内存分页读取，单条协议响应不超过 64 KiB。PTY 同时关闭回显与 canonical 行缓冲，避免大请求被终端驱动截断。全部分片未读完时拒绝提交，Prompt 分片不落缓存或项目临时文件。
 - 版本、manifest/state/facet hash、cached/selected source fingerprint、锁、generation CAS、staging、备份、回滚和 state-last 任一检查失败即不提交；commit 在持锁后和安装 state 前各复核 run snapshot。
 - submit_jobs 是当前签发阶段内的原子批次；模型结果错误只允许按 helper 返回的同 run next_jobs 重做整批。无法产生真实结果时 abort；源/state、隐私、锁、CAS、HTML 或事务错误终止本次运行，不猜测恢复或绕过校验。
 - helper run 闲置 4 小时过期；成功 next_jobs/submit_jobs 刷新 TTL。结束不了的 run 必须显式 abort，不留待占位或 fallback 补齐。

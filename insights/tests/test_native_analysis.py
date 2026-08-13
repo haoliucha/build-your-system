@@ -183,9 +183,25 @@ class NativeAnalysisParityTests(unittest.TestCase):
             self.assertGreater(len(chunk_jobs), 1)
             self.assertTrue(all(job["kind"] == "chunk_summary" for job in chunk_jobs))
 
+            def read_prompt(job):
+                parts = []
+                for part in range(job["prompt_parts"]):
+                    page = self.m.handle_request(
+                        {
+                            "op": "read_job",
+                            "run_id": run_id,
+                            "job_id": job["job_id"],
+                            "part": part,
+                        },
+                        pending,
+                    )["result"]
+                    parts.append(page["prompt_chunk"])
+                return "".join(parts)
+
             # A partial, out-of-order submission is accepted, but may not make
             # a facet job visible until every source chunk has a summary.
             last_job = chunk_jobs[-1]
+            read_prompt(last_job)
             self.m.handle_request(
                 {
                     "op": "submit_jobs",
@@ -203,12 +219,14 @@ class NativeAnalysisParityTests(unittest.TestCase):
                 {"job_id": job["job_id"], "result": {"summary": f"summary-{job['chunk_index']}"}}
                 for job in reversed(remaining)
             ]
+            for job in remaining:
+                read_prompt(job)
             self.m.handle_request({"op": "submit_jobs", "run_id": run_id, "results": results}, pending)
             reduced = self.m.handle_request({"op": "next_jobs", "run_id": run_id}, pending)["result"]
             self.assertEqual(len(reduced["jobs"]), 1)
             facet_job = reduced["jobs"][0]
             self.assertEqual(facet_job["kind"], "session_facet")
-            material = facet_job["material"]
+            material = read_prompt(facet_job)
             expected = [f"summary-{job['chunk_index']}" for job in chunk_jobs[:-1]] + ["summary-last"]
             positions = [material.index(summary) for summary in expected]
             self.assertEqual(positions, sorted(positions))

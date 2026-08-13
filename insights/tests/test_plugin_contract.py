@@ -9,7 +9,7 @@ class PluginContractTests(unittest.TestCase):
     def test_codex_only_manifest_and_skill(self):
         manifest = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["name"], "insights")
-        self.assertEqual(manifest["version"], "0.2.0")
+        self.assertEqual(manifest["version"], "0.2.1")
         self.assertFalse((ROOT / ".claude-plugin").exists())
         skill = (ROOT / "skills" / "insights" / "SKILL.md").read_text(encoding="utf-8")
         for term in (
@@ -22,7 +22,10 @@ class PluginContractTests(unittest.TestCase):
             "report.html",
             "$insights",
             "next_jobs",
+            "read_job",
             "submit_jobs",
+            "stty -echo -icanon min 1 time 0",
+            '"max_new_sessions":200',
         ):
             self.assertIn(term, skill)
         for incorrect_native_claim in ("→ Repeat", "五项质检", "facet_v2", "privacy-first"):

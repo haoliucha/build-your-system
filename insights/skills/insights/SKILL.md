@@ -55,20 +55,25 @@ suggestions 必须保留三组可行动内容：AGENTS.md additions、Codex feat
 
 ## 执行协议
 
-执行前读取 references/protocol-contract.md。令 `INSIGHTS_SKILL_DIR` 为当前 SKILL.md 所在目录，精确启动：
+执行前读取 references/protocol-contract.md。令 `INSIGHTS_SKILL_DIR` 为当前 SKILL.md 所在目录，在 PTY 中精确启动并等待至少一次工具轮询，确认已关闭回显和 canonical 行缓冲后再发送请求：
 
-    python3 "$INSIGHTS_SKILL_DIR/scripts/insights.py"
+    stty -echo -icanon min 1 time 0; exec python3 -u "$INSIGHTS_SKILL_DIR/scripts/insights.py"
 
-不要加 `--request`；保持同一进程和 stdin/stdout 打开。每行发送一个 JSON 请求并读取一行 JSON 响应。第一条请求为：
+不要加 `--request`，不要创建项目内或 `/tmp` 中继脚本；保持同一进程和 stdin/stdout 打开。每行发送一个 JSON 请求并读取一行 JSON 响应。若用户没有显式传 `MAX_NEW_SESSIONS`，第一条请求必须使用正式默认值 200：
 
-    {"op":"prepare","max_new_sessions":10,"language":"zh-CN"}
+    {"op":"prepare","max_new_sessions":200,"language":"zh-CN"}
 
-仅在 `ok` 为 true 时推进。`result.next` 是下一请求对象：next_jobs 和 commit 原样发送；submit_jobs 的 `results` 值是 `"<job results>"` 哨兵，只把该哨兵替换为当前 jobs 的结果数组。每项精确为 `{"job_id":"...","result":{...}}`；`result` 必须是 JSON 对象，不得是 JSON 字符串。
+只有用户显式输入 `$insights MAX_NEW_SESSIONS=N` 时才把 200 替换为 N。`prepare` 最长等待 180 秒；每次等待不超过 30 秒并继续轮询同一进程，不能因一次空输出误判为失败。
+
+仅在 `ok` 为 true 时推进。`result.next` 是下一请求对象：next_jobs 和 commit 原样发送。next_jobs 只返回小型 job descriptor，不含 prompt、material、schema 或 HTML。对每个 descriptor，按 `part=0..prompt_parts-1` 依次发送 `{"op":"read_job","run_id":"...","job_id":"...","part":N}`；拼接所有 `prompt_chunk`，核对 SHA-256 等于 descriptor 的 `prompt_sha256`，并使用响应里的 schema 生成结果。漏读、重复读、越界或串用其他 run 的分片都会失败；没有读完全部分片不得 submit。
+
+submit_jobs 的 `results` 值是 `"<job results>"` 哨兵，只把该哨兵替换为当前 jobs 的结果数组。每项精确为 `{"job_id":"...","result":{...}}`；`result` 必须是 JSON 对象，不得是 JSON 字符串。每条协议响应硬性不超过 64 KiB；`-icanon` 则保证较大的请求行不会被 PTY 的 canonical 输入缓冲截断。
 
 - 对每个 job，只使用其 prompt 和 schema 生成结果；不要交占位 facet、合成结论或 fallback 冒充模型分析。
 - 可把互斥 job 分给子代理；只有主代理持有 helper 进程并提交结果。
 - helper 未收齐全部 chunk 时不会发 facet；未收齐全部 facet 时不会发 lens；未收齐七 lens 时不会发 At-a-Glance；只有 ready_to_commit 才能 commit。
 - commit 只接受 helper-owned run_id 和匹配语言，不接受调用方重传 facet、lens、目录或 prepared state。
+- ready_to_commit 只返回预览字节数和 SHA-256，不回传完整 HTML；commit 必须使用 helper 内存中的同一预览。
 - submit_jobs 逐批原子校验；某项失败则整批零接受。只有 `ok:false` 明确返回同 run_id 的 next_jobs，且能从同一已签发 jobs 生成真实合规结果时，才修正整批并重试。无法生成真实结果时发送 abort；源/state 漂移、隐私、锁、CAS、HTML、事务、非 JSON、EOF、未知/过期 run 等不可恢复错误立即停止，不自动 prepare、不扩大范围、不绕过，也不提交占位结果。
 
-commit 成功响应必须含 generation、report_path、timestamp_report_path、manifest_path、facet_count 和 coverage。完成后把响应中的 report_path 原值做成可点击的本地报告链接，同时返回 timestamp_report_path、覆盖恒等式 `eligible = cached + selected + remaining` 是否成立，以及 `remaining > 0`（是否仍有未处理会话）；最后邀请用户继续深挖报告中的某一节。不要自行构造路径或计数。完整 JSONL、job envelope 与闭环样例见 references/protocol-contract.md；聚合结构见 references/aggregation-contract.md。
+commit 成功响应必须含 generation、report_path、timestamp_report_path、manifest_path、facet_count 和 coverage。完成后把响应中的 report_path 原值做成可点击的本地报告链接，同时返回 timestamp_report_path、覆盖恒等式 `eligible = cached + selected + remaining` 是否成立，以及 `remaining > 0`（是否仍有未处理会话）；最后邀请用户继续深挖报告中的某一节。不要自行构造路径或计数。失败报告必须给出最后一个已确认成功的 op/stage；只有真正发送 commit 后失败，才能称为“提交阶段失败”。完整 JSONL、job envelope 与闭环样例见 references/protocol-contract.md；聚合结构见 references/aggregation-contract.md。

@@ -40,6 +40,8 @@
 
 Claude Code 2.1.228 对个别 facet/lens 失败采用 best-effort；本 Codex 版要求当前批次和七个 lens 全部有效，失败时修正同批或停止，避免把缺段报告冒充完整结果。这是 Codex 完整性增强，不是 Claude 的故障语义。
 
+若使用插件 helper，必须直接维持一个关闭回显、关闭 canonical 行缓冲且无缓冲输出的长驻 PTY 进程；启动形式为 `stty -echo -icanon min 1 time 0; exec python3 -u <helper>`，不得创建项目内或临时中继脚本。`next_jobs` 只接收小型 descriptor；对每个 job 使用 `read_job` 按序读取全部 prompt 分片，拼接后验证 SHA-256，再依据返回的 schema 生成结果。单条协议响应不得超过 64 KiB，未读完分片不得提交。无参数 `$insights` 的 prepare 上限是 200；只有我显式写出 `MAX_NEW_SESSIONS=N` 才覆盖。`prepare` 可等待最多 180 秒，每次轮询不超过 30 秒，空输出不等于失败。
+
 生成固定模板的单文件静态 HTML 报告：
 
 - 默认 html lang 为 zh-CN。
@@ -52,4 +54,4 @@ Claude Code 2.1.228 对个别 facet/lens 失败采用 best-effort；本 Codex �
 
 最新报告写入 CODEX_HOME/usage-data/insights/report.html，归档为 report-YYYYMMDDTHHMMSSZ.html。facet 缓存必须绑定 opaque session key、完整 source fingerprint、分析版本、meta 版本、标准化版本和 facet prompt 版本；源变化或分析版本变化时重新分析，语言变化不使 facet 失效。提交使用独占锁、generation CAS、staging、备份、回滚和 state-last；模型占位、fallback 或模板结果不得写成已分析 facet。
 
-完成时把最新报告路径做成可点击本地链接，同时返回时间戳报告路径、合格=缓存+本轮新增+尚未处理的覆盖恒等式，以及任何尚未处理数量，并邀请我继续深挖报告中的某一节。若 schema、隐私、源变化、锁、缓存或事务检查失败，停止并报告唯一阻断原因，不扩大范围或重复运行绕过。
+完成时把最新报告路径做成可点击本地链接，同时返回时间戳报告路径、合格=缓存+本轮新增+尚未处理的覆盖恒等式，以及任何尚未处理数量，并邀请我继续深挖报告中的某一节。若 schema、隐私、源变化、锁、缓存或事务检查失败，停止并报告唯一阻断原因和最后一个已确认成功的 op/stage，不扩大范围或重复运行绕过；没有实际发送 commit 时不得声称提交阶段失败。

@@ -38,6 +38,7 @@ from native_report import render_native_report
 
 MAX_NEW_SESSIONS = 200
 MODEL_JOB_BATCH = 50
+PROTOCOL_MAX_RESPONSE_BYTES = 64 * 1024
 LANGUAGE = "zh-CN"
 ANALYSIS_VERSION = "claude-insights-meaning-v1"
 META_SCHEMA_VERSION = "native-meta-v1"
@@ -863,7 +864,7 @@ def prepare_run(
         }
     )
     return {
-        "protocol_version": 3,
+        "protocol_version": 4,
         "generation": state["generation"],
         "state_hash": state_hash,
         "language": language,
@@ -1107,6 +1108,90 @@ def _job_id(*parts: Any) -> str:
     return "job-" + hashlib.sha256("\0".join(map(str, parts)).encode("utf-8")).hexdigest()[:20]
 
 
+def _protocol_line_bytes(result: Mapping[str, Any]) -> bytes:
+    return (
+        json.dumps(
+            {"ok": True, "result": result},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _prompt_pages(run: dict[str, Any], job: Mapping[str, Any]) -> dict[str, Any]:
+    job_id = str(job["job_id"])
+    cached = run["job_pages"].get(job_id)
+    if isinstance(cached, Mapping):
+        return dict(cached)
+    prompt = str(job["prompt"])
+    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    schema = job["schema"]
+    pages: list[str] = []
+    offset = 0
+    while offset < len(prompt):
+        low = offset + 1
+        high = len(prompt)
+        accepted = offset
+        while low <= high:
+            middle = (low + high) // 2
+            candidate = {
+                "run_id": run["run_id"],
+                "job_id": job_id,
+                "part": 999_999_999,
+                "prompt_parts": 999_999_999,
+                "prompt_chunk": prompt[offset:middle],
+                "prompt_sha256": digest,
+                "schema": schema,
+            }
+            if len(_protocol_line_bytes(candidate)) <= PROTOCOL_MAX_RESPONSE_BYTES:
+                accepted = middle
+                low = middle + 1
+            else:
+                high = middle - 1
+        if accepted == offset:
+            raise InsightsError("job schema leaves no room for a prompt page")
+        pages.append(prompt[offset:accepted])
+        offset = accepted
+    if not pages:
+        pages = [""]
+    value = {"prompt_sha256": digest, "pages": pages, "schema": schema}
+    run["job_pages"][job_id] = value
+    return value
+
+
+def _job_descriptor(run: dict[str, Any], job: Mapping[str, Any]) -> dict[str, Any]:
+    paged = _prompt_pages(run, job)
+    descriptor = {
+        key: job[key]
+        for key in (
+            "job_id",
+            "kind",
+            "session_key",
+            "chunk_index",
+            "chunk_total",
+            "lens_id",
+        )
+        if key in job
+    }
+    descriptor.update(
+        {
+            "prompt_sha256": paged["prompt_sha256"],
+            "prompt_parts": len(paged["pages"]),
+        }
+    )
+    return descriptor
+
+
+def _public_stage(run: dict[str, Any], stage: Mapping[str, Any]) -> dict[str, Any]:
+    result = {key: value for key, value in stage.items() if key != "jobs"}
+    result["jobs"] = [_job_descriptor(run, job) for job in stage.get("jobs", [])]
+    response = {"run_id": run["run_id"], **result}
+    if len(_protocol_line_bytes(response)) > PROTOCOL_MAX_RESPONSE_BYTES:
+        raise InsightsError("next_jobs descriptors exceed the protocol line limit")
+    return response
+
+
 def _chunk_jobs(run: Mapping[str, Any]) -> list[dict[str, Any]]:
     jobs: list[dict[str, Any]] = []
     for item in run["work_items"]:
@@ -1300,6 +1385,14 @@ def _preview(run: dict[str, Any]) -> str:
     return report
 
 
+def _ensure_preview(run: dict[str, Any]) -> str:
+    preview = run.get("preview_html")
+    if not isinstance(preview, str):
+        preview = _preview(run)
+        run["preview_html"] = preview
+    return preview
+
+
 def _stage(run: dict[str, Any]) -> dict[str, Any]:
     chunks = _chunk_jobs(run)
     if chunks:
@@ -1313,7 +1406,14 @@ def _stage(run: dict[str, Any]) -> dict[str, Any]:
     glance = _glance_job(run)
     if glance is not None:
         return {"stage": "at_a_glance", "jobs": [glance]}
-    return {"stage": "ready_to_commit", "jobs": [], "preview_html": _preview(run)}
+    preview = _ensure_preview(run)
+    encoded = preview.encode("utf-8")
+    return {
+        "stage": "ready_to_commit",
+        "jobs": [],
+        "preview_bytes": len(encoded),
+        "preview_sha256": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 def _validated_job_result(run: Mapping[str, Any], job: Mapping[str, Any], value: Any) -> dict[str, Any]:
@@ -1442,7 +1542,7 @@ def commit_run(run: dict[str, Any], failpoint: str | None = None) -> dict[str, A
         timestamp_name = _timestamp_filename()
         if (output / timestamp_name).exists():
             raise InsightsError(f"timestamp report already exists: {timestamp_name}")
-        report = ready["preview_html"].encode("utf-8")
+        report = _ensure_preview(run).encode("utf-8")
         artifacts: dict[str, bytes] = {
             "report.html": report,
             timestamp_name: report,
@@ -1628,8 +1728,11 @@ def handle_request(
             **prepared,
             "run_id": run_id,
             "job_results": {},
+            "job_pages": {},
+            "job_reads": {},
             "aggregate": None,
             "lens_material": None,
+            "preview_html": None,
             "expires_at": time.monotonic() + RUN_TTL_SECONDS,
         }
         pending[run_id] = run
@@ -1640,12 +1743,46 @@ def handle_request(
         if run is None:
             raise InsightsError("unknown run_id")
         run["expires_at"] = time.monotonic() + RUN_TTL_SECONDS
-        result = {"run_id": run_id, **_stage(run)}
+        result = _public_stage(run, _stage(run))
         result["next"] = (
             {"op": "commit", "run_id": run_id}
             if result["stage"] == "ready_to_commit"
             else {"op": "submit_jobs", "run_id": run_id, "results": "<job results>"}
         )
+    elif op == "read_job":
+        allowed = {"op", "action", "run_id", "job_id", "part"}
+        if set(request) - allowed:
+            raise InsightsError("read_job accepts only run_id, job_id and part")
+        run_id = request.get("run_id")
+        run = pending.get(run_id) if isinstance(run_id, str) else None
+        if run is None:
+            raise InsightsError("unknown run_id")
+        job_id = request.get("job_id")
+        current = _stage(run)
+        expected = {job["job_id"]: job for job in current["jobs"]}
+        job = expected.get(job_id) if isinstance(job_id, str) else None
+        if job is None:
+            raise InsightsError("unknown or currently blocked job")
+        part = request.get("part")
+        paged = _prompt_pages(run, job)
+        if isinstance(part, bool) or not isinstance(part, int) or not 0 <= part < len(paged["pages"]):
+            raise InsightsError("prompt part is out of range")
+        already_read = run["job_reads"].setdefault(job_id, set())
+        if part in already_read:
+            raise InsightsError("prompt part was already read")
+        result = {
+            "run_id": run_id,
+            "job_id": job_id,
+            "part": part,
+            "prompt_parts": len(paged["pages"]),
+            "prompt_chunk": paged["pages"][part],
+            "prompt_sha256": paged["prompt_sha256"],
+            "schema": paged["schema"],
+        }
+        if len(_protocol_line_bytes(result)) > PROTOCOL_MAX_RESPONSE_BYTES:
+            raise InsightsError("read_job response exceeds the protocol line limit")
+        already_read.add(part)
+        run["expires_at"] = time.monotonic() + RUN_TTL_SECONDS
     elif op == "submit_jobs":
         run_id = request.get("run_id")
         run = pending.get(run_id) if isinstance(run_id, str) else None
@@ -1666,6 +1803,9 @@ def handle_request(
             job = expected.get(job_id)
             if job is None:
                 raise InsightsError(f"unknown or currently blocked job: {job_id}")
+            paged = _prompt_pages(run, job)
+            if run["job_reads"].get(job_id, set()) != set(range(len(paged["pages"]))):
+                raise InsightsError(f"all prompt parts must be read before submitting job: {job_id}")
             staged[job_id] = _validated_job_result(run, job, value["result"])
         run["job_results"].update(staged)
         run["expires_at"] = time.monotonic() + RUN_TTL_SECONDS

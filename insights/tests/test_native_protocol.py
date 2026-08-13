@@ -6,7 +6,13 @@ import importlib.util
 import hashlib
 import io
 import json
+import os
+import pty
+import select
+import subprocess
 import tempfile
+import termios
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -16,6 +22,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "skills" / "insights" / "scripts" / "insights.py"
+PROTOCOL_LINE_LIMIT = 64 * 1024
 
 
 def load_module():
@@ -97,6 +104,276 @@ class NativeProtocolTests(unittest.TestCase):
     def setUpClass(cls):
         cls.m = load_module()
 
+    def _read_jobs(
+        self,
+        run_id: str,
+        jobs: list[dict],
+        pending: dict[str, dict],
+    ) -> dict[str, tuple[str, dict]]:
+        read: dict[str, tuple[str, dict]] = {}
+        for job in jobs:
+            chunks: list[str] = []
+            schema: dict | None = None
+            for part in range(job["prompt_parts"]):
+                response = self.m.handle_request(
+                    {
+                        "op": "read_job",
+                        "run_id": run_id,
+                        "job_id": job["job_id"],
+                        "part": part,
+                    },
+                    pending,
+                )["result"]
+                wire = json.dumps(
+                    {"ok": True, "result": response},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8") + b"\n"
+                self.assertLessEqual(len(wire), PROTOCOL_LINE_LIMIT)
+                self.assertEqual(response["part"], part)
+                self.assertEqual(response["prompt_parts"], job["prompt_parts"])
+                self.assertEqual(response["prompt_sha256"], job["prompt_sha256"])
+                chunks.append(response["prompt_chunk"])
+                schema = response["schema"]
+            prompt = "".join(chunks)
+            self.assertEqual(
+                hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                job["prompt_sha256"],
+            )
+            read[job["job_id"]] = (prompt, schema or {})
+        return read
+
+    @staticmethod
+    def _pty_read_line(master: int, *, timeout: float = 10.0) -> bytes:
+        data = bytearray()
+        while b"\n" not in data:
+            ready, _, _ = select.select([master], [], [], timeout)
+            if not ready:
+                raise AssertionError("timed out waiting for a helper JSON line")
+            chunk = os.read(master, 65_536)
+            if not chunk:
+                raise AssertionError("helper PTY closed before returning a JSON line")
+            data.extend(chunk)
+            if len(data) > PROTOCOL_LINE_LIMIT:
+                raise AssertionError("helper emitted a protocol line over 64 KiB")
+        return bytes(data).split(b"\n", 1)[0].rstrip(b"\r")
+
+    def test_next_jobs_returns_only_bounded_descriptors_for_fifty_large_jobs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "codex-home"
+            for index in range(50):
+                write_session(home / "sessions" / f"{index:02d}.jsonl", f"session-{index:02d}")
+            pending: dict[str, dict] = {}
+            prepared = self.m.handle_request(
+                {"op": "prepare", "codex_home": str(home), "max_new_sessions": 50}, pending
+            )["result"]
+            run_id = prepared["run_id"]
+            for index, item in enumerate(pending[run_id]["work_items"]):
+                item["chunks"] = []
+                item["material"] = f"中文-{index}\\path\n" * 500
+
+            response = self.m.handle_request(
+                {"op": "next_jobs", "run_id": run_id}, pending
+            )
+            wire = json.dumps(
+                response, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8") + b"\n"
+            self.assertEqual(len(response["result"]["jobs"]), 50)
+            self.assertLessEqual(len(wire), PROTOCOL_LINE_LIMIT)
+            for job in response["result"]["jobs"]:
+                self.assertFalse({"prompt", "material", "schema"} & set(job))
+                self.assertGreaterEqual(job["prompt_parts"], 1)
+                self.assertRegex(job["prompt_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_read_job_round_trips_unicode_controls_and_enforces_line_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "codex-home"
+            write_session(home / "sessions" / "one.jsonl")
+            pending: dict[str, dict] = {}
+            prepared = self.m.handle_request(
+                {"op": "prepare", "codex_home": str(home), "max_new_sessions": 1}, pending
+            )["result"]
+            run_id = prepared["run_id"]
+            material = ("中文\\路径\n制表\t控制\u0001结尾🙂" * 4_000) + "TAIL-完整"
+            pending[run_id]["work_items"][0]["chunks"] = []
+            pending[run_id]["work_items"][0]["material"] = material
+            descriptor = self.m.handle_request(
+                {"op": "next_jobs", "run_id": run_id}, pending
+            )["result"]["jobs"][0]
+
+            read = self._read_jobs(run_id, [descriptor], pending)
+            prompt, schema = read[descriptor["job_id"]]
+            self.assertIn("TAIL-完整", prompt)
+            self.assertIn("required", schema)
+
+    def test_submit_requires_all_prompt_parts_and_rejects_duplicate_or_foreign_reads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "codex-home"
+            write_session(home / "sessions" / "one.jsonl")
+            pending: dict[str, dict] = {}
+            first = self.m.handle_request(
+                {"op": "prepare", "codex_home": str(home), "max_new_sessions": 1}, pending
+            )["result"]
+            second = self.m.handle_request(
+                {"op": "prepare", "codex_home": str(home), "max_new_sessions": 1}, pending
+            )["result"]
+            job = self.m.handle_request(
+                {"op": "next_jobs", "run_id": first["run_id"]}, pending
+            )["result"]["jobs"][0]
+
+            with self.assertRaisesRegex(self.m.InsightsError, "prompt parts"):
+                self.m.handle_request(
+                    {
+                        "op": "submit_jobs",
+                        "run_id": first["run_id"],
+                        "results": [{"job_id": job["job_id"], "result": facet_result()}],
+                    },
+                    pending,
+                )
+            first_part = self.m.handle_request(
+                {
+                    "op": "read_job",
+                    "run_id": first["run_id"],
+                    "job_id": job["job_id"],
+                    "part": 0,
+                },
+                pending,
+            )["result"]
+            with self.assertRaisesRegex(self.m.InsightsError, "already read"):
+                self.m.handle_request(
+                    {
+                        "op": "read_job",
+                        "run_id": first["run_id"],
+                        "job_id": job["job_id"],
+                        "part": 0,
+                    },
+                    pending,
+                )
+            with self.assertRaisesRegex(self.m.InsightsError, "unknown"):
+                self.m.handle_request(
+                    {
+                        "op": "read_job",
+                        "run_id": second["run_id"],
+                        "job_id": job["job_id"],
+                        "part": 0,
+                    },
+                    pending,
+                )
+            with self.assertRaisesRegex(self.m.InsightsError, "out of range"):
+                self.m.handle_request(
+                    {
+                        "op": "read_job",
+                        "run_id": first["run_id"],
+                        "job_id": job["job_id"],
+                        "part": first_part["prompt_parts"],
+                    },
+                    pending,
+                )
+            for part in range(1, first_part["prompt_parts"]):
+                self.m.handle_request(
+                    {
+                        "op": "read_job",
+                        "run_id": first["run_id"],
+                        "job_id": job["job_id"],
+                        "part": part,
+                    },
+                    pending,
+                )
+            accepted = self.m.handle_request(
+                {
+                    "op": "submit_jobs",
+                    "run_id": first["run_id"],
+                    "results": [{"job_id": job["job_id"], "result": facet_result()}],
+                },
+                pending,
+            )["result"]
+            self.assertEqual(accepted["accepted"], 1)
+
+    def test_direct_pty_disables_echo_and_handles_paged_job_requests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "codex-home"
+            write_session(home / "sessions" / "one.jsonl")
+            master, slave = pty.openpty()
+            env = dict(os.environ)
+            env["CODEX_HOME"] = str(home)
+            process = subprocess.Popen(
+                [
+                    "/bin/zsh",
+                    "-c",
+                    f"stty -echo -icanon min 1 time 0; exec python3 -u {MODULE_PATH}",
+                ],
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                env=env,
+                close_fds=True,
+            )
+            os.close(slave)
+            try:
+                deadline = time.monotonic() + 5
+                while termios.tcgetattr(master)[3] & termios.ECHO:
+                    if time.monotonic() >= deadline:
+                        self.fail("helper PTY did not disable terminal echo")
+                    time.sleep(0.01)
+                self.assertFalse(
+                    termios.tcgetattr(master)[3] & termios.ICANON,
+                    "helper PTY must disable canonical line buffering",
+                )
+                prepare_line = json.dumps(
+                    {"op": "prepare", "max_new_sessions": 1, "language": "zh-CN"},
+                    separators=(",", ":"),
+                )
+                os.write(master, (prepare_line + "\n").encode("utf-8"))
+                prepared_raw = self._pty_read_line(master)
+                self.assertNotIn(prepare_line.encode("utf-8"), prepared_raw)
+                prepared = json.loads(prepared_raw)["result"]
+                os.write(
+                    master,
+                    (json.dumps(prepared["next"], separators=(",", ":")) + "\n").encode("utf-8"),
+                )
+                jobs = json.loads(self._pty_read_line(master))["result"]["jobs"]
+                self.assertNotIn("prompt", jobs[0])
+                os.write(
+                    master,
+                    (
+                        json.dumps(
+                            {
+                                "op": "read_job",
+                                "run_id": prepared["run_id"],
+                                "job_id": jobs[0]["job_id"],
+                                "part": 0,
+                            },
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    ).encode("utf-8"),
+                )
+                page = json.loads(self._pty_read_line(master))["result"]
+                self.assertEqual(page["job_id"], jobs[0]["job_id"])
+
+                # A line larger than the platform's canonical input buffer must
+                # reach the helper and produce a normal JSON error response.
+                oversized = json.dumps(
+                    {
+                        "op": "next_jobs",
+                        "run_id": prepared["run_id"],
+                        "unexpected": "反斜杠\\与换行\n" * 2048,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                os.write(master, (oversized + "\n").encode("utf-8"))
+                oversized_response = json.loads(self._pty_read_line(master))
+                self.assertTrue(oversized_response["ok"])
+                self.assertEqual(
+                    oversized_response["result"]["jobs"][0]["job_id"],
+                    jobs[0]["job_id"],
+                )
+            finally:
+                process.terminate()
+                process.wait(timeout=5)
+                os.close(master)
+
     def _ready_run(self, home: Path, pending: dict[str, dict]) -> tuple[str, Path]:
         source = home / "sessions" / "one.jsonl"
         write_session(source)
@@ -106,11 +383,13 @@ class NativeProtocolTests(unittest.TestCase):
         )["result"]
         run_id = prepared["run_id"]
         facet_job = self.m.handle_request({"op": "next_jobs", "run_id": run_id}, pending)["result"]["jobs"][0]
+        self._read_jobs(run_id, [facet_job], pending)
         self.m.handle_request(
             {"op": "submit_jobs", "run_id": run_id, "results": [{"job_id": facet_job["job_id"], "result": facet_result()}]},
             pending,
         )
         lens_jobs = self.m.handle_request({"op": "next_jobs", "run_id": run_id}, pending)["result"]["jobs"]
+        self._read_jobs(run_id, lens_jobs, pending)
         self.m.handle_request(
             {
                 "op": "submit_jobs",
@@ -120,6 +399,7 @@ class NativeProtocolTests(unittest.TestCase):
             pending,
         )
         glance_job = self.m.handle_request({"op": "next_jobs", "run_id": run_id}, pending)["result"]["jobs"][0]
+        self._read_jobs(run_id, [glance_job], pending)
         glance = {
             "whats_working": "失败注入让验证更可靠。",
             "whats_hindering": "需要减少事务边界遗漏。",
@@ -145,6 +425,7 @@ class NativeProtocolTests(unittest.TestCase):
 
             jobs = self.m.handle_request({"op": "next_jobs", "run_id": run_id}, pending)["result"]["jobs"]
             self.assertEqual([job["kind"] for job in jobs], ["session_facet"])
+            self._read_jobs(run_id, jobs, pending)
             self.m.handle_request(
                 {"op": "submit_jobs", "run_id": run_id, "results": [{"job_id": jobs[0]["job_id"], "result": facet_result()}]},
                 pending,
@@ -153,6 +434,7 @@ class NativeProtocolTests(unittest.TestCase):
             lens_jobs = self.m.handle_request({"op": "next_jobs", "run_id": run_id}, pending)["result"]["jobs"]
             self.assertEqual(len(lens_jobs), 7)
             self.assertEqual({job["kind"] for job in lens_jobs}, {"lens"})
+            self._read_jobs(run_id, lens_jobs, pending)
             self.m.handle_request(
                 {
                     "op": "submit_jobs",
@@ -164,6 +446,7 @@ class NativeProtocolTests(unittest.TestCase):
 
             glance_jobs = self.m.handle_request({"op": "next_jobs", "run_id": run_id}, pending)["result"]["jobs"]
             self.assertEqual([job["kind"] for job in glance_jobs], ["at_a_glance"])
+            self._read_jobs(run_id, glance_jobs, pending)
             glance = {
                 "whats_working": "失败注入让验证更可靠。",
                 "whats_hindering": "需要减少事务边界遗漏。",
@@ -176,7 +459,9 @@ class NativeProtocolTests(unittest.TestCase):
             )
             ready = self.m.handle_request({"op": "next_jobs", "run_id": run_id}, pending)["result"]
             self.assertEqual(ready["stage"], "ready_to_commit")
-            self.assertIn("<!doctype html>", ready["preview_html"].lower())
+            self.assertNotIn("preview_html", ready)
+            self.assertGreater(ready["preview_bytes"], 0)
+            self.assertRegex(ready["preview_sha256"], r"^[0-9a-f]{64}$")
 
             with self.assertRaises(self.m.InsightsError):
                 self.m.handle_request({"op": "commit", "run_id": run_id, "facets": []}, pending)
@@ -184,6 +469,10 @@ class NativeProtocolTests(unittest.TestCase):
             output = home / "usage-data" / "insights"
             self.assertEqual(committed["facet_count"], 1)
             self.assertTrue((output / "report.html").is_file())
+            self.assertEqual(
+                hashlib.sha256((output / "report.html").read_bytes()).hexdigest(),
+                ready["preview_sha256"],
+            )
             state = json.loads((output / "state.json").read_text(encoding="utf-8"))
             manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(state["analysis_version"], self.m.ANALYSIS_VERSION)
@@ -204,6 +493,7 @@ class NativeProtocolTests(unittest.TestCase):
             facet_job = self.m.handle_request(
                 {"op": "next_jobs", "run_id": run_id}, pending
             )["result"]["jobs"][0]
+            self._read_jobs(run_id, [facet_job], pending)
             self.m.handle_request(
                 {
                     "op": "submit_jobs",
@@ -288,6 +578,7 @@ class NativeProtocolTests(unittest.TestCase):
             facet_job = self.m.handle_request(
                 {"op": "next_jobs", "run_id": run_id}, pending
             )["result"]["jobs"][0]
+            self._read_jobs(run_id, [facet_job], pending)
             self.m.handle_request(
                 {
                     "op": "submit_jobs",
@@ -299,6 +590,7 @@ class NativeProtocolTests(unittest.TestCase):
             lens_jobs = self.m.handle_request(
                 {"op": "next_jobs", "run_id": run_id}, pending
             )["result"]["jobs"]
+            self._read_jobs(run_id, lens_jobs, pending)
 
             with self.assertRaises(self.m.FacetValidationError):
                 self.m.handle_request(
@@ -335,6 +627,7 @@ class NativeProtocolTests(unittest.TestCase):
             facet_job = self.m.handle_request(
                 {"op": "next_jobs", "run_id": run_id}, pending
             )["result"]["jobs"][0]
+            self._read_jobs(run_id, [facet_job], pending)
             guessed_lens_id = self.m._job_id(run_id, "lens", "project_areas")
 
             with self.assertRaises(self.m.InsightsError):
@@ -401,6 +694,7 @@ class NativeProtocolTests(unittest.TestCase):
             lens_jobs = self.m.handle_request(
                 {"op": "next_jobs", "run_id": run_id}, pending
             )["result"]["jobs"]
+            self._read_jobs(run_id, lens_jobs, pending)
             self.m.handle_request(
                 {
                     "op": "submit_jobs",
@@ -415,6 +709,7 @@ class NativeProtocolTests(unittest.TestCase):
             glance_job = self.m.handle_request(
                 {"op": "next_jobs", "run_id": run_id}, pending
             )["result"]["jobs"][0]
+            self._read_jobs(run_id, [glance_job], pending)
             self.m.handle_request(
                 {
                     "op": "submit_jobs",
