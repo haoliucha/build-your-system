@@ -1,7 +1,32 @@
-# 聚合契约
+# 聚合、Lens 与 At-a-Glance 契约
 
-聚合版本为 `aggregation_v1`，包含六个分组：`goals`、`friction`、`successes`、`tools`、`instructions`、`concurrency`。每项精确包含 `kind`、`claim`、`evidence`、`confidence`；`kind` 只能是 `repeat`、`contradiction`、`evolution`。
+本页的确定性聚合、七个异构 lens、独立 At-a-Glance 及其报告职责属于 Claude Code 2.1.228 的可观察 /insights 语义；字段中的 AGENTS.md、Codex features、Task/MCP/Web 和 user_instructions_to_codex 是 Codex 表面适配。脱敏、缓存与事务不属于本页分析阶段。
 
-“规律、常见、反复”等语义必须由至少两个不同 opaque session key 支持；单例要在 claim 中明确标记“单例”。不能把相似但语义不同的句子机械合并，也不能由重复次数推断因果。矛盾保留双方条件、结果和反馈，演进必须说明时间顺序。
+确定性 meta 聚合覆盖当前发现的全部合格会话：会话、日期、消息、时长、Token、工具、语言、Git、项目、中断、错误、响应时间、Task/MCP/Web、代码行、文件、活跃天数、消息时段和多任务并行。目标、结果、满意度、帮助度、会话类型、摩擦与成功只来自已经拥有有效 facet 的会话；remaining 不得被伪装成已经完成语义分析。报告与 lens material 必须携带 eligible/cached/selected/remaining，remaining 大于零时明确说明叙事结论仅覆盖已分析子集。
 
-聚合按最多 50 个 facet 的批次产生材料，主代理再统一合成，避免子代理并发覆盖最终缓存。
+七个 lens 共用压缩材料：统计聚合、最多 50 条 facet 摘要、20 条摩擦说明、15 条 user_instructions_to_codex。它们必须分别返回：
+
+| Lens | 结构 |
+|---|---|
+| project_areas | areas：name、session_count、description |
+| interaction_style | narrative、key_pattern |
+| what_works | intro、impressive_workflows：title、description |
+| friction_analysis | intro、categories：category、description、examples |
+| suggestions | agents_md_additions、features_to_try、usage_patterns；每组 2–3 项 |
+| on_the_horizon | intro、opportunities：title、whats_possible、how_to_try、copyable_prompt |
+| fun_ending | headline、detail |
+
+suggestions 的 item 字段：
+
+- AGENTS.md：addition、why、prompt_scaffold
+- Codex 功能：feature、one_liner、why_for_you、example_code
+- 使用模式：title、suggestion、detail、copyable_prompt
+
+七个 lens 完成后才生成独立 At-a-Glance：
+
+    whats_working
+    whats_hindering
+    quick_wins
+    ambitious_workflows
+
+语气是具体、克制的使用教练；不堆统计，不空泛赞美，不补造案例。whats_hindering 在证据允许时区分 Codex 问题、用户侧约束与外部问题。

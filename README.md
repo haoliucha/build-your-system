@@ -7,7 +7,7 @@
 | 插件 | 宿主 | 版本 | 说明 |
 |---|---|---:|---|
 | `assistant/` | Claude + Codex | 2.0.0 | 19 个 Vault 捕获、回顾、任务、时间线、周报与导出 Skill；Claude 命令为薄入口 |
-| `insights/` | Codex-only | 0.1.0 | `$insights` 五层洞察、七 lens、一次质检和离线 HTML 报告 |
+| `insights/` | Codex-only | 0.2.0 | `$insights` 会话统计、原生 facet、七个专属视角、独立总览和离线 HTML 报告 |
 | `x/` | Claude + Codex | 4.0.0 | 共享 `x-unfollow` 与 `x-image`；`x-follow` 仅 Claude |
 | `coding-anywhere/` | Claude + Codex | 1.4.0 | mosh、tmux、SSH 中继、DDNS 与 dropfile |
 | `bid/` | Claude + Codex | 0.1.0 | To-B 投标与交付物方法论 |

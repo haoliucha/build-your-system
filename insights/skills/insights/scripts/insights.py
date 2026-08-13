@@ -1,96 +1,67 @@
 #!/usr/bin/env python3
-"""Local, privacy-first analysis kernel for the Codex ``$insights`` skill.
+"""Codex Insights orchestration and durable report cache.
 
-This program is deliberately model-free.  It inventories local JSONL sessions,
-redacts the text that is handed to Codex, validates structured model responses,
-and commits a single static HTML report transactionally.  A long-running
-JSON-lines process keeps the prepared run in memory so a caller can never pick
-an arbitrary output directory or fabricate a prepared state during commit.
+The product meaning follows the observable Claude Code 2.1.228 pipeline:
+deterministic session metrics, one semantic facet per session, seven distinct
+analysis lenses, a separate At-a-Glance synthesis, and a fixed HTML report.
+Redaction, opaque cache keys, schema versioning, and transactional writes are
+Codex safety guardrails; they are not presented as analysis stages.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
-import html
+import ipaddress
 import json
 import math
 import os
 import re
 import shutil
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Iterable
+from pathlib import Path, PurePath
+from statistics import mean, median
+from typing import Any, Iterable, Mapping, Sequence
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import native_analysis as _native_analysis
+import native_meta as _native_meta
+from native_report import render_native_report
+
 
 MAX_NEW_SESSIONS = 200
+MODEL_JOB_BATCH = 50
 LANGUAGE = "zh-CN"
-CHUNK_TARGET = 25_000
-CHUNK_HARD_LIMIT = 30_000
-FACET_SCHEMA_VERSION = "facet_v2"
-AGGREGATION_SCHEMA_VERSION = "aggregation_v1"
-QUALITY_SCHEMA_VERSION = "quality_v1"
+ANALYSIS_VERSION = "claude-insights-meaning-v1"
+META_SCHEMA_VERSION = "native-meta-v1"
+NORMALIZER_VERSION = "claude-2.1.228-shape-v1"
+FACET_PROMPT_VERSION = "claude-2.1.228-codex-v1"
+FACET_SCHEMA_VERSION = "native-facet-v1"
+REPORT_SCHEMA_VERSION = "native-report-v1"
 
-SECTION_IDS = (
-    "overview",
-    "project_domains",
-    "collaboration",
-    "what_works",
-    "friction",
-    "features_workflows",
-    "agents_suggestions",
-    "new_uses",
-    "future_opportunities",
-    "memorable_moments",
-    "method_coverage",
-)
-SECTION_TITLES = {
-    "zh": (
-        "总览", "项目领域", "协作方式", "有效做法", "摩擦与根因",
-        "功能与工作流", "AGENTS.md 建议", "新用法", "未来机会", "难忘时刻", "方法与覆盖量",
-    ),
-    "en": (
-        "Overview", "Project Domains", "Collaboration Style", "What Works", "Friction and Root Causes",
-        "Features and Workflows", "AGENTS.md Suggestions", "New Ways to Use Codex", "Future Opportunities",
-        "Memorable Moments", "Method and Coverage",
-    ),
-}
-SECTION_TONES = {
-    "overview": "tone-warm", "project_domains": "tone-neutral", "collaboration": "tone-neutral",
-    "what_works": "tone-success", "friction": "tone-friction", "features_workflows": "tone-suggestion",
-    "agents_suggestions": "tone-suggestion", "new_uses": "tone-suggestion",
-    "future_opportunities": "tone-future", "memorable_moments": "tone-warm", "method_coverage": "tone-neutral",
-}
-LENS_IDS = (
-    "project_areas", "interaction_style", "what_works", "friction_analysis",
-    "suggestions", "on_the_horizon", "fun_ending",
-)
-PATTERN_KINDS = ("repeat", "contradiction", "evolution")
-PATTERN_GROUPS = ("goals", "friction", "successes", "tools", "instructions", "concurrency")
-OUTCOMES = ("fully_achieved", "mostly_achieved", "partially_achieved", "not_achieved", "unclear_from_transcript")
-HELPFULNESS = ("unhelpful", "slightly_helpful", "moderately_helpful", "very_helpful", "essential")
-SESSION_TYPES = ("single_task", "multi_task", "iterative_refinement", "exploration", "quick_question")
-FRICTION_TYPES = (
-    "misunderstood_request", "wrong_approach", "buggy_code", "user_rejected_action",
-    "excessive_changes", "tool_failed", "external_issue", "repeated_instruction", "missing_context",
-)
-STATS_KEYS = (
-    "event_count", "user_message_count", "assistant_message_count", "duration_seconds",
-    "character_count", "source_file_count", "tool_count", "error_count", "file_change_count", "subagent_count",
-)
-FACET_KEYS = {
-    "schema_version", "session_key", "source_hash", "date", "project_alias", "session_origin",
-    "deterministic_stats", "privacy_redactions", "underlying_goal", "goal_categories", "outcome",
-    "user_satisfaction_counts", "helpfulness", "session_type", "friction_counts", "friction_detail",
-    "primary_success", "brief_summary", "evidence_anchors",
-}
+OUTCOMES = tuple(sorted(_native_analysis.OUTCOMES))
+HELPFULNESS = tuple(sorted(_native_analysis.HELPFULNESS_LEVELS))
+SESSION_TYPES = tuple(sorted(_native_analysis.SESSION_TYPES))
+PRIMARY_SUCCESSES = tuple(sorted(_native_analysis.PRIMARY_SUCCESSES))
+LENS_IDS = _native_analysis.LENS_IDS
+CHUNK_TARGET = _native_analysis.CHUNK_SIZE
+CHUNK_HARD_LIMIT = _native_analysis.CHUNK_SIZE
+
 _BCP47 = re.compile(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")
 _EMAIL = re.compile(r"(?<![\w.+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}(?![\w.-])", re.I)
 _IPV4 = re.compile(r"(?<![\w.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![\w.])")
-_IPV6 = re.compile(r"(?<![\w:])(?:[A-F0-9]{1,4}:){2,7}[A-F0-9]{0,4}(?![\w:])", re.I)
-_PRIVATE_PATH = re.compile(r"(?:/(?:Users|home)/[^/\s]+(?:/[^\s<>'\"`]+)*|[A-Za-z]:\\Users\\[^\\\s]+(?:\\[^\s<>'\"`]+)*)")
-_BEARER = re.compile(r"\bBearer\s+(?=[A-Za-z0-9._~+/=-]*[._~+/=-])[A-Za-z0-9._~+/=-]+", re.I)
+_IPV6_CANDIDATE = re.compile(r"(?<![\w:])(?=[0-9A-F:]*:)[0-9A-F:]{2,}(?![\w:])", re.I)
+_PRIVATE_PATH = re.compile(
+    r"(?:~[/\\][^\s<>'\"]+|/(?:Users|home|private|tmp|Volumes)(?:/[^\s<>'\"]+)+|[A-Za-z]:\\[^\s<>'\"]+|\\\\[^\\\s]+\\[^\s<>'\"]+)"
+)
+_BEARER = re.compile(r"\bBearer\s+[^\s,;]+", re.I)
 _COOKIE = re.compile(r"\b(?:Cookie|Set-Cookie)\s*:\s*[^\r\n]+", re.I)
 _SECRET_ASSIGNMENT = re.compile(r"\b(?:api[_-]?key|secret|password|passwd|token|access[_-]?token|client[_-]?secret)\s*[:=]\s*['\"]?[^\s,'\";]+", re.I)
 _SECRET_TOKEN = re.compile(r"\b(?:sk|pk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{12,}\b", re.I)
@@ -98,28 +69,33 @@ _TOKEN_CANDIDATE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z0-9+/=_-]{32,}(?![A-Za-z
 _FACET_PATH = re.compile(r"^facets/[0-9a-f]{16}-[0-9a-f]{16}\.json$")
 _SESSION_KEY = re.compile(r"^session-[0-9a-f]{16}$")
 _PROJECT_KEY = re.compile(r"^project-[0-9a-f]{8}$")
-_SESSION_KEY_DOMAIN = "codex-insights-session-v2"
+_SESSION_KEY_DOMAIN = "codex-insights-session-native-v1"
+_SELF_MARKER = re.compile(r"(?:^|\s)\$insights(?:\s|$)", re.I)
 _PENDING_RUNS: dict[str, dict[str, Any]] = {}
+_PROCESS_CODEX_HOME = Path(
+    os.environ.get("CODEX_HOME") or (Path.home() / ".codex")
+).expanduser().resolve()
+RUN_TTL_SECONDS = 4 * 60 * 60
 
 
 class InsightsError(RuntimeError):
-    """Base error returned as a protocol data response."""
+    """Base error returned as a protocol response."""
 
 
 class FacetValidationError(InsightsError):
-    pass
+    """Structured model output did not match the required schema."""
 
 
 class PrivacyError(InsightsError):
-    pass
+    """A persistent or model-facing artifact failed privacy scanning."""
 
 
 class ConcurrentRunError(InsightsError):
-    pass
+    """Another transaction currently owns the output lock."""
 
 
 class StaleRunError(InsightsError):
-    pass
+    """Source or committed generation changed after prepare."""
 
 
 def validate_language(language: str) -> str:
@@ -144,30 +120,98 @@ def _looks_high_entropy(value: str) -> bool:
     return len(core) >= 32 and classes >= 3 and _entropy(core) >= 3.6
 
 
-def redact_text(value: str) -> str:
+def redact_text(value: Any) -> str:
     text = str(value)
     for pattern, replacement in (
-        (_COOKIE, "[REDACTED_COOKIE]"), (_BEARER, "[REDACTED_BEARER]"),
-        (_SECRET_ASSIGNMENT, "[REDACTED_SECRET]"), (_SECRET_TOKEN, "[REDACTED_SECRET]"),
-        (_EMAIL, "[REDACTED_EMAIL]"), (_IPV4, "[REDACTED_IP]"), (_IPV6, "[REDACTED_IP]"),
+        (_COOKIE, "[REDACTED_COOKIE]"),
+        (_BEARER, "[REDACTED_BEARER]"),
+        (_SECRET_ASSIGNMENT, "[REDACTED_SECRET]"),
+        (_SECRET_TOKEN, "[REDACTED_SECRET]"),
+        (_EMAIL, "[REDACTED_EMAIL]"),
+        (_IPV4, "[REDACTED_IP]"),
         (_PRIVATE_PATH, "[REDACTED_PRIVATE_PATH]"),
     ):
         text = pattern.sub(replacement, text)
+    text = _IPV6_CANDIDATE.sub(
+        lambda match: "[REDACTED_IP]" if _is_ipv6(match.group(0)) else match.group(0),
+        text,
+    )
     return _TOKEN_CANDIDATE.sub(
-        lambda match: "[REDACTED_HIGH_ENTROPY]" if _looks_high_entropy(match.group(0)) else match.group(0), text
+        lambda match: "[REDACTED_HIGH_ENTROPY]" if _looks_high_entropy(match.group(0)) else match.group(0),
+        text,
     )
 
 
-def privacy_violations(value: str) -> list[str]:
+def privacy_violations(value: Any) -> list[str]:
     text = str(value)
-    found = [name for name, pattern in (
-        ("cookie", _COOKIE), ("bearer", _BEARER), ("secret-assignment", _SECRET_ASSIGNMENT),
-        ("secret-token", _SECRET_TOKEN), ("email", _EMAIL), ("ipv4", _IPV4), ("ipv6", _IPV6),
-        ("private-path", _PRIVATE_PATH),
-    ) if pattern.search(text)]
+    found = [
+        name
+        for name, pattern in (
+            ("cookie", _COOKIE),
+            ("bearer", _BEARER),
+            ("secret-assignment", _SECRET_ASSIGNMENT),
+            ("secret-token", _SECRET_TOKEN),
+            ("email", _EMAIL),
+            ("ipv4", _IPV4),
+            ("private-path", _PRIVATE_PATH),
+        )
+        if pattern.search(text)
+    ]
+    if any(_is_ipv6(match.group(0)) for match in _IPV6_CANDIDATE.finditer(text)):
+        found.append("ipv6")
     if any(_looks_high_entropy(match.group(0)) for match in _TOKEN_CANDIDATE.finditer(text)):
         found.append("high-entropy")
     return found
+
+
+def _is_ipv6(value: str) -> bool:
+    try:
+        return isinstance(ipaddress.ip_address(value), ipaddress.IPv6Address)
+    except ValueError:
+        return False
+
+
+compute_source_fingerprint = _native_meta.compute_source_fingerprint
+extract_native_session_meta = _native_meta.extract_native_session_meta
+detect_multi_clauding = _native_meta.detect_multi_clauding
+normalize_session = _native_analysis.normalize_session
+split_analysis_text = _native_analysis.split_analysis_text
+build_facet_prompt = _native_analysis.build_facet_prompt
+build_lens_jobs = _native_analysis.build_lens_jobs
+build_chunk_summary_prompt = _native_analysis.build_chunk_summary_prompt
+
+
+def validate_native_facet(value: Any) -> dict[str, Any]:
+    try:
+        return _native_analysis.validate_native_facet(value)
+    except _native_analysis.FacetValidationError as exc:
+        raise FacetValidationError(str(exc)) from exc
+
+
+def validate_lens_result(lens_id: str, value: Any) -> dict[str, Any]:
+    try:
+        return _native_analysis.validate_lens_result(lens_id, value)
+    except _native_analysis.FacetValidationError as exc:
+        raise FacetValidationError(str(exc)) from exc
+
+
+def build_at_a_glance_job(
+    material: Mapping[str, Any],
+    lenses: Mapping[str, Any],
+    *,
+    language: str = LANGUAGE,
+) -> dict[str, Any]:
+    try:
+        return _native_analysis.build_at_a_glance_job(material, lenses, language=language)
+    except _native_analysis.InsightsError as exc:
+        raise InsightsError(str(exc)) from exc
+
+
+def validate_at_a_glance(value: Any) -> dict[str, Any]:
+    try:
+        return _native_analysis.validate_at_a_glance(value)
+    except _native_analysis.FacetValidationError as exc:
+        raise FacetValidationError(str(exc)) from exc
 
 
 def _parse_timestamp(value: Any) -> float | None:
@@ -184,35 +228,14 @@ def _parse_timestamp(value: Any) -> float | None:
 def _text_content(content: Any) -> str:
     if isinstance(content, str):
         return content
-    if isinstance(content, dict):
-        for key in ("text", "input_text", "message"):
+    if isinstance(content, Mapping):
+        for key in ("text", "input_text", "output_text", "message"):
             if isinstance(content.get(key), str):
-                return content[key]
+                return str(content[key])
         return ""
-    if isinstance(content, list):
+    if isinstance(content, Sequence) and not isinstance(content, (str, bytes, bytearray)):
         return "\n".join(filter(None, (_text_content(item) for item in content)))
     return ""
-
-
-def _event_from_row(row: dict[str, Any]) -> dict[str, Any] | None:
-    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-    timestamp = row.get("timestamp", payload.get("timestamp"))
-    row_type = row.get("type")
-    role = payload.get("role")
-    text = ""
-    if row_type == "response_item" and role in {"user", "assistant"}:
-        text = _text_content(payload.get("content"))
-    elif row_type == "event_msg":
-        event_type = payload.get("type")
-        if event_type == "user_message":
-            role, text = "user", _text_content(payload.get("message", payload.get("content")))
-        elif event_type in {"assistant_message", "agent_message"}:
-            role, text = "assistant", _text_content(payload.get("message", payload.get("content")))
-    elif row_type == "message" and role in {"user", "assistant"}:
-        text = _text_content(payload.get("content", row.get("content")))
-    if role not in {"user", "assistant"} or not text.strip():
-        return None
-    return {"timestamp": timestamp or "", "role": role, "text": text}
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -233,44 +256,98 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _source_record(path: Path) -> dict[str, Any] | None:
+def _analysis_events(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    event_user: list[dict[str, Any]] = []
+    event_assistant: list[dict[str, Any]] = []
+    response_user: list[dict[str, Any]] = []
+    response_assistant: list[dict[str, Any]] = []
+    tools: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
+        timestamp = str(row.get("timestamp", payload.get("timestamp", "")))
+        row_type = row.get("type")
+        if row_type == "event_msg":
+            raw_event_type = payload.get("type")
+            event_type = raw_event_type if isinstance(raw_event_type, str) else ""
+            if event_type == "user_message":
+                text = _text_content(payload.get("message", payload.get("content", ""))).strip()
+                if text:
+                    event_user.append({"timestamp": timestamp, "role": "user", "text": text, "_index": index})
+            elif event_type in {"assistant_message", "agent_message"}:
+                text = _text_content(payload.get("message", payload.get("content", ""))).strip()
+                if text:
+                    event_assistant.append({"timestamp": timestamp, "role": "assistant", "text": text, "_index": index})
+        elif row_type == "response_item":
+            raw_payload_type = payload.get("type")
+            raw_role = payload.get("role")
+            payload_type = raw_payload_type if isinstance(raw_payload_type, str) else ""
+            role = raw_role if isinstance(raw_role, str) else ""
+            if payload_type == "message" or role in {"user", "assistant"}:
+                text = _text_content(payload.get("content", "")).strip()
+                target = response_user if role == "user" else response_assistant
+                if role in {"user", "assistant"} and text:
+                    target.append({"timestamp": timestamp, "role": role, "text": text, "_index": index})
+            if payload_type in {"function_call", "custom_tool_call", "local_shell_call"}:
+                name = str(payload.get("name") or ("local_shell" if payload_type == "local_shell_call" else "unknown"))
+                tools.append({"timestamp": timestamp, "role": "tool", "name": name, "text": "", "_index": index})
+    events = (event_user or response_user) + (event_assistant or response_assistant) + tools
+    events.sort(key=lambda item: (_parse_timestamp(item.get("timestamp")) or 0, item["_index"]))
+    for event in events:
+        event.pop("_index", None)
+    return events
+
+
+def _source_record(path: Path, origin: str) -> dict[str, Any] | None:
     rows = _read_jsonl(path)
     if not rows:
         return None
-    metas = [row.get("payload", {}) for row in rows if row.get("type") == "session_meta" and isinstance(row.get("payload"), dict)]
-    meta = metas[0] if metas else {}
-    session_id = meta.get("id") or meta.get("session_id") or meta.get("thread_id")
-    if not session_id:
-        for row in rows:
-            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-            session_id = payload.get("session_id") or payload.get("thread_id")
-            if session_id:
-                break
-    session_id = str(session_id or re.sub(r"^(?:rollout-)?", "", path.stem))
-    start = meta.get("timestamp") or (rows[0].get("timestamp") if rows else "")
-    cwd = meta.get("cwd") if isinstance(meta.get("cwd"), str) else ""
-    events = [event for row in rows if (event := _event_from_row(row)) is not None]
-    row_times = [_parse_timestamp(row.get("timestamp")) for row in rows]
-    times = [stamp for stamp in row_times if stamp is not None]
-    def count_words(names: tuple[str, ...]) -> int:
-        return sum(1 for row in rows if str(row.get("type", "")).lower() in names or str((row.get("payload") or {}).get("type", "")).lower() in names)
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    meta = extract_native_session_meta(rows, transcript_mtime=stat.st_mtime, origin=origin)
+    if not meta.get("session_id"):
+        meta["session_id"] = re.sub(r"^(?:rollout-)?", "", path.stem)
+    events = _analysis_events(rows)
+    times = [
+        stamp
+        for row in rows
+        if (stamp := _parse_timestamp(row.get("timestamp"))) is not None
+    ]
     return {
-        "session_id": session_id, "cwd": cwd, "start": start or "", "events": events, "times": times,
-        "source_path": str(path),
-        "tool_count": count_words(("function_call", "tool_call", "tool_result", "command_execution", "mcp_tool_call")),
-        "error_count": count_words(("error", "tool_error", "turn_aborted")),
-        "file_change_count": count_words(("file_change", "patch", "apply_patch")),
-        "subagent_count": count_words(("spawn_agent", "subagent", "agent_spawned")),
+        "rows": rows,
+        "meta": meta,
+        "events": events,
+        "source_path": path,
+        "source_hash": compute_source_fingerprint(rows),
+        "updated_at": max(times, default=stat.st_mtime),
+        "duration_seconds": max(times) - min(times) if times else 0,
+        "origin": origin,
     }
 
 
-def _canonical_hash(session: dict[str, Any]) -> str:
-    payload = {"session_id": session["session_id"], "cwd": session["cwd"], "start": session["start"], "events": session["events"]}
-    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+def _project_alias(project_path: str) -> str:
+    digest = hashlib.sha256(("codex-insights-project-v2\0" + project_path).encode("utf-8")).hexdigest()
+    return "project-" + digest[:8]
 
 
-def _project_alias(cwd: str) -> str:
-    return "project-" + hashlib.sha256(("codex-insights-project-v1\0" + cwd).encode("utf-8")).hexdigest()[:8]
+def _project_label(project_path: str) -> str:
+    label = PurePath(project_path).name if project_path else "unknown-project"
+    cleaned = redact_text(label).strip()
+    return cleaned[:120] or "unknown-project"
+
+
+def _session_key(record: Mapping[str, Any]) -> str:
+    meta = record["meta"]
+    identity = "\0".join(
+        (
+            _SESSION_KEY_DOMAIN,
+            str(meta.get("session_id", "")),
+            str(meta.get("project_path", "")),
+            str(meta.get("start_time", "")),
+        )
+    )
+    return "session-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
 
 
 def discover_sessions(
@@ -281,119 +358,346 @@ def discover_sessions(
 ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, int]]:
     home = Path(codex_home)
     current = current_thread_id or os.environ.get("CODEX_THREAD_ID")
-    records: list[dict[str, Any]] = []
     source_files: list[Path] = []
-    for directory in (home / "sessions", home / "archived_sessions"):
-        if directory.is_dir():
-            for path in sorted(directory.rglob("*.jsonl")):
-                source_files.append(path)
-                record = _source_record(path)
-                if record:
-                    record["origin"] = "archived" if "archived_sessions" in path.parts else "active"
-                    records.append(record)
-    grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    records: list[dict[str, Any]] = []
+    for directory, origin in ((home / "sessions", "active"), (home / "archived_sessions", "archived")):
+        if not directory.is_dir():
+            continue
+        if directory.is_symlink():
+            continue
+        source_root = directory.resolve()
+        for path in sorted(directory.rglob("*.jsonl")):
+            source_files.append(path)
+            if path.is_symlink():
+                continue
+            try:
+                path.resolve().relative_to(source_root)
+            except (OSError, ValueError):
+                continue
+            record = _source_record(path, origin)
+            if record is not None:
+                records.append(record)
+
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    raw_id_signatures: dict[str, set[tuple[str, str, str]]] = {}
     for record in records:
-        signature = (record["session_id"], record["cwd"], str(record["start"]))
-        logical = grouped.setdefault(signature, {
-            "session_id": record["session_id"], "cwd": record["cwd"], "start": record["start"],
-            "events": [], "times": [], "source_paths": [], "origins": set(),
-            "tool_count": 0, "error_count": 0, "file_change_count": 0, "subagent_count": 0,
-        })
-        logical["events"].extend(record["events"])
-        logical["times"].extend(record["times"])
-        logical["source_paths"].append(record["source_path"])
-        logical["origins"].add(record["origin"])
-        for name in ("tool_count", "error_count", "file_change_count", "subagent_count"):
-            logical[name] += record[name]
-    eligible: list[dict[str, Any]] = []
+        meta = record["meta"]
+        signature = (
+            str(meta.get("session_id", "")),
+            str(meta.get("project_path", "")),
+            str(meta.get("start_time", "")),
+        )
+        grouped.setdefault(signature, []).append(record)
+        raw_id_signatures.setdefault(signature[0], set()).add(signature)
+
     excluded = {"current": 0, "insights": 0, "short_messages": 0, "short_duration": 0}
-    for signature, logical in grouped.items():
-        unique_events: list[dict[str, Any]] = []
-        seen_events: set[str] = set()
-        for event in sorted(logical["events"], key=lambda item: (_parse_timestamp(item.get("timestamp")) or 0, item.get("role", ""), item.get("text", ""))):
-            fingerprint = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            if fingerprint not in seen_events:
-                seen_events.add(fingerprint)
-                unique_events.append(event)
-        logical["events"] = unique_events
-        users = [event["text"] for event in unique_events if event["role"] == "user"]
-        if current and logical["session_id"] == current:
+    eligible: list[dict[str, Any]] = []
+    for signature, branches in grouped.items():
+        chosen = max(
+            branches,
+            key=lambda item: (
+                int(item["meta"].get("user_message_count", 0)),
+                int(item["meta"].get("duration_minutes", 0)),
+                float(item["meta"].get("transcript_mtime", 0)),
+            ),
+        )
+        meta = chosen["meta"]
+        user_messages = [event["text"] for event in chosen["events"] if event.get("role") == "user"]
+        if current and str(meta.get("session_id")) == current:
             excluded["current"] += 1
             continue
-        if any(marker.casefold() in message.casefold() for message in users):
+        first_five = user_messages[:5]
+        if any(
+            _SELF_MARKER.search(message)
+            or "RESPOND WITH ONLY A VALID JSON OBJECT" in message
+            or "record_facets" in message
+            for message in first_five
+        ):
             excluded["insights"] += 1
             continue
-        if len(users) < 2:
+        if int(meta.get("user_message_count", 0)) < 2:
             excluded["short_messages"] += 1
             continue
-        times = logical["times"] + [stamp for event in unique_events if (stamp := _parse_timestamp(event.get("timestamp"))) is not None]
-        if not times or max(times) - min(times) < 60:
+        if float(chosen.get("duration_seconds", 0)) < 60:
             excluded["short_duration"] += 1
             continue
-        identity = "\0".join((_SESSION_KEY_DOMAIN, *signature))
-        logical["session_key"] = "session-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
-        logical["user_messages"] = users
-        logical["updated_at"] = max(times)
-        logical["source_hash"] = _canonical_hash(logical)
-        logical["origin"] = "mixed" if len(logical["origins"]) > 1 else next(iter(logical["origins"]), "active")
-        eligible.append(logical)
-    result = sorted(eligible, key=lambda item: (item["updated_at"], item["session_key"]), reverse=True)
+        origins = {branch["origin"] for branch in branches}
+        chosen = dict(chosen)
+        chosen["session_key"] = _session_key(chosen)
+        chosen["project_alias"] = _project_alias(str(meta.get("project_path", "")))
+        chosen["project_label"] = _project_label(str(meta.get("project_path", "")))
+        chosen["session_origin"] = "mixed" if len(origins) > 1 else next(iter(origins))
+        chosen["source_paths"] = [chosen["source_path"]]
+        eligible.append(chosen)
+
+    eligible.sort(key=lambda item: (item["updated_at"], item["session_key"]), reverse=True)
     if not include_stats:
-        return result
-    raw_id_counts: dict[str, int] = {}
-    for session_id, _, _ in grouped:
-        raw_id_counts[session_id] = raw_id_counts.get(session_id, 0) + 1
+        return eligible
     stats = {
-        "physical_source_files": len(source_files), "parsed_source_files": len(records), "parse_failed": len(source_files) - len(records),
-        "logical_sessions": len(grouped), "duplicate_source_files": max(0, len(records) - len(grouped)),
-        "logical_id_collisions": sum(1 for count in raw_id_counts.values() if count > 1), "eligible": len(result),
-        "excluded": sum(excluded.values()), "excluded_current": excluded["current"], "excluded_insights": excluded["insights"],
-        "excluded_short_messages": excluded["short_messages"], "excluded_short_duration": excluded["short_duration"],
+        "physical_source_files": len(source_files),
+        "parsed_source_files": len(records),
+        "parse_failed": len(source_files) - len(records),
+        "logical_sessions": len(grouped),
+        "duplicate_source_files": sum(max(0, len(branches) - 1) for branches in grouped.values()),
+        "logical_id_collisions": sum(1 for signatures in raw_id_signatures.values() if len(signatures) > 1),
+        "eligible": len(eligible),
+        "excluded": sum(excluded.values()),
+        "excluded_current": excluded["current"],
+        "excluded_insights": excluded["insights"],
+        "excluded_short_messages": excluded["short_messages"],
+        "excluded_short_duration": excluded["short_duration"],
     }
-    return result, stats
-
-
-def chunk_events(events: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    chunks: list[dict[str, Any]] = []
-    current: list[dict[str, Any]] = []
-    current_size = 0
-    for original in events:
-        event = {"timestamp": str(original.get("timestamp", "")), "role": str(original.get("role", "")), "text": redact_text(str(original.get("text", "")))}
-        size = len(event["text"])
-        if current and (current_size + size > CHUNK_TARGET or current_size + size > CHUNK_HARD_LIMIT):
-            chunks.append({"index": len(chunks), "char_count": current_size, "events": current})
-            current, current_size = [], 0
-        current.append(event)
-        current_size += size
-    if current:
-        chunks.append({"index": len(chunks), "char_count": current_size, "events": current})
-    for chunk in chunks:
-        chunk["total"] = len(chunks)
-    return chunks
+    return eligible, stats
 
 
 def _state_path(output_dir: Path) -> Path:
     return output_dir / "state.json"
 
 
-def _read_state(output_dir: Path) -> dict[str, Any]:
+def _fresh_state() -> dict[str, Any]:
+    return {
+        "generation": 0,
+        "analysis_version": ANALYSIS_VERSION,
+        "meta_schema_version": META_SCHEMA_VERSION,
+        "normalizer_version": NORMALIZER_VERSION,
+        "facet_prompt_version": FACET_PROMPT_VERSION,
+        "sessions": {},
+    }
+
+
+def _canonical_json_hash(value: Any) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _state_snapshot_hash(output_dir: Path) -> str:
+    """Hash the on-disk state canonically, including corrupt/absent states."""
+
+    path = _state_path(output_dir)
+    if not path.exists():
+        return hashlib.sha256(b"codex-insights-state:absent").hexdigest()
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise StaleRunError("state cannot be read") from exc
+    try:
+        return _canonical_json_hash(json.loads(raw))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return hashlib.sha256(b"codex-insights-state:invalid\0" + raw).hexdigest()
+
+
+def _legacy_state(value: Any = None) -> tuple[dict[str, Any], bool]:
+    fresh = _fresh_state()
+    if isinstance(value, dict) and isinstance(value.get("generation"), int):
+        fresh["generation"] = int(value["generation"])
+    return fresh, True
+
+
+def _valid_state_entry(state_key: str, entry: Any) -> bool:
+    return bool(
+        _SESSION_KEY.fullmatch(state_key)
+        and isinstance(entry, dict)
+        and set(entry) == {"source_hash", "facet_file", "analysis_version"}
+        and re.fullmatch(r"[a-f0-9]{64}", str(entry.get("source_hash", "")))
+        and isinstance(entry.get("facet_file"), str)
+        and _FACET_PATH.fullmatch(str(entry.get("facet_file")))
+        and entry.get("analysis_version") == ANALYSIS_VERSION
+    )
+
+
+def _manifest_file_path(output_dir: Path, relative: str) -> Path | None:
+    if not relative or relative.startswith("/") or "\\" in relative:
+        return None
+    root = output_dir.resolve()
+    path = (output_dir / relative).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return None
+    return path
+
+
+def _cache_integrity_valid(output_dir: Path, state: Mapping[str, Any], state_bytes: bytes) -> bool:
+    manifest_path = output_dir / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(manifest, dict) or manifest.get("generation") != state.get("generation"):
+        return False
+    expected_state_digest = hashlib.sha256(state_bytes).hexdigest()
+    if manifest.get("state_sha256") != expected_state_digest:
+        return False
+    files = manifest.get("files")
+    if not isinstance(files, dict) or files.get("state.json") != expected_state_digest:
+        return False
+    analysis = manifest.get("analysis")
+    if not isinstance(analysis, dict) or any(
+        analysis.get(key) != expected
+        for key, expected in (
+            ("analysis_version", ANALYSIS_VERSION),
+            ("meta_schema", META_SCHEMA_VERSION),
+            ("normalizer", NORMALIZER_VERSION),
+            ("facet_prompt", FACET_PROMPT_VERSION),
+            ("facet_schema", FACET_SCHEMA_VERSION),
+            ("report_schema", REPORT_SCHEMA_VERSION),
+        )
+    ):
+        return False
+    sessions = state.get("sessions", {})
+    referenced_facets = {
+        entry["facet_file"] for entry in sessions.values() if isinstance(entry, Mapping)
+    }
+    if not referenced_facets.issubset(files):
+        return False
+    for relative, expected_digest in files.items():
+        if (
+            not isinstance(relative, str)
+            or not isinstance(expected_digest, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", expected_digest)
+        ):
+            return False
+        path = _manifest_file_path(output_dir, relative)
+        try:
+            data = path.read_bytes() if path is not None else None
+        except OSError:
+            return False
+        if data is None or hashlib.sha256(data).hexdigest() != expected_digest:
+            return False
+    for state_key, entry in sessions.items():
+        if not _valid_state_entry(state_key, entry):
+            return False
+        facet_path = _manifest_file_path(output_dir, entry["facet_file"])
+        if facet_path is None:
+            return False
+        try:
+            facet = _validate_persisted_facet(
+                json.loads(facet_path.read_text(encoding="utf-8"))
+            )
+        except (OSError, json.JSONDecodeError, InsightsError):
+            return False
+        if (
+            facet["session_key"] != state_key
+            or facet["source_hash"] != entry["source_hash"]
+            or _facet_filename(facet) != entry["facet_file"]
+        ):
+            return False
+    return True
+
+
+def _read_state(output_dir: Path) -> tuple[dict[str, Any], bool]:
     path = _state_path(output_dir)
     if not path.is_file():
-        return {"generation": 0, "sessions": {}}
+        return _fresh_state(), False
     try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise InsightsError(f"cannot read state: {exc}") from exc
-    if not isinstance(state, dict) or not isinstance(state.get("generation"), int) or not isinstance(state.get("sessions"), dict):
-        raise InsightsError("invalid state file")
-    return state
+        state_bytes = path.read_bytes()
+        value = json.loads(state_bytes)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return _legacy_state()
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("generation"), int)
+        or not isinstance(value.get("sessions"), dict)
+        or value.get("analysis_version") != ANALYSIS_VERSION
+        or value.get("meta_schema_version") != META_SCHEMA_VERSION
+        or value.get("normalizer_version") != NORMALIZER_VERSION
+        or value.get("facet_prompt_version") != FACET_PROMPT_VERSION
+        or value.get("report_schema_version") != REPORT_SCHEMA_VERSION
+        or any(not _valid_state_entry(key, entry) for key, entry in value.get("sessions", {}).items())
+    ):
+        return _legacy_state(value)
+    if not _cache_integrity_valid(output_dir, value, state_bytes):
+        return _legacy_state(value)
+    return value, False
 
 
-def _facet_filename(facet: dict[str, Any]) -> str:
-    return f"facets/{hashlib.sha256(facet['session_key'].encode('utf-8')).hexdigest()[:16]}-{facet['source_hash'][:16]}.json"
+def _facet_filename(facet: Mapping[str, Any]) -> str:
+    key_hash = hashlib.sha256(str(facet["session_key"]).encode("utf-8")).hexdigest()[:16]
+    return f"facets/{key_hash}-{str(facet['source_hash'])[:16]}.json"
 
 
-def _load_cached_facet(output_dir: Path, state_key: str, entry: dict[str, Any]) -> dict[str, Any] | None:
+def _validate_persisted_facet(value: Any, expected: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise FacetValidationError("persisted facet must be an object")
+    helper_fields = {
+        "schema_version",
+        "analysis_version",
+        "meta_schema_version",
+        "normalizer_version",
+        "facet_prompt_version",
+        "analysis_origin",
+        "session_key",
+        "source_hash",
+        "date",
+        "project_alias",
+        "project_label",
+        "session_origin",
+        "session_meta",
+        "privacy_redactions",
+    }
+    model = {key: item for key, item in value.items() if key not in helper_fields}
+    validate_native_facet(model)
+    if value.get("schema_version") != FACET_SCHEMA_VERSION:
+        raise FacetValidationError("wrong facet schema version")
+    for key, expected_value in (
+        ("analysis_version", ANALYSIS_VERSION),
+        ("meta_schema_version", META_SCHEMA_VERSION),
+        ("normalizer_version", NORMALIZER_VERSION),
+        ("facet_prompt_version", FACET_PROMPT_VERSION),
+        ("analysis_origin", "model"),
+    ):
+        if value.get(key) != expected_value:
+            raise FacetValidationError(f"invalid {key}")
+    if not _SESSION_KEY.fullmatch(str(value.get("session_key", ""))):
+        raise FacetValidationError("invalid opaque session key")
+    if not re.fullmatch(r"[a-f0-9]{64}", str(value.get("source_hash", ""))):
+        raise FacetValidationError("invalid source hash")
+    if not _PROJECT_KEY.fullmatch(str(value.get("project_alias", ""))):
+        raise FacetValidationError("invalid project alias")
+    session_origin = value.get("session_origin")
+    if not isinstance(session_origin, str) or session_origin not in {
+        "active",
+        "archived",
+        "mixed",
+    }:
+        raise FacetValidationError("invalid session origin")
+    if not isinstance(value.get("session_meta"), dict):
+        raise FacetValidationError("missing deterministic session meta")
+    if expected:
+        for key in (
+            "schema_version",
+            "analysis_version",
+            "meta_schema_version",
+            "normalizer_version",
+            "facet_prompt_version",
+            "session_key",
+            "source_hash",
+            "date",
+            "project_alias",
+            "project_label",
+            "session_origin",
+            "session_meta",
+            "privacy_redactions",
+        ):
+            if value.get(key) != expected.get(key):
+                raise FacetValidationError(f"helper field mismatch: {key}")
+    if privacy_violations(json.dumps(value, ensure_ascii=False, sort_keys=True)):
+        raise PrivacyError("persisted facet contains a private value")
+    return value
+
+
+def validate_facet(value: Any, expected: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Backward-compatible public name for the persisted native facet validator."""
+
+    return _validate_persisted_facet(value, expected)
+
+
+def _load_cached_facet(output_dir: Path, state_key: str, entry: Mapping[str, Any]) -> dict[str, Any] | None:
     relative = entry.get("facet_file")
     if not isinstance(relative, str) or not _FACET_PATH.fullmatch(relative):
         return None
@@ -401,284 +705,672 @@ def _load_cached_facet(output_dir: Path, state_key: str, entry: dict[str, Any]) 
     path = (output_dir / relative).resolve()
     try:
         path.relative_to(facets_root)
-        facet = json.loads(path.read_text(encoding="utf-8"))
-        validate_facet(facet)
-    except (OSError, ValueError, json.JSONDecodeError, FacetValidationError):
+        value = json.loads(path.read_text(encoding="utf-8"))
+        facet = _validate_persisted_facet(value)
+    except (OSError, ValueError, json.JSONDecodeError, InsightsError):
         return None
-    if facet.get("session_key") != state_key or facet.get("source_hash") != entry.get("source_hash") or relative != _facet_filename(facet):
+    if (
+        facet["session_key"] != state_key
+        or facet["source_hash"] != entry.get("source_hash")
+        or relative != _facet_filename(facet)
+    ):
         return None
     return facet
 
 
-def _deterministic_stats(session: dict[str, Any]) -> dict[str, Any]:
-    events = session["events"]
-    times = session["times"] + [stamp for event in events if (stamp := _parse_timestamp(event.get("timestamp"))) is not None]
-    duration = int(max(times) - min(times)) if times else 0
+def _public_session_meta(meta: Mapping[str, Any], project_alias: str, project_label: str) -> dict[str, Any]:
     return {
-        "event_count": len(events), "user_message_count": sum(event["role"] == "user" for event in events),
-        "assistant_message_count": sum(event["role"] == "assistant" for event in events),
-        "duration_seconds": max(0, duration), "character_count": sum(len(event["text"]) for event in events),
-        "source_file_count": len(session["source_paths"]), "tool_count": int(session.get("tool_count", 0)),
-        "error_count": int(session.get("error_count", 0)), "file_change_count": int(session.get("file_change_count", 0)),
-        "subagent_count": int(session.get("subagent_count", 0)),
+        "start_time": str(meta.get("start_time", "")),
+        "duration_minutes": int(meta.get("duration_minutes", 0)),
+        "user_message_count": int(meta.get("user_message_count", 0)),
+        "assistant_message_count": int(meta.get("assistant_message_count", 0)),
+        "tool_counts": dict(meta.get("tool_counts", {})),
+        "languages": dict(meta.get("languages", {})),
+        "git_commits": int(meta.get("git_commits", 0)),
+        "git_pushes": int(meta.get("git_pushes", 0)),
+        "input_tokens": int(meta.get("input_tokens", 0)),
+        "output_tokens": int(meta.get("output_tokens", 0)),
+        "user_interruptions": int(meta.get("user_interruptions", 0)),
+        "user_response_times": list(meta.get("user_response_times", [])),
+        "tool_errors": int(meta.get("tool_errors", 0)),
+        "tool_error_categories": dict(meta.get("tool_error_categories", {})),
+        "uses_task_agent": bool(meta.get("uses_task_agent")),
+        "uses_mcp": bool(meta.get("uses_mcp")),
+        "uses_web_search": bool(meta.get("uses_web_search")),
+        "uses_web_fetch": bool(meta.get("uses_web_fetch")),
+        "lines_added": int(meta.get("lines_added", 0)),
+        "lines_removed": int(meta.get("lines_removed", 0)),
+        "files_modified": int(meta.get("files_modified", 0)),
+        "message_hours": dict(meta.get("message_hours", {})),
+        "user_message_timestamps": list(meta.get("user_message_timestamps", [])),
+        "project_alias": project_alias,
+        "project_label": project_label,
     }
 
 
-def _work_item(session: dict[str, Any]) -> dict[str, Any]:
-    date = str(session.get("start") or "")[:10] or datetime.fromtimestamp(session["updated_at"], timezone.utc).strftime("%Y-%m-%d")
-    helper_fields = {
-        "schema_version": FACET_SCHEMA_VERSION, "session_key": session["session_key"], "source_hash": session["source_hash"],
-        "date": date, "project_alias": _project_alias(session.get("cwd", "")), "session_origin": session.get("origin", "active"),
-        "deterministic_stats": _deterministic_stats(session), "privacy_redactions": {"policy": "pre-model-redaction-v1"},
-    }
+def _helper_fields(session: Mapping[str, Any]) -> dict[str, Any]:
+    meta = session["meta"]
     return {
-        **helper_fields,
-        "updated_at": datetime.fromtimestamp(session["updated_at"], timezone.utc).isoformat().replace("+00:00", "Z"),
-        "chunks": chunk_events(session["events"]),
-        "facet_contract": {
-            "schema": FACET_SCHEMA_VERSION, "helper_owned": sorted(helper_fields),
-            "model_owned": ["underlying_goal", "goal_categories", "outcome", "user_satisfaction_counts", "helpfulness", "session_type", "friction_counts", "friction_detail", "primary_success", "brief_summary", "evidence_anchors"],
-            "evidence": "event anchors are concise labels; never copy raw paths, IDs, credentials, or long transcript text",
+        "schema_version": FACET_SCHEMA_VERSION,
+        "analysis_version": ANALYSIS_VERSION,
+        "meta_schema_version": META_SCHEMA_VERSION,
+        "normalizer_version": NORMALIZER_VERSION,
+        "facet_prompt_version": FACET_PROMPT_VERSION,
+        "analysis_origin": "model",
+        "session_key": session["session_key"],
+        "source_hash": session["source_hash"],
+        "date": str(meta.get("start_time", ""))[:10],
+        "project_alias": session["project_alias"],
+        "project_label": session["project_label"],
+        "session_origin": session["session_origin"],
+        "session_meta": _public_session_meta(meta, session["project_alias"], session["project_label"]),
+        "privacy_redactions": {"policy": "model-input-guardrail-v2"},
+    }
+
+
+def _model_session(session: Mapping[str, Any]) -> dict[str, Any]:
+    events: list[dict[str, Any]] = []
+    for event in session["events"]:
+        if event["role"] == "tool":
+            events.append({"timestamp": event.get("timestamp", ""), "role": "tool", "name": redact_text(event.get("name", "")), "text": ""})
+        else:
+            events.append({"timestamp": event.get("timestamp", ""), "role": event["role"], "text": redact_text(event.get("text", ""))})
+    return {
+        "session_key": session["session_key"],
+        "start": session["meta"].get("start_time", ""),
+        "project_label": session["project_label"],
+        "duration_minutes": session["meta"].get("duration_minutes", 0),
+        "events": events,
+    }
+
+
+def _work_item(session: Mapping[str, Any]) -> dict[str, Any]:
+    helper = _helper_fields(session)
+    material = normalize_session(_model_session(session))
+    chunks = split_analysis_text(material)
+    return {
+        **helper,
+        "updated_at": datetime.fromtimestamp(float(session["updated_at"]), timezone.utc).isoformat().replace("+00:00", "Z"),
+        "material": material if len(chunks) == 1 else None,
+        "chunks": chunks if len(chunks) > 1 else [],
+        "facet_schema": {
+            "required": list(_native_analysis.NATIVE_FACET_FIELDS),
+            "optional": sorted(_native_analysis.FACET_EXTENSION_FIELDS),
         },
     }
 
 
-def prepare_run(codex_home: str | Path, output_dir: str | Path | None = None, current_thread_id: str | None = None, max_new_sessions: int = MAX_NEW_SESSIONS, language: str = LANGUAGE) -> dict[str, Any]:
+def prepare_run(
+    codex_home: str | Path,
+    output_dir: str | Path | None = None,
+    current_thread_id: str | None = None,
+    max_new_sessions: int = MAX_NEW_SESSIONS,
+    language: str = LANGUAGE,
+) -> dict[str, Any]:
     validate_language(language)
-    if not isinstance(max_new_sessions, int) or isinstance(max_new_sessions, bool) or max_new_sessions < 0:
-        raise ValueError("max_new_sessions must be a non-negative integer")
-    home = Path(codex_home)
-    output = Path(output_dir) if output_dir is not None else home / "usage-data" / "insights"
-    state = _read_state(output)
+    if isinstance(max_new_sessions, bool) or not isinstance(max_new_sessions, int) or not 0 <= max_new_sessions <= MAX_NEW_SESSIONS:
+        raise ValueError(f"max_new_sessions must be an integer from 0 to {MAX_NEW_SESSIONS}")
+    home = Path(codex_home).expanduser().resolve()
+    requested_output = Path(output_dir).expanduser() if output_dir is not None else home / "usage-data" / "insights"
+    output = requested_output.resolve()
+    try:
+        output.relative_to(home)
+    except ValueError as exc:
+        raise InsightsError("Insights output must remain inside CODEX_HOME") from exc
+    state_hash = _state_snapshot_hash(output)
+    state, legacy = _read_state(output)
+    if state_hash != _state_snapshot_hash(output):
+        raise StaleRunError("state changed while preparing the run")
     sessions, inventory = discover_sessions(home, current_thread_id=current_thread_id, include_stats=True)
-    cached_facets: list[dict[str, Any]] = []
+    cached: list[dict[str, Any]] = []
     uncached: list[dict[str, Any]] = []
     cached_discovered = 0
-    discovered_keys: set[str] = set()
+    selected_sessions: dict[str, dict[str, Any]] = {}
+    source_snapshots: dict[str, dict[str, Any]] = {}
+    eligible_metas: list[dict[str, Any]] = []
     for session in sessions:
         key = session["session_key"]
-        discovered_keys.add(key)
+        public_meta = _public_session_meta(
+            session["meta"], session["project_alias"], session["project_label"]
+        )
+        public_meta["session_key"] = key
+        eligible_metas.append(public_meta)
+        source_snapshots[key] = {
+            "source_path": str(Path(session["source_path"]).resolve()),
+            "source_hash": session["source_hash"],
+        }
         entry = state["sessions"].get(key)
-        facet = _load_cached_facet(output, key, entry) if isinstance(entry, dict) and entry.get("source_hash") == session["source_hash"] else None
+        facet = (
+            _load_cached_facet(output, key, entry)
+            if isinstance(entry, Mapping) and entry.get("source_hash") == session["source_hash"]
+            else None
+        )
         if facet is None:
             uncached.append(session)
         else:
-            cached_facets.append(facet)
+            cached.append(facet)
             cached_discovered += 1
-    for key, entry in state["sessions"].items():
-        if key not in discovered_keys and isinstance(entry, dict):
-            facet = _load_cached_facet(output, key, entry)
-            if facet is not None:
-                cached_facets.append(facet)
-    work_items = [_work_item(session) for session in uncached[:max_new_sessions]]
-    inventory.update({
-        "cached": cached_discovered, "selected": len(work_items),
-        "remaining": max(0, inventory["eligible"] - cached_discovered - len(work_items)),
-        "historical_cached": len(cached_facets) - cached_discovered,
-    })
-    return {"protocol_version": 2, "generation": state["generation"], "language": language, "output_dir": str(output), "work_items": work_items, "cached_facets": cached_facets, "inventory": inventory}
+    selected = uncached[:max_new_sessions]
+    for session in selected:
+        selected_sessions[session["session_key"]] = session
+    work_items = [_work_item(session) for session in selected]
+    inventory.update(
+        {
+            "cached": cached_discovered,
+            "selected": len(work_items),
+            "remaining": max(0, inventory["eligible"] - cached_discovered - len(work_items)),
+            "historical_cached": 0,
+        }
+    )
+    return {
+        "protocol_version": 3,
+        "generation": state["generation"],
+        "state_hash": state_hash,
+        "language": language,
+        "output_dir": str(output.resolve()),
+        "work_items": work_items,
+        "selected_sessions": selected_sessions,
+        "source_snapshots": source_snapshots,
+        "eligible_metas": eligible_metas,
+        "cached_facets": cached,
+        "inventory": inventory,
+        "legacy_cache_detected": legacy,
+    }
 
 
-def _check_string(value: Any, name: str, maximum: int = 2_000, allow_empty: bool = False) -> None:
-    if not isinstance(value, str) or len(value) > maximum or (not allow_empty and not value.strip()):
-        raise FacetValidationError(f"invalid {name}")
+def _increment(counter: dict[str, int], values: Mapping[str, Any]) -> None:
+    for key, value in values.items():
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            counter[str(key)] = counter.get(str(key), 0) + value
 
 
-def validate_facet(facet: Any, expected: dict[str, Any] | None = None) -> dict[str, Any]:
-    if not isinstance(facet, dict) or set(facet) != FACET_KEYS:
-        raise FacetValidationError(f"facet_v2 must contain exactly: {', '.join(sorted(FACET_KEYS))}")
-    if facet["schema_version"] != FACET_SCHEMA_VERSION or not _SESSION_KEY.fullmatch(str(facet["session_key"])):
-        raise FacetValidationError("invalid facet schema or opaque session_key")
-    if not isinstance(facet["source_hash"], str) or not re.fullmatch(r"[a-f0-9]{64}", facet["source_hash"]):
-        raise FacetValidationError("invalid source_hash")
-    _check_string(facet["date"], "date", 32)
-    if not _PROJECT_KEY.fullmatch(str(facet["project_alias"])) or facet["session_origin"] not in {"active", "archived", "mixed"}:
-        raise FacetValidationError("invalid project_alias or session_origin")
-    stats = facet["deterministic_stats"]
-    if not isinstance(stats, dict) or set(stats) != set(STATS_KEYS) or any(not isinstance(stats[k], int) or stats[k] < 0 for k in STATS_KEYS):
-        raise FacetValidationError("deterministic_stats must contain non-negative integer counters")
-    if facet["privacy_redactions"] != {"policy": "pre-model-redaction-v1"}:
-        raise FacetValidationError("invalid privacy_redactions marker")
-    _check_string(facet["underlying_goal"], "underlying_goal", allow_empty=True)
-    if not isinstance(facet["goal_categories"], list) or len(facet["goal_categories"]) > 6 or any(not isinstance(x, str) or not x.strip() or len(x) > 80 for x in facet["goal_categories"]):
-        raise FacetValidationError("invalid goal_categories")
-    if facet["outcome"] not in OUTCOMES or facet["helpfulness"] not in HELPFULNESS or facet["session_type"] not in SESSION_TYPES:
-        raise FacetValidationError("invalid outcome, helpfulness, or session_type")
-    satisfaction = facet["user_satisfaction_counts"]
-    if not isinstance(satisfaction, dict) or set(satisfaction) != {"positive", "negative", "correction"} or any(not isinstance(v, int) or v < 0 for v in satisfaction.values()):
-        raise FacetValidationError("invalid user_satisfaction_counts")
-    friction = facet["friction_counts"]
-    if not isinstance(friction, dict) or set(friction) != set(FRICTION_TYPES) or any(not isinstance(v, int) or v < 0 for v in friction.values()):
-        raise FacetValidationError("invalid friction_counts")
-    if not isinstance(facet["friction_detail"], list) or len(facet["friction_detail"]) > 12:
-        raise FacetValidationError("invalid friction_detail")
-    for detail in facet["friction_detail"]:
-        if not isinstance(detail, dict) or set(detail) != {"type", "root_cause", "evidence"} or detail["type"] not in FRICTION_TYPES:
-            raise FacetValidationError("invalid friction_detail item")
-        _check_string(detail["root_cause"], "friction root cause", 500, allow_empty=True)
-        _check_string(detail["evidence"], "friction evidence", 500, allow_empty=True)
-    _check_string(facet["primary_success"], "primary_success", allow_empty=True)
-    _check_string(facet["brief_summary"], "brief_summary", 3_000, allow_empty=True)
-    if not isinstance(facet["evidence_anchors"], list) or len(facet["evidence_anchors"]) > 12 or any(not isinstance(x, str) or len(x) > 500 for x in facet["evidence_anchors"]):
-        raise FacetValidationError("invalid evidence_anchors")
-    if expected:
-        for key in ("schema_version", "session_key", "source_hash", "date", "project_alias", "session_origin", "deterministic_stats", "privacy_redactions"):
-            if facet.get(key) != expected.get(key):
-                raise FacetValidationError(f"helper-owned facet field mismatch: {key}")
-    if privacy_violations(_facet_privacy_text(facet)):
-        raise PrivacyError("facet contains a known private value")
-    return facet
+def aggregate_usage(metas: Iterable[Mapping[str, Any]], facets: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    metas = list(metas)
+    if isinstance(facets, Mapping):
+        facet_map = dict(facets)
+        facet_list = [
+            facet_map.get(str(meta.get("session_key") or meta.get("session_id", "")))
+            for meta in metas
+        ]
+        facets = [facet for facet in facet_list if isinstance(facet, Mapping)]
+    else:
+        facets = list(facets)
+        facet_map = {
+            str(facet.get("session_key", index)): facet
+            for index, facet in enumerate(facets)
+        }
+
+    def facet_for_meta(meta: Mapping[str, Any], index: int) -> Mapping[str, Any] | None:
+        key = str(meta.get("session_key") or meta.get("session_id", ""))
+        candidate = facet_map.get(key)
+        if isinstance(candidate, Mapping):
+            return candidate
+        if index < len(facets) and isinstance(facets[index], Mapping):
+            candidate = facets[index]
+            candidate_key = str(candidate.get("session_key", ""))
+            if not key or not candidate_key or candidate_key == key:
+                return candidate
+        return None
+
+    def is_warmup(facet: Mapping[str, Any] | None) -> bool:
+        if not isinstance(facet, Mapping):
+            return False
+        active = {
+            str(key)
+            for key, value in facet.get("goal_categories", {}).items()
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+        }
+        return active == {"warmup_minimal"}
+
+    paired = [(meta, facet_for_meta(meta, index)) for index, meta in enumerate(metas)]
+    metas = [meta for meta, facet in paired if not is_warmup(facet)]
+    facets = [facet for facet in facets if not is_warmup(facet)]
+    tool_counts: dict[str, int] = {}
+    languages: dict[str, int] = {}
+    projects: dict[str, int] = {}
+    goal_categories: dict[str, int] = {}
+    outcomes: dict[str, int] = {}
+    satisfaction: dict[str, int] = {}
+    helpfulness: dict[str, int] = {}
+    session_types: dict[str, int] = {}
+    friction: dict[str, int] = {}
+    success: dict[str, int] = {}
+    tool_error_categories: dict[str, int] = {}
+    message_hours: list[int] = []
+    response_times: list[float] = []
+    active_dates: set[str] = set()
+    total_messages = 0
+    total_duration_minutes = 0
+    for meta in metas:
+        total_messages += int(meta.get("user_message_count", 0))
+        total_duration_minutes += int(meta.get("duration_minutes", 0))
+        _increment(tool_counts, meta.get("tool_counts", {}))
+        _increment(languages, meta.get("languages", {}))
+        label = str(meta.get("project_label") or meta.get("project_alias") or meta.get("project_path") or "unknown")
+        projects[label] = projects.get(label, 0) + 1
+        _increment(tool_error_categories, meta.get("tool_error_categories", {}))
+        raw_hours = meta.get("message_hours", [])
+        if isinstance(raw_hours, Mapping):
+            for hour, count in raw_hours.items():
+                message_hours.extend([int(hour)] * int(count))
+        elif isinstance(raw_hours, Sequence) and not isinstance(raw_hours, (str, bytes, bytearray)):
+            message_hours.extend(int(hour) for hour in raw_hours)
+        response_times.extend(float(value) for value in meta.get("user_response_times", []) if isinstance(value, (int, float)))
+        start = str(meta.get("start_time", ""))
+        if start[:10]:
+            active_dates.add(start[:10])
+    for facet in facets:
+        _increment(goal_categories, facet.get("goal_categories", {}))
+        outcome = str(facet.get("outcome", "unclear_from_transcript"))
+        outcomes[outcome] = outcomes.get(outcome, 0) + 1
+        _increment(satisfaction, facet.get("user_satisfaction_counts", {}))
+        help_value = str(facet.get("claude_helpfulness", ""))
+        helpfulness[help_value] = helpfulness.get(help_value, 0) + 1
+        session_type = str(facet.get("session_type", ""))
+        session_types[session_type] = session_types.get(session_type, 0) + 1
+        _increment(friction, facet.get("friction_counts", {}))
+        primary = str(facet.get("primary_success", "none"))
+        if primary != "none":
+            success[primary] = success.get(primary, 0) + 1
+    starts = sorted(active_dates)
+    multi = detect_multi_clauding(metas)
+    response_distribution = {
+        "2_to_10_seconds": sum(2 < value < 10 for value in response_times),
+        "10_to_30_seconds": sum(10 <= value < 30 for value in response_times),
+        "30_seconds_to_1_minute": sum(30 <= value < 60 for value in response_times),
+        "1_to_2_minutes": sum(60 <= value < 120 for value in response_times),
+        "2_to_5_minutes": sum(120 <= value < 300 for value in response_times),
+        "5_to_15_minutes": sum(300 <= value < 900 for value in response_times),
+        "over_15_minutes": sum(value >= 900 for value in response_times),
+    }
+    return {
+        "total_sessions": len(metas),
+        "sessions_with_facets": len(facets),
+        "date_range": {"start": starts[0] if starts else "", "end": starts[-1] if starts else ""},
+        "total_messages": total_messages,
+        "total_duration_hours": round(total_duration_minutes / 60, 1),
+        "total_input_tokens": sum(int(meta.get("input_tokens", 0)) for meta in metas),
+        "total_output_tokens": sum(int(meta.get("output_tokens", 0)) for meta in metas),
+        "tool_counts": tool_counts,
+        "languages": languages,
+        "git_commits": sum(int(meta.get("git_commits", 0)) for meta in metas),
+        "git_pushes": sum(int(meta.get("git_pushes", 0)) for meta in metas),
+        "projects": projects,
+        "goal_categories": goal_categories,
+        "outcomes": outcomes,
+        "satisfaction": satisfaction,
+        "helpfulness": helpfulness,
+        "session_types": session_types,
+        "friction": friction,
+        "success": success,
+        "session_summaries": [
+            {
+                "id": str(meta.get("session_key") or meta.get("session_id", ""))[:8],
+                "date": str(meta.get("start_time", ""))[:10],
+                "summary": str(
+                    meta.get("summary")
+                    or meta.get("first_prompt")
+                    or (matched_facet or {}).get("brief_summary", "")
+                ),
+                "goal": str((matched_facet or {}).get("underlying_goal", "")),
+            }
+            for index, meta in enumerate(metas[:50])
+            for matched_facet in [facet_for_meta(meta, index)]
+        ],
+        "total_interruptions": sum(int(meta.get("user_interruptions", 0)) for meta in metas),
+        "total_tool_errors": sum(int(meta.get("tool_errors", 0)) for meta in metas),
+        "tool_error_categories": tool_error_categories,
+        "user_response_times": response_times,
+        "median_response_time": sorted(response_times)[len(response_times) // 2] if response_times else 0,
+        "avg_response_time": round(mean(response_times), 1) if response_times else 0,
+        "response_time_distribution": response_distribution,
+        "sessions_using_task_agent": sum(bool(meta.get("uses_task_agent")) for meta in metas),
+        "sessions_using_mcp": sum(bool(meta.get("uses_mcp")) for meta in metas),
+        "sessions_using_web_search": sum(bool(meta.get("uses_web_search")) for meta in metas),
+        "sessions_using_web_fetch": sum(bool(meta.get("uses_web_fetch")) for meta in metas),
+        "total_lines_added": sum(int(meta.get("lines_added", 0)) for meta in metas),
+        "total_lines_removed": sum(int(meta.get("lines_removed", 0)) for meta in metas),
+        "total_files_modified": sum(int(meta.get("files_modified", 0)) for meta in metas),
+        "lines_added": sum(int(meta.get("lines_added", 0)) for meta in metas),
+        "lines_removed": sum(int(meta.get("lines_removed", 0)) for meta in metas),
+        "files_modified": sum(int(meta.get("files_modified", 0)) for meta in metas),
+        "days_active": len(active_dates),
+        "messages_per_day": round(total_messages / len(active_dates), 1) if active_dates else 0,
+        "message_hours": message_hours,
+        "multi_clauding": {
+            "overlap_events": multi["event_pair_count"],
+            "sessions_involved": multi["session_count"],
+            "user_messages_during": multi["user_messages_during"],
+        },
+    }
 
 
-def _facet_privacy_text(facet: dict[str, Any]) -> str:
-    return json.dumps(facet, ensure_ascii=False, sort_keys=True)
+def build_lens_material(
+    aggregate: Mapping[str, Any],
+    facets: Iterable[Mapping[str, Any]],
+    coverage: Mapping[str, Any] | None = None,
+) -> str:
+    facet_list = list(facets.values()) if isinstance(facets, Mapping) else list(facets)
+    core = {
+        "sessions": aggregate.get("total_sessions", 0),
+        "analyzed": aggregate.get("sessions_with_facets", 0),
+        "date_range": aggregate.get("date_range", {}),
+        "messages": aggregate.get("total_messages", 0),
+        "hours": aggregate.get("total_duration_hours", 0),
+        "commits": aggregate.get("git_commits", 0),
+        "top_tools": aggregate.get("tool_counts", {}),
+        "top_goals": aggregate.get("goal_categories", {}),
+        "outcomes": aggregate.get("outcomes", {}),
+        "satisfaction": aggregate.get("satisfaction", {}),
+        "friction": aggregate.get("friction", {}),
+        "success": aggregate.get("success", {}),
+        "languages": aggregate.get("languages", {}),
+        "coverage": dict(coverage or {}),
+        "coverage_limited": bool((coverage or {}).get("remaining", 0)),
+    }
+    summaries = [
+        f"- {facet.get('brief_summary', '')} ({facet.get('outcome', '')}, {facet.get('claude_helpfulness', '')})"
+        for facet in facet_list[:50]
+    ]
+    friction = [
+        str(facet.get("friction_detail", ""))
+        for facet in facet_list
+        if str(facet.get("friction_detail", "")).strip()
+    ][:20]
+    instructions = [
+        instruction
+        for facet in facet_list
+        for instruction in facet.get("user_instructions_to_codex", [])
+        if isinstance(instruction, str) and instruction.strip()
+    ][:15]
+    return (
+        "USAGE DATA\n"
+        + json.dumps(core, ensure_ascii=False, sort_keys=True, indent=2)
+        + "\n\nSESSION SUMMARIES\n"
+        + "\n".join(summaries)
+        + "\n\nFRICTION DETAILS\n"
+        + "\n".join(f"- {item}" for item in friction)
+        + "\n\nUSER INSTRUCTIONS TO CODEX\n"
+        + "\n".join(f"- {item}" for item in instructions)
+    )
 
 
-def _opaque_evidence(value: Any, session_keys: set[str]) -> list[str]:
-    if not isinstance(value, list) or any(not isinstance(x, str) or not _SESSION_KEY.fullmatch(x) or x not in session_keys for x in value):
-        raise InsightsError("evidence must be a list of known opaque session keys")
-    if len(set(value)) != len(value):
-        raise InsightsError("evidence keys must be unique")
+def _model_fields(facet: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: facet[key]
+        for key in (*_native_analysis.NATIVE_FACET_FIELDS, *sorted(_native_analysis.FACET_EXTENSION_FIELDS))
+        if key in facet
+    }
+
+
+def _job_id(*parts: Any) -> str:
+    return "job-" + hashlib.sha256("\0".join(map(str, parts)).encode("utf-8")).hexdigest()[:20]
+
+
+def _chunk_jobs(run: Mapping[str, Any]) -> list[dict[str, Any]]:
+    jobs: list[dict[str, Any]] = []
+    for item in run["work_items"]:
+        for index, chunk in enumerate(item.get("chunks", [])):
+            job_id = _job_id(run["run_id"], "chunk", item["session_key"], index)
+            if job_id in run["job_results"]:
+                continue
+            jobs.append(
+                {
+                    "job_id": job_id,
+                    "kind": "chunk_summary",
+                    "session_key": item["session_key"],
+                    "chunk_index": index,
+                    "chunk_total": len(item["chunks"]),
+                    "prompt": _native_analysis.build_chunk_summary_prompt(
+                        chunk,
+                        index=index,
+                        total=len(item["chunks"]),
+                        language=run["language"],
+                    ),
+                    "schema": {"required": ["summary"]},
+                }
+            )
+    return jobs
+
+
+def _session_material(run: Mapping[str, Any], item: Mapping[str, Any]) -> str | None:
+    chunks = item.get("chunks", [])
+    if not chunks:
+        return str(item.get("material", ""))
+    summaries: list[str] = []
+    for index in range(len(chunks)):
+        job_id = _job_id(run["run_id"], "chunk", item["session_key"], index)
+        result = run["job_results"].get(job_id)
+        if not isinstance(result, Mapping):
+            return None
+        summaries.append(str(result["summary"]))
+    return (
+        f"[Long session - {len(summaries)} parts summarized]\n\n"
+        + "\n\n---\n\n".join(summaries)
+    )
+
+
+def _facet_jobs(run: Mapping[str, Any]) -> list[dict[str, Any]]:
+    jobs: list[dict[str, Any]] = []
+    for item in run["work_items"]:
+        job_id = _job_id(run["run_id"], "facet", item["session_key"])
+        if job_id in run["job_results"]:
+            continue
+        material = _session_material(run, item)
+        if material is None:
+            continue
+        jobs.append(
+            {
+                "job_id": job_id,
+                "kind": "session_facet",
+                "session_key": item["session_key"],
+                "material": material,
+                "prompt": build_facet_prompt(material, language=run["language"]),
+                "schema": item["facet_schema"],
+            }
+        )
+    return jobs
+
+
+def _combined_facets(run: Mapping[str, Any]) -> list[dict[str, Any]]:
+    facets = list(run["cached_facets"])
+    for item in run["work_items"]:
+        job_id = _job_id(run["run_id"], "facet", item["session_key"])
+        value = run["job_results"].get(job_id)
+        if isinstance(value, Mapping):
+            facets.append(dict(value))
+    return facets
+
+
+def _combined_metas(run: Mapping[str, Any], facets: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    metas: list[dict[str, Any]] = []
+    for facet in facets:
+        meta = dict(facet["session_meta"])
+        meta["session_key"] = facet["session_key"]
+        metas.append(meta)
+    return metas
+
+
+def _ensure_aggregate(run: dict[str, Any]) -> None:
+    if run.get("aggregate") is not None:
+        return
+    facets = _combined_facets(run)
+    metas = list(run.get("eligible_metas") or _combined_metas(run, facets))
+    run["aggregate"] = aggregate_usage(metas, facets)
+    run["lens_material"] = build_lens_material(
+        run["aggregate"], facets, coverage=run["inventory"]
+    )
+
+
+def _lens_jobs(run: dict[str, Any]) -> list[dict[str, Any]]:
+    _ensure_aggregate(run)
+    generated = build_lens_jobs(
+        {"material": run["lens_material"]}, language=run["language"]
+    )
+    jobs: list[dict[str, Any]] = []
+    for value in generated:
+        lens_id = value["lens_id"]
+        job_id = _job_id(run["run_id"], "lens", lens_id)
+        if job_id in run["job_results"]:
+            continue
+        jobs.append({**value, "job_id": job_id})
+    return jobs
+
+
+def _lens_results(run: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    results: dict[str, dict[str, Any]] = {}
+    for lens_id in LENS_IDS:
+        job_id = _job_id(run["run_id"], "lens", lens_id)
+        value = run["job_results"].get(job_id)
+        if isinstance(value, Mapping):
+            results[lens_id] = dict(value)
+    return results
+
+
+def _glance_job(run: dict[str, Any]) -> dict[str, Any] | None:
+    lenses = _lens_results(run)
+    if set(lenses) != set(LENS_IDS):
+        return None
+    job_id = _job_id(run["run_id"], "at-a-glance")
+    if job_id in run["job_results"]:
+        return None
+    value = build_at_a_glance_job(
+        {"aggregate": run["aggregate"], "lens_material": run["lens_material"]},
+        lenses,
+        language=run["language"],
+    )
+    return {**value, "job_id": job_id}
+
+
+def _report_aggregate(aggregate: Mapping[str, Any]) -> dict[str, Any]:
+    value = dict(aggregate)
+    raw_hours = aggregate.get("message_hours", [])
+    if isinstance(raw_hours, Sequence) and not isinstance(raw_hours, (str, bytes, bytearray)):
+        hours: dict[str, int] = {}
+        for hour in raw_hours:
+            key = str(hour).zfill(2)
+            hours[key] = hours.get(key, 0) + 1
+        value["message_hours"] = hours
+    value["lines_added"] = int(aggregate.get("total_lines_added", aggregate.get("lines_added", 0)))
+    value["lines_removed"] = int(aggregate.get("total_lines_removed", aggregate.get("lines_removed", 0)))
+    value["files_modified"] = int(aggregate.get("total_files_modified", aggregate.get("files_modified", 0)))
     return value
 
 
-def validate_patterns(patterns: Any, session_keys: Iterable[str] | None = None) -> dict[str, Any]:
-    if not isinstance(patterns, dict) or set(patterns) != {"schema_version", "groups"} or patterns["schema_version"] != AGGREGATION_SCHEMA_VERSION:
-        raise InsightsError("patterns must use aggregation_v1")
-    groups = patterns["groups"]
-    if not isinstance(groups, dict) or set(groups) != set(PATTERN_GROUPS):
-        raise InsightsError("patterns must contain the six groups")
-    known = set(session_keys or [])
-    for group, values in groups.items():
-        if not isinstance(values, list) or len(values) > 20:
-            raise InsightsError(f"pattern group {group} is invalid")
-        for item in values:
-            if not isinstance(item, dict) or set(item) != {"kind", "claim", "evidence", "confidence"} or item["kind"] not in PATTERN_KINDS:
-                raise InsightsError("invalid pattern item")
-            _check_string(item["claim"], "pattern claim", 1_000)
-            evidence = _opaque_evidence(item["evidence"], known) if known else item["evidence"]
-            if len(evidence) < 2 and not re.search(r"单例|singleton", item["claim"], re.I):
-                raise InsightsError("cross-session pattern claims need two sessions or an explicit singleton label")
-            if not isinstance(item["confidence"], (int, float)) or not 0 <= item["confidence"] <= 1:
-                raise InsightsError("pattern confidence must be between 0 and 1")
-    return patterns
+def render_report(
+    facets: Iterable[Mapping[str, Any]],
+    language: str = LANGUAGE,
+    coverage: Mapping[str, Any] | None = None,
+    *,
+    aggregate: Mapping[str, Any] | None = None,
+    lenses: Mapping[str, Any] | None = None,
+    at_a_glance: Mapping[str, Any] | None = None,
+    **_ignored: Any,
+) -> str:
+    validate_language(language)
+    facet_list = list(facets)
+    if aggregate is None:
+        aggregate = aggregate_usage(
+            [facet["session_meta"] for facet in facet_list if isinstance(facet.get("session_meta"), Mapping)],
+            facet_list,
+        )
+    return render_native_report(
+        _report_aggregate(aggregate),
+        lenses or {},
+        at_a_glance or {},
+        language=language,
+        coverage=coverage,
+    )
 
 
-def validate_lenses(lenses: Any, session_keys: Iterable[str] | None = None) -> dict[str, Any]:
-    if not isinstance(lenses, dict) or set(lenses) != {"schema_version", "lenses"} or lenses["schema_version"] != AGGREGATION_SCHEMA_VERSION:
-        raise InsightsError("lenses must use aggregation_v1")
-    values = lenses["lenses"]
-    if not isinstance(values, dict) or set(values) != set(LENS_IDS):
-        raise InsightsError("lenses must contain the seven independent views")
-    known = set(session_keys or [])
-    for lens, entries in values.items():
-        if not isinstance(entries, list) or len(entries) > 20:
-            raise InsightsError(f"lens {lens} is invalid")
-        for entry in entries:
-            if not isinstance(entry, dict) or set(entry) != {"claim", "evidence", "action", "success_criteria", "confidence"}:
-                raise InsightsError("invalid lens item")
-            _check_string(entry["claim"], "lens claim", 1_000)
-            _check_string(entry["action"], "lens action", 1_000, allow_empty=True)
-            _check_string(entry["success_criteria"], "lens success criteria", 1_000, allow_empty=True)
-            evidence = _opaque_evidence(entry["evidence"], known) if known else entry["evidence"]
-            if len(evidence) < 2 and not re.search(r"单例|singleton", entry["claim"], re.I):
-                raise InsightsError("lens claims with one session must be marked singleton")
-            if not isinstance(entry["confidence"], (int, float)) or not 0 <= entry["confidence"] <= 1:
-                raise InsightsError("lens confidence must be between 0 and 1")
-    return lenses
+def _preview(run: dict[str, Any]) -> str:
+    glance = run["job_results"].get(_job_id(run["run_id"], "at-a-glance"))
+    if not isinstance(glance, Mapping):
+        raise InsightsError("At-a-Glance must complete before preview")
+    report = render_report(
+        _combined_facets(run),
+        language=run["language"],
+        coverage=run["inventory"],
+        aggregate=run["aggregate"],
+        lenses=_lens_results(run),
+        at_a_glance=glance,
+    )
+    if privacy_violations(report):
+        raise PrivacyError("rendered report contains a private value")
+    return report
 
 
-def validate_quality(quality: Any) -> dict[str, Any]:
-    if not isinstance(quality, dict) or set(quality) != {"schema_version", "scores", "revision_count", "concerns"} or quality["schema_version"] != QUALITY_SCHEMA_VERSION:
-        raise InsightsError("quality must use quality_v1")
-    scores = quality["scores"]
-    required = {"coverage", "evidence", "privacy", "actionability", "incremental"}
-    if not isinstance(scores, dict) or set(scores) != required or any(not isinstance(v, int) or not 1 <= v <= 5 for v in scores.values()):
-        raise InsightsError("quality scores must be integers from 1 to 5")
-    if not isinstance(quality["revision_count"], int) or quality["revision_count"] not in {0, 1} or not isinstance(quality["concerns"], list) or any(not isinstance(x, str) or len(x) > 500 for x in quality["concerns"]):
-        raise InsightsError("invalid quality concerns or revision_count")
-    if scores["privacy"] < 4 or scores["evidence"] < 4 or scores["incremental"] < 4:
-        raise PrivacyError("privacy, evidence, and incremental scores are hard gates (>=4)")
-    return quality
+def _stage(run: dict[str, Any]) -> dict[str, Any]:
+    chunks = _chunk_jobs(run)
+    if chunks:
+        return {"stage": "chunk_summaries", "jobs": chunks[:MODEL_JOB_BATCH]}
+    facets = _facet_jobs(run)
+    if facets:
+        return {"stage": "session_facets", "jobs": facets[:MODEL_JOB_BATCH]}
+    lenses = _lens_jobs(run)
+    if lenses:
+        return {"stage": "lenses", "jobs": lenses}
+    glance = _glance_job(run)
+    if glance is not None:
+        return {"stage": "at_a_glance", "jobs": [glance]}
+    return {"stage": "ready_to_commit", "jobs": [], "preview_html": _preview(run)}
 
 
-def _fallback_patterns(facets: list[dict[str, Any]]) -> dict[str, Any]:
-    keys = [facet["session_key"] for facet in facets]
-    groups = {group: [] for group in PATTERN_GROUPS}
-    if keys:
-        groups["goals"] = [{"kind": "repeat", "claim": "单例：本轮会话目标各不相同，暂无跨会话重复目标", "evidence": [keys[0]], "confidence": 0.2}]
-    return {"schema_version": AGGREGATION_SCHEMA_VERSION, "groups": groups}
+def _validated_job_result(run: Mapping[str, Any], job: Mapping[str, Any], value: Any) -> dict[str, Any]:
+    kind = job["kind"]
+    if kind == "chunk_summary":
+        if not isinstance(value, Mapping) or set(value) != {"summary"} or not isinstance(value["summary"], str) or not value["summary"].strip():
+            raise FacetValidationError("chunk result must contain one non-empty summary")
+        if len(value["summary"]) > 8_000:
+            raise FacetValidationError("chunk summary is too long")
+        accepted: dict[str, Any] = {"summary": value["summary"]}
+    elif kind == "session_facet":
+        model = validate_native_facet(value)
+        item = next(item for item in run["work_items"] if item["session_key"] == job["session_key"])
+        accepted = {
+            key: item[key]
+            for key in (
+                "schema_version",
+                "analysis_version",
+                "meta_schema_version",
+                "normalizer_version",
+                "facet_prompt_version",
+                "analysis_origin",
+                "session_key",
+                "source_hash",
+                "date",
+                "project_alias",
+                "project_label",
+                "session_origin",
+                "session_meta",
+                "privacy_redactions",
+            )
+        }
+        accepted.update(model)
+        _validate_persisted_facet(accepted, item)
+    elif kind == "lens":
+        accepted = validate_lens_result(job["lens_id"], value)
+    elif kind == "at_a_glance":
+        accepted = validate_at_a_glance(value)
+    else:
+        raise InsightsError(f"unsupported job kind: {kind}")
+    if privacy_violations(json.dumps(accepted, ensure_ascii=False, sort_keys=True)):
+        raise PrivacyError(f"{kind} result contains a private value")
+    return accepted
 
 
-def _fallback_lenses(facets: list[dict[str, Any]]) -> dict[str, Any]:
-    keys = [facet["session_key"] for facet in facets]
-    def entry(claim: str, action: str = "", success: str = "") -> dict[str, Any]:
-        return {"claim": claim, "evidence": keys[:1], "action": action, "success_criteria": success, "confidence": 0.2}
-    return {"schema_version": AGGREGATION_SCHEMA_VERSION, "lenses": {lens: ([entry("单例：样本不足以形成跨会话结论")] if keys else []) for lens in LENS_IDS}}
+def _accept_job(run: dict[str, Any], job_id: str, value: Any) -> None:
+    """Accept one result; batch callers must validate the whole batch first."""
 
-
-def _material(facets: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "batch_size": 50,
-        "facet_count": len(facets),
-        "facets": [{"session_key": f["session_key"], "date": f["date"], "project_alias": f["project_alias"], "goal": f["underlying_goal"], "outcome": f["outcome"], "helpfulness": f["helpfulness"], "friction": f["friction_counts"], "success": f["primary_success"]} for f in facets],
-        "instructions": "Return Repeat, Contradiction, and Evolution patterns; a claim called repeated/common must cite at least two opaque keys.",
-    }
-
-
-def _claim_entries(values: list[dict[str, Any]]) -> list[tuple[str, list[str]]]:
-    return [(str(value.get("claim", "")), list(value.get("evidence", []))) for value in values]
-
-
-def render_report(facets: Iterable[dict[str, Any]], language: str = LANGUAGE, coverage: dict[str, Any] | None = None, patterns: dict[str, Any] | None = None, lenses: dict[str, Any] | None = None, quality: dict[str, Any] | None = None) -> str:
-    language = validate_language(language)
-    items = list(facets)
-    for facet in items:
-        validate_facet(facet)
-    patterns = patterns or _fallback_patterns(items)
-    lenses = lenses or _fallback_lenses(items)
-    locale = "zh" if language.lower().startswith("zh") else "en"
-    titles = dict(zip(SECTION_IDS, SECTION_TITLES[locale]))
-    report_title = "Codex 使用洞察" if locale == "zh" else "Codex Usage Insights"
-    generated_label = "生成时间" if locale == "zh" else "Generated"
-    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    coverage = coverage or {}
-    eligible, cached, selected = (int(coverage.get(k, 0)) for k in ("eligible", "cached", "selected"))
-    remaining = int(coverage.get("remaining", max(0, eligible - cached - selected)))
-    coverage_note = (f"覆盖恒等式：合格会话 {eligible} = 已缓存 {cached} + 本轮新增 {selected} + 尚未处理 {remaining}" if locale == "zh" else f"Coverage: {eligible} = cached {cached} + new {selected} + remaining {remaining}")
-    stats_html = "".join(f'<span>{html.escape(label)} <strong>{value}</strong></span>' for label, value in (("合格会话" if locale == "zh" else "Eligible", eligible), ("已缓存" if locale == "zh" else "Cached", cached), ("本轮新增" if locale == "zh" else "New", selected), ("尚未处理" if locale == "zh" else "Remaining", remaining)))
-    lens_values = lenses.get("lenses", {})
-    pattern_values = patterns.get("groups", {})
-    mapping = {
-        "overview": _claim_entries(pattern_values.get("goals", [])),
-        "project_domains": _claim_entries(lens_values.get("project_areas", [])),
-        "collaboration": _claim_entries(lens_values.get("interaction_style", [])),
-        "what_works": _claim_entries(lens_values.get("what_works", [])),
-        "friction": _claim_entries(lens_values.get("friction_analysis", [])) + _claim_entries(pattern_values.get("friction", [])),
-        "features_workflows": _claim_entries(lens_values.get("suggestions", [])),
-        "agents_suggestions": _claim_entries(lens_values.get("suggestions", [])),
-        "new_uses": _claim_entries(lens_values.get("on_the_horizon", [])),
-        "future_opportunities": _claim_entries(lens_values.get("on_the_horizon", [])),
-        "memorable_moments": _claim_entries(lens_values.get("fun_ending", [])),
-        "method_coverage": [(coverage_note, [])],
-    }
-    if quality and quality.get("concerns"):
-        mapping["method_coverage"].extend((f"Concern: {concern}", []) for concern in quality["concerns"])
-    navigation = "".join(f'<a href="#{section}">{html.escape(titles[section])}</a>' for section in SECTION_IDS)
-    sections_html: list[str] = []
-    for section in SECTION_IDS:
-        entries = mapping[section]
-        if not entries:
-            body = '<p class="empty">暂无可靠洞察</p>' if locale == "zh" else '<p class="empty">No reliable insight yet</p>'
-        else:
-            rows = []
-            for claim, evidence in entries:
-                evidence_label = (f"{len(set(evidence))} 个会话" if locale == "zh" else f"{len(set(evidence))} sessions") if evidence else ("方法说明" if locale == "zh" else "Method note")
-                rows.append(f'<li><span class="evidence">{html.escape(evidence_label)}</span>{html.escape(claim)}<small>{html.escape(" · ".join(dict.fromkeys(evidence)))}</small></li>')
-            body = "<ul>" + "".join(rows) + "</ul>"
-        sections_html.append(f'<section id="{section}" class="{SECTION_TONES[section]}"><h2>{html.escape(titles[section])}</h2>{body}</section>')
-    style = """:root{color-scheme:light;--ink:#182026;--muted:#66727d;--line:#d9e0e5;--paper:#fff;--wash:#f4f7f8;--accent:#176b87}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--wash);color:var(--ink);font:16px/1.65 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.layout{display:grid;grid-template-columns:220px minmax(0,800px);gap:48px;max-width:1120px;margin:0 auto;padding:40px 28px 80px}aside{width:220px;position:sticky;top:24px;align-self:start}aside h1{font-size:21px;line-height:1.25;margin:0 0 8px}aside p{color:var(--muted);font-size:12px;margin:0 0 20px}nav{display:flex;flex-direction:column;gap:2px}nav a{color:var(--ink);text-decoration:none;border-left:3px solid transparent;padding:7px 10px}nav a:hover,nav a:focus{border-color:var(--accent);color:var(--accent);background:var(--paper)}main{max-width:800px;background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:14px 44px 48px;box-shadow:0 12px 40px rgba(24,32,38,.06)}.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:20px 0 4px}.stats span{padding:10px;border:1px solid var(--line);border-radius:8px;color:var(--muted);font-size:12px}.stats strong{display:block;color:var(--ink);font-size:20px}.coverage{padding:12px 14px;border-left:4px solid var(--accent);background:#edf6fa}section{padding:26px 0 18px;border-bottom:1px solid var(--line);border-left:4px solid transparent;scroll-margin-top:24px}section:last-child{border-bottom:0}.tone-warm{border-left-color:#d9a317;background:#fffaf0;padding-left:16px}.tone-success{border-left-color:#2f8f55;background:#f3fbf6;padding-left:16px}.tone-friction{border-left-color:#c84b4b;background:#fff6f5;padding-left:16px}.tone-suggestion{border-left-color:#3578c6;background:#f3f8ff;padding-left:16px}.tone-future{border-left-color:#7958b3;background:#f8f5ff;padding-left:16px}h2{font-size:24px;line-height:1.3;margin:0 0 16px}ul{padding-left:22px;margin:0}li{margin:0 0 12px}small{display:block;color:var(--muted);font-size:12px}.empty{color:var(--muted);font-style:italic}.evidence{display:inline-block;margin:0 8px 4px 0;padding:1px 7px;border-radius:999px;font-size:12px;font-weight:650;color:#17613a;background:#e8f6ed}@media(max-width:640px){.layout{display:block;padding:0 14px 40px}aside{position:static;width:auto;padding:20px 4px 14px}nav{flex-direction:row;overflow-x:auto;padding-bottom:8px}nav a{white-space:nowrap;border-left:0;border-bottom:3px solid transparent}main{max-width:800px;padding:4px 22px 32px;border-radius:10px}.stats{grid-template-columns:1fr}h2{font-size:21px}}@media print{body{background:#fff}.layout{display:block;max-width:none;padding:0}aside{position:static;width:auto}nav{display:none}main{max-width:none;border:0;box-shadow:none;padding:0}section{break-inside:avoid}a{color:#000}}""".strip()
-    return ("<!doctype html>\n" f'<html lang="{html.escape(language, quote=True)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; font-src \'none\'; script-src \'none\'; connect-src \'none\'; frame-src \'none\'; object-src \'none\'; base-uri \'none\'; form-action \'none\'">' f"<title>{html.escape(report_title)}</title><style>{style}</style></head><body><div class=\"layout\"><aside><h1>{html.escape(report_title)}</h1><p>{html.escape(generated_label)}：{html.escape(generated)}</p><nav aria-label=\"章节导航\">{navigation}</nav></aside><main><div class=\"stats\" aria-label=\"核心统计\">{stats_html}</div>{''.join(sections_html)}</main></div></body></html>\n")
+    if job_id in run["job_results"]:
+        raise InsightsError(f"job already submitted: {job_id}")
+    current = _stage(run)
+    expected = {job["job_id"]: job for job in current["jobs"]}
+    job = expected.get(job_id)
+    if job is None:
+        raise InsightsError(f"unknown or currently blocked job: {job_id}")
+    accepted = _validated_job_result(run, job, value)
+    run["job_results"][job_id] = accepted
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -688,6 +1380,7 @@ def _json_bytes(value: Any) -> bytes:
 def _write_bytes(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
+    path.chmod(0o600)
 
 
 def _acquire_lock(output_dir: Path) -> Path:
@@ -696,7 +1389,7 @@ def _acquire_lock(output_dir: Path) -> Path:
     try:
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError as exc:
-        raise ConcurrentRunError("another insights commit holds the lock") from exc
+        raise ConcurrentRunError("another Insights commit holds the lock") from exc
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(f"pid={os.getpid()}\n")
     return path
@@ -706,93 +1399,150 @@ def _timestamp_filename() -> str:
     return datetime.now(timezone.utc).strftime("report-%Y%m%dT%H%M%SZ.html")
 
 
-def _validate_commit_material(facets: list[dict[str, Any]], patterns: dict[str, Any], lenses: dict[str, Any], quality: dict[str, Any]) -> None:
-    keys = {facet["session_key"] for facet in facets}
-    validate_patterns(patterns, keys)
-    validate_lenses(lenses, keys)
-    validate_quality(quality)
+def _verify_run_snapshot(run: Mapping[str, Any]) -> None:
+    output = Path(run["output_dir"])
+    if _state_snapshot_hash(output) != run.get("state_hash"):
+        raise StaleRunError("state changed after prepare")
+    for snapshot in run.get("source_snapshots", {}).values():
+        path = Path(snapshot["source_path"])
+        rows = _read_jsonl(path)
+        if not rows or compute_source_fingerprint(rows) != snapshot["source_hash"]:
+            raise StaleRunError("a report transcript changed after prepare")
 
 
-def commit_run(output_dir: str | Path, prepared: dict[str, Any], facets: Iterable[dict[str, Any]], language: str = LANGUAGE, failpoint: str | None = None, patterns: dict[str, Any] | None = None, lenses: dict[str, Any] | None = None, quality: dict[str, Any] | None = None, strict: bool = False) -> dict[str, Any]:
-    language = validate_language(language)
-    output = Path(output_dir)
-    if str(output) != str(prepared.get("output_dir")):
-        raise InsightsError("output_dir does not match prepared run")
-    supplied = list(facets)
-    expected_items = prepared.get("work_items", [])
-    expected = {(item["session_key"], item["source_hash"]) for item in expected_items}
-    actual = {(facet.get("session_key"), facet.get("source_hash")) for facet in supplied}
-    if expected != actual or len(actual) != len(supplied):
-        raise FacetValidationError("facets must cover each prepared work item exactly once")
-    for item, facet in zip(sorted(expected_items, key=lambda x: x["session_key"]), sorted(supplied, key=lambda x: x.get("session_key", ""))):
-        validate_facet(facet, item)
-    cached = list(prepared.get("cached_facets", []))
-    for facet in cached:
-        validate_facet(facet)
-    combined_by_key = {facet["session_key"]: facet for facet in cached}
-    combined_by_key.update({facet["session_key"]: facet for facet in supplied})
-    combined = sorted(combined_by_key.values(), key=lambda item: item["session_key"])
-    patterns = patterns or _fallback_patterns(combined)
-    lenses = lenses or _fallback_lenses(combined)
-    quality = quality or {"schema_version": QUALITY_SCHEMA_VERSION, "scores": {"coverage": 4, "evidence": 4, "privacy": 5, "actionability": 3, "incremental": 4}, "revision_count": 0, "concerns": ["未提供模型质检材料，使用保守回退"]}
-    if strict:
-        _validate_commit_material(combined, patterns, lenses, quality)
-    else:
-        validate_patterns(patterns, {facet["session_key"] for facet in combined})
-        validate_lenses(lenses, {facet["session_key"] for facet in combined})
-        validate_quality(quality)
-    if any(privacy_violations(_facet_privacy_text(facet)) for facet in combined):
-        raise PrivacyError("privacy scan rejected facets")
-    report = render_report(combined, language=language, coverage=prepared.get("inventory"), patterns=patterns, lenses=lenses, quality=quality)
-    if privacy_violations(report):
-        raise PrivacyError("privacy scan rejected rendered content")
+def _verify_sources(run: Mapping[str, Any]) -> None:
+    """Backward-compatible alias for callers that only need snapshot verification."""
+
+    _verify_run_snapshot(run)
+
+
+def commit_run(run: dict[str, Any], failpoint: str | None = None) -> dict[str, Any]:
+    ready = _stage(run)
+    if ready["stage"] != "ready_to_commit":
+        raise InsightsError(f"run is incomplete: {ready['stage']}")
+    output = Path(run["output_dir"])
     lock = _acquire_lock(output)
     staging = output / f".staging-{uuid.uuid4().hex}"
     backup = output / f".backup-{uuid.uuid4().hex}"
     installed: list[Path] = []
     backed_up: list[tuple[Path, Path]] = []
     try:
-        current = _read_state(output)
-        if current["generation"] != prepared.get("generation"):
-            raise StaleRunError("state changed after prepare; prepare again")
-        new_generation = current["generation"] + 1
-        sessions = dict(current["sessions"])
-        for facet in supplied:
-            sessions[facet["session_key"]] = {"source_hash": facet["source_hash"], "facet_file": _facet_filename(facet)}
+        _verify_run_snapshot(run)
+        current, legacy = _read_state(output)
+        if current["generation"] != run["generation"]:
+            raise StaleRunError("state generation changed after prepare")
+        if legacy != bool(run["legacy_cache_detected"]):
+            raise StaleRunError("cache compatibility changed after prepare")
+        supplied = [
+            facet
+            for facet in _combined_facets(run)
+            if facet["session_key"] in run["selected_sessions"]
+        ]
+        combined = _combined_facets(run)
         timestamp_name = _timestamp_filename()
         if (output / timestamp_name).exists():
             raise InsightsError(f"timestamp report already exists: {timestamp_name}")
-        state = {"generation": new_generation, "sessions": sessions, "coverage": prepared.get("inventory", {}), "quality": quality, "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
-        artifacts: dict[str, bytes] = {"report.html": report.encode("utf-8"), timestamp_name: report.encode("utf-8")}
+        report = ready["preview_html"].encode("utf-8")
+        artifacts: dict[str, bytes] = {
+            "report.html": report,
+            timestamp_name: report,
+        }
+        sessions = {} if legacy else dict(current["sessions"])
         for facet in supplied:
-            artifacts[_facet_filename(facet)] = _json_bytes(facet)
-        manifest = {"generation": new_generation, "language": language, "report": "report.html", "timestamp_report": timestamp_name, "facet_count": len(combined), "coverage": prepared.get("inventory", {}), "analysis": {"facet_schema": FACET_SCHEMA_VERSION, "aggregation_schema": AGGREGATION_SCHEMA_VERSION, "quality_schema": QUALITY_SCHEMA_VERSION}, "files": {name: hashlib.sha256(data).hexdigest() for name, data in sorted(artifacts.items())}}
+            filename = _facet_filename(facet)
+            sessions[facet["session_key"]] = {
+                "source_hash": facet["source_hash"],
+                "facet_file": filename,
+                "analysis_version": ANALYSIS_VERSION,
+            }
+            artifacts[filename] = _json_bytes(facet)
+        generation = current["generation"] + 1
+        state = {
+            "generation": generation,
+            "analysis_version": ANALYSIS_VERSION,
+            "meta_schema_version": META_SCHEMA_VERSION,
+            "normalizer_version": NORMALIZER_VERSION,
+            "facet_prompt_version": FACET_PROMPT_VERSION,
+            "report_schema_version": REPORT_SCHEMA_VERSION,
+            "sessions": sessions,
+            "coverage": run["inventory"],
+            "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        state_bytes = _json_bytes(state)
+        manifest_files = {
+            name: hashlib.sha256(data).hexdigest()
+            for name, data in sorted(artifacts.items())
+        }
+        for entry in sessions.values():
+            relative = entry["facet_file"]
+            if relative in artifacts:
+                data = artifacts[relative]
+            else:
+                path = _manifest_file_path(output, relative)
+                if path is None:
+                    raise InsightsError("state references an unsafe facet path")
+                try:
+                    data = path.read_bytes()
+                except OSError as exc:
+                    raise InsightsError("state references a missing facet") from exc
+            manifest_files[relative] = hashlib.sha256(data).hexdigest()
+        state_digest = hashlib.sha256(state_bytes).hexdigest()
+        manifest_files["state.json"] = state_digest
+        manifest = {
+            "generation": generation,
+            "language": run["language"],
+            "report": "report.html",
+            "timestamp_report": timestamp_name,
+            "facet_count": len(combined),
+            "coverage": run["inventory"],
+            "analysis": {
+                "analysis_version": ANALYSIS_VERSION,
+                "meta_schema": META_SCHEMA_VERSION,
+                "normalizer": NORMALIZER_VERSION,
+                "facet_prompt": FACET_PROMPT_VERSION,
+                "facet_schema": FACET_SCHEMA_VERSION,
+                "report_schema": REPORT_SCHEMA_VERSION,
+            },
+            "state_sha256": state_digest,
+            "files": dict(sorted(manifest_files.items())),
+        }
         artifacts["manifest.json"] = _json_bytes(manifest)
-        artifacts["state.json"] = _json_bytes(state)
+        artifacts["state.json"] = state_bytes
         for relative, data in artifacts.items():
             _write_bytes(staging / relative, data)
         ordered = [name for name in artifacts if name != "state.json"] + ["state.json"]
         backup.mkdir(parents=True, exist_ok=True)
         for index, relative in enumerate(ordered):
-            target, staged, saved = output / relative, staging / relative, backup / relative
+            if relative == "state.json":
+                _verify_run_snapshot(run)
+            target = output / relative
+            staged = staging / relative
+            saved = backup / relative
             if target.exists():
                 saved.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(target, saved)
                 backed_up.append((saved, target))
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(staged, target)
+            target.chmod(0o600)
             installed.append(target)
-            if relative != "state.json" and failpoint == "before_state" and index == len(ordered) - 2:
+            if failpoint == "before_state" and relative != "state.json" and index == len(ordered) - 2:
                 raise RuntimeError("injected failure before state commit")
         shutil.rmtree(staging, ignore_errors=True)
         shutil.rmtree(backup, ignore_errors=True)
-        return {"generation": new_generation, "report_path": str(output / "report.html"), "timestamp_report_path": str(output / timestamp_name), "manifest_path": str(output / "manifest.json"), "facet_count": len(combined), "quality": quality}
+        return {
+            "generation": generation,
+            "report_path": str(output / "report.html"),
+            "timestamp_report_path": str(output / timestamp_name),
+            "manifest_path": str(output / "manifest.json"),
+            "facet_count": len(combined),
+            "coverage": run["inventory"],
+        }
     except Exception:
         for target in reversed(installed):
             try:
-                if target.exists():
-                    target.unlink()
-            except OSError:
+                target.unlink()
+            except FileNotFoundError:
                 pass
         for saved, target in reversed(backed_up):
             if saved.exists():
@@ -808,21 +1558,46 @@ def commit_run(output_dir: str | Path, prepared: dict[str, Any], facets: Iterabl
             pass
 
 
-def _next_for(op: str, run_id: str | None = None) -> dict[str, Any]:
-    if op == "prepare":
-        return {"op": "aggregate", "run_id": run_id, "facets": "<one facet_v2 per work_item>"}
-    if op == "aggregate":
-        return {"op": "validate_patterns", "run_id": run_id, "patterns": "<aggregation_v1>"}
-    if op == "validate_patterns":
-        return {"op": "validate_lenses", "run_id": run_id, "lenses": "<seven-lens aggregation_v1>"}
-    if op == "validate_lenses":
-        return {"op": "validate_quality", "run_id": run_id, "quality": "<quality_v1>"}
-    if op == "validate_quality":
-        return {"op": "commit", "run_id": run_id, "facets": "<same facets>", "patterns": "<validated>", "lenses": "<validated>", "quality": "<validated>"}
-    return {"op": "prepare"}
+def _public_prepare(prepared: Mapping[str, Any], run_id: str) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "language": prepared["language"],
+        "stats": prepared["inventory"],
+        "legacy_cache_detected": prepared["legacy_cache_detected"],
+        "next": {"op": "next_jobs", "run_id": run_id},
+    }
 
 
-def handle_request(request: dict[str, Any], pending_runs: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+def _cleanup_pending_runs(
+    pending: dict[str, dict[str, Any]], *, now: float | None = None
+) -> list[str]:
+    cutoff = time.monotonic() if now is None else float(now)
+    removed = sorted(
+        run_id
+        for run_id, run in pending.items()
+        if isinstance(run.get("expires_at"), (int, float))
+        and float(run["expires_at"]) <= cutoff
+    )
+    for run_id in removed:
+        pending.pop(run_id, None)
+    return removed
+
+
+def _protocol_home(request: Mapping[str, Any], bind_process_home: bool) -> Path:
+    if not bind_process_home:
+        return Path(request.get("codex_home", _PROCESS_CODEX_HOME)).expanduser().resolve()
+    requested = request.get("codex_home")
+    if requested is not None and Path(requested).expanduser().resolve() != _PROCESS_CODEX_HOME:
+        raise InsightsError("production prepare is bound to the process CODEX_HOME")
+    return _PROCESS_CODEX_HOME
+
+
+def handle_request(
+    request: dict[str, Any],
+    pending_runs: dict[str, dict[str, Any]] | None = None,
+    *,
+    bind_process_home: bool = False,
+) -> dict[str, Any]:
     if not isinstance(request, dict):
         raise InsightsError("request must be an object")
     op = request.get("op")
@@ -832,76 +1607,105 @@ def handle_request(request: dict[str, Any], pending_runs: dict[str, dict[str, An
     elif op is not None and action is not None and op != action:
         raise InsightsError("op and action aliases disagree")
     if not isinstance(op, str):
-        raise InsightsError("request requires op (action is accepted as a legacy alias)")
+        raise InsightsError("request requires op")
     pending = _PENDING_RUNS if pending_runs is None else pending_runs
+    _cleanup_pending_runs(pending)
+
     if op == "prepare":
-        codex_home = Path(request.get("codex_home", os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))).expanduser().resolve()
-        canonical_output = (codex_home / "usage-data" / "insights").resolve()
-        requested_output = request.get("output_dir")
-        if requested_output is not None and Path(requested_output).expanduser().resolve() != canonical_output:
+        home = _protocol_home(request, bind_process_home)
+        output = (home / "usage-data" / "insights").resolve()
+        if request.get("output_dir") is not None and Path(request["output_dir"]).expanduser().resolve() != output:
             raise InsightsError("output_dir is fixed to $CODEX_HOME/usage-data/insights")
-        prepared = prepare_run(codex_home, canonical_output, current_thread_id=request.get("current_thread_id"), max_new_sessions=request.get("max_new_sessions", MAX_NEW_SESSIONS), language=request.get("language", LANGUAGE))
+        prepared = prepare_run(
+            home,
+            output,
+            current_thread_id=request.get("current_thread_id"),
+            max_new_sessions=request.get("max_new_sessions", MAX_NEW_SESSIONS),
+            language=request.get("language", LANGUAGE),
+        )
         run_id = uuid.uuid4().hex
-        pending[run_id] = {**prepared, "facets": None, "patterns": None, "lenses": None, "quality": None}
-        result = {"run_id": run_id, "language": prepared["language"], "work_items": prepared["work_items"], "stats": prepared["inventory"], "next": _next_for(op, run_id)}
-    elif op == "validate_facet":
-        validate_facet(request.get("facet"))
-        result = {"valid": True, "next": _next_for(op)}
-    elif op == "aggregate":
+        run = {
+            **prepared,
+            "run_id": run_id,
+            "job_results": {},
+            "aggregate": None,
+            "lens_material": None,
+            "expires_at": time.monotonic() + RUN_TTL_SECONDS,
+        }
+        pending[run_id] = run
+        result = _public_prepare(prepared, run_id)
+    elif op == "next_jobs":
         run_id = request.get("run_id")
         run = pending.get(run_id) if isinstance(run_id, str) else None
         if run is None:
             raise InsightsError("unknown run_id")
-        facets = list(request.get("facets", []))
-        expected = {(item["session_key"], item["source_hash"]) for item in run["work_items"]}
-        actual = {(facet.get("session_key"), facet.get("source_hash")) for facet in facets if isinstance(facet, dict)}
-        if expected != actual or len(actual) != len(facets):
-            raise FacetValidationError("aggregate facets must cover each work item exactly once")
-        for item, facet in zip(sorted(run["work_items"], key=lambda x: x["session_key"]), sorted(facets, key=lambda x: x.get("session_key", ""))):
-            validate_facet(facet, item)
-        combined = list(run["cached_facets"]) + facets
-        run["facets"] = facets
-        result = {"run_id": run_id, "facet_count": len(combined), "aggregation_material": _material(combined), "next": _next_for(op, run_id)}
-    elif op == "validate_patterns":
-        run_id = request.get("run_id"); run = pending.get(run_id) if isinstance(run_id, str) else None
-        if run is None or run.get("facets") is None:
-            raise InsightsError("aggregate must precede validate_patterns")
-        patterns = validate_patterns(request.get("patterns"), {facet["session_key"] for facet in run["cached_facets"] + run["facets"]})
-        run["patterns"] = patterns
-        result = {"run_id": run_id, "valid": True, "next": _next_for(op, run_id)}
-    elif op == "validate_lenses":
-        run_id = request.get("run_id"); run = pending.get(run_id) if isinstance(run_id, str) else None
-        if run is None or run.get("patterns") is None:
-            raise InsightsError("validate_patterns must precede validate_lenses")
-        lenses = validate_lenses(request.get("lenses"), {facet["session_key"] for facet in run["cached_facets"] + run["facets"]})
-        run["lenses"] = lenses
-        result = {"run_id": run_id, "valid": True, "next": _next_for(op, run_id)}
-    elif op == "validate_quality":
-        run_id = request.get("run_id"); run = pending.get(run_id) if isinstance(run_id, str) else None
-        if run is None or run.get("lenses") is None:
-            raise InsightsError("validate_lenses must precede validate_quality")
-        run["quality"] = validate_quality(request.get("quality"))
-        result = {"run_id": run_id, "valid": True, "next": _next_for(op, run_id)}
-    elif op == "commit":
-        allowed = {"op", "action", "run_id", "facets", "patterns", "lenses", "quality", "language"}
-        if set(request) - allowed or "output_dir" in request or "prepared" in request:
-            raise InsightsError("commit accepts only run_id, facets, patterns, lenses, quality, and optional matching language")
+        run["expires_at"] = time.monotonic() + RUN_TTL_SECONDS
+        result = {"run_id": run_id, **_stage(run)}
+        result["next"] = (
+            {"op": "commit", "run_id": run_id}
+            if result["stage"] == "ready_to_commit"
+            else {"op": "submit_jobs", "run_id": run_id, "results": "<job results>"}
+        )
+    elif op == "submit_jobs":
         run_id = request.get("run_id")
-        if not isinstance(run_id, str) or not re.fullmatch(r"[a-f0-9]{32}", run_id):
-            raise InsightsError("commit requires a valid run_id")
-        run = pending.pop(run_id, None)
+        run = pending.get(run_id) if isinstance(run_id, str) else None
+        values = request.get("results")
         if run is None:
-            raise InsightsError("unknown or already consumed run_id")
-        language = request.get("language", run["language"])
-        if language != run["language"]:
-            raise InsightsError("commit language must equal prepare language")
-        facets = request.get("facets", run.get("facets") or [])
-        patterns = request.get("patterns", run.get("patterns")); lenses = request.get("lenses", run.get("lenses")); quality = request.get("quality", run.get("quality"))
-        if patterns is None or lenses is None or quality is None:
-            raise InsightsError("commit requires validated patterns, lenses, and quality")
-        result = commit_run(run["output_dir"], run, facets, language=language, patterns=patterns, lenses=lenses, quality=quality, strict=True)
+            raise InsightsError("unknown run_id")
+        if not isinstance(values, list) or not values:
+            raise InsightsError("submit_jobs requires a non-empty results array")
+        current = _stage(run)
+        expected = {job["job_id"]: job for job in current["jobs"]}
+        staged: dict[str, dict[str, Any]] = {}
+        for value in values:
+            if not isinstance(value, Mapping) or set(value) != {"job_id", "result"}:
+                raise InsightsError("each submission needs job_id and result")
+            job_id = str(value["job_id"])
+            if job_id in run["job_results"] or job_id in staged:
+                raise InsightsError(f"job already submitted: {job_id}")
+            job = expected.get(job_id)
+            if job is None:
+                raise InsightsError(f"unknown or currently blocked job: {job_id}")
+            staged[job_id] = _validated_job_result(run, job, value["result"])
+        run["job_results"].update(staged)
+        run["expires_at"] = time.monotonic() + RUN_TTL_SECONDS
+        result = {
+            "run_id": run_id,
+            "accepted": len(values),
+            "next": {"op": "next_jobs", "run_id": run_id},
+        }
+    elif op == "commit":
+        allowed = {"op", "action", "run_id", "language"}
+        if set(request) - allowed:
+            raise InsightsError("commit accepts only run_id and optional matching language")
+        run_id = request.get("run_id")
+        run = pending.get(run_id) if isinstance(run_id, str) else None
+        if run is None:
+            raise InsightsError("unknown or consumed run_id")
+        if request.get("language", run["language"]) != run["language"]:
+            raise InsightsError("commit language must match prepare")
+        result = commit_run(run)
+        pending.pop(run_id, None)
+    elif op == "abort":
+        allowed = {"op", "action", "run_id"}
+        if set(request) - allowed:
+            raise InsightsError("abort accepts only run_id")
+        run_id = request.get("run_id")
+        if not isinstance(run_id, str) or run_id not in pending:
+            raise InsightsError("unknown run_id")
+        pending.pop(run_id, None)
+        result = {"run_id": run_id, "aborted": True, "next": {"op": "prepare"}}
     elif op == "render":
-        result = {"html": render_report(request.get("facets", []), request.get("language", LANGUAGE), coverage=request.get("coverage"), patterns=request.get("patterns"), lenses=request.get("lenses"), quality=request.get("quality"))}
+        result = {
+            "html": render_report(
+                request.get("facets", []),
+                language=request.get("language", LANGUAGE),
+                coverage=request.get("coverage"),
+                aggregate=request.get("aggregate"),
+                lenses=request.get("lenses"),
+                at_a_glance=request.get("at_a_glance"),
+            )
+        }
     else:
         raise InsightsError(f"unsupported op: {op}")
     return {"ok": True, "result": result}
@@ -912,24 +1716,63 @@ def serve_json_lines(input_stream=sys.stdin, output_stream=sys.stdout) -> int:
     for line in input_stream:
         if not line.strip():
             continue
+        request: Any = None
         try:
-            response = handle_request(json.loads(line), pending_runs=pending_runs)
+            request = json.loads(line)
+            response = handle_request(
+                request,
+                pending_runs,
+                bind_process_home=True,
+            )
         except Exception as exc:
-            response = {"ok": False, "error": {"type": type(exc).__name__, "message": str(exc), "next": {"op": "prepare"}}}
+            run_id = request.get("run_id") if isinstance(request, Mapping) else None
+            recoverable = isinstance(run_id, str) and run_id in pending_runs
+            response = {
+                "ok": False,
+                "error": {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                    "next": (
+                        {"op": "next_jobs", "run_id": run_id}
+                        if recoverable
+                        else {"op": "prepare"}
+                    ),
+                },
+            }
         output_stream.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
         output_stream.flush()
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Local deterministic helper for $insights")
-    parser.add_argument("--request", help="handle one JSON request and print one JSON response")
+    parser = argparse.ArgumentParser(description="Deterministic helper for $insights")
+    parser.add_argument("--request", help="handle one stateless JSON request")
     args = parser.parse_args(argv)
     if args.request:
+        request: Any = None
         try:
-            response = handle_request(json.loads(args.request))
+            request = json.loads(args.request)
+            response = handle_request(request, bind_process_home=True)
         except Exception as exc:
-            print(json.dumps({"ok": False, "error": {"type": type(exc).__name__, "message": str(exc), "next": {"op": "prepare"}}}, ensure_ascii=False))
+            run_id = request.get("run_id") if isinstance(request, Mapping) else None
+            recoverable = isinstance(run_id, str) and run_id in _PENDING_RUNS
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": {
+                            "type": type(exc).__name__,
+                            "message": str(exc),
+                            "next": (
+                                {"op": "next_jobs", "run_id": run_id}
+                                if recoverable
+                                else {"op": "prepare"}
+                            ),
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            )
             return 1
         print(json.dumps(response, ensure_ascii=False))
         return 0

@@ -1,6 +1,6 @@
 interface:
   display_name: "Codex /insights"
-  short_description: "从本地 Codex 会话生成隐私优先的使用洞察"
-  default_prompt: "使用 $insights 分析既往本地 Codex 会话并生成静态洞察报告。"
+  short_description: "复盘本地 Codex 会话，发现有效做法、摩擦和下一步"
+  default_prompt: "使用 $insights 复盘我如何使用 Codex，并生成可行动的静态 HTML 报告。"
 policy:
   allow_implicit_invocation: false

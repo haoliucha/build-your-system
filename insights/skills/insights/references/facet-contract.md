@@ -1,14 +1,22 @@
-# `facet_v2` 契约
+# native-facet-v1 契约
 
-每个 work item 恰好产生一个 JSON facet。顶层键集合必须精确为：
+模型字段与本机 Claude Code 2.1.228 的可观察 facet 语义一致：
 
-```text
-schema_version, session_key, source_hash, date, project_alias, session_origin,
-deterministic_stats, privacy_redactions, underlying_goal, goal_categories,
-outcome, user_satisfaction_counts, helpfulness, session_type, friction_counts,
-friction_detail, primary_success, brief_summary, evidence_anchors
-```
+    underlying_goal: 用户根本想完成什么
+    goal_categories: {category: count}
+    outcome: fully_achieved | mostly_achieved | partially_achieved | not_achieved | unclear_from_transcript
+    user_satisfaction_counts: {explicit_signal: count}
+    claude_helpfulness: unhelpful | slightly_helpful | moderately_helpful | very_helpful | essential
+    session_type: single_task | multi_task | iterative_refinement | exploration | quick_question
+    friction_counts: {friction_type: count}
+    friction_detail: 一句具体说明或空字符串
+    primary_success: none | fast_accurate_search | correct_code_edits | good_explanations | proactive_help | multi_file_changes | good_debugging
+    brief_summary: 一句目标与结果摘要
+    user_instructions_to_codex: [可复用的显式指令]
+    evidence_anchors: [短事件锚点]
 
-helper-owned 字段必须原样复制，且 `session_key` 只能是 `session-` 加 16 位小写十六进制，`project_alias` 只能是 `project-` 加 8 位小写十六进制。`source_hash` 为 64 位小写 SHA-256。`deterministic_stats` 必须包含事件数、用户/助手消息数、时长、字符数、源文件数、工具、错误、文件改动和子代理计数，均为非负整数。
+只计算用户明确提出的目标，不把 Codex 自主探索、计划或子任务算成用户目标。短设置、问候或热身使用 goal_categories.warmup_minimal，不把 warmup_minimal 当 session_type。
 
-模型只填写目标、类别、结果、用户正负/纠正信号、帮助度、会话类型、摩擦、成功点、摘要和简短事件锚点。枚举值、数组长度、文本长度和隐私规则由 helper 严格校验。事件锚点只写可脱敏的短标签，不复制长原文。
+满意度使用 Claude Code 2.1.228 可观察提示中的显式信号：Yay/great/perfect→happy，thanks/looks good/that works→satisfied，ok now let's… 且无抱怨继续→likely_satisfied，that's not right/try again→dissatisfied，this is broken/I give up→frustrated；单纯继续对话不等于满意。摩擦优先使用 misunderstood_request、wrong_approach、buggy_code、user_rejected_action、excessive_changes 等提示给出的类别，同一事件不得重复计算。
+
+helper 另外持久化版本、opaque session key、source hash、日期、安全项目标签、来源和确定性 session meta。模型不得生成或改写这些字段。analysis_origin 必须为 model；占位、fallback 或手工模板不得写入已分析缓存。
