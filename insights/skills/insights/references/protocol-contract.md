@@ -1,4 +1,17 @@
-# Runner 契约（0.3）
+# Runner 契约（0.4）
+
+## 发布前报告门禁
+
+分析语义或报告结构变更时，正式 200 会话运行前必须按顺序完成：
+
+1. 使用完全虚构 fixture 生成合成报告，并与只读 Claude 报告的匿名结构契约自动对比；
+2. 从主会话选择短、中、长各一条，运行 3 个非提交 Facet Job；
+3. 从能够映射为主会话的既有 Facet 运行七 Lens 与 At-a-Glance，写入 `previews/<version>/`；UI 修改复用 Lens JSON，只重渲染；
+4. 自动对比通过后，把预览路径交给用户做桌面与约 600px 目检。用户确认前禁止正式 200 会话运行。
+
+三个门禁不得改正式 `report.html`、state、manifest 或 Facet。私人 Claude 报告内容不得写入仓库，仓库只保存蒸馏后的匿名结构契约。
+
+开发态正式运行还必须校验 `release-receipt.json`：其中的用户确认标记、预览报告 SHA-256 与 comparison SHA-256 必须同时匹配当前预览，且 comparison 本身为通过。任一 Gate 失败返回非零状态。插件正式升级为 0.4.0 后，普通 `$insights` 不再要求这份开发发布凭据。
 
 ## 所有权
 
@@ -20,7 +33,7 @@ python3 -u "$INSIGHTS_SKILL_DIR/scripts/runner.py" \
 {"status":"resume_choice_required","unfinished_runs":["<run-id>"],"message":"发现未完成的兼容运行；请让用户选择 --resume <run-id> 或 --new。"}
 ```
 
-新运行在清单阶段读取源会话一次，把确定性 meta、标准化/脱敏后的 Facet 材料、选中 session key、source fingerprint 与 inventory 冻结到 `run.sqlite3`，并记录内容 hash 与 `snapshot_at`。快照不包含原始路径或未脱敏正文。
+新运行在清单阶段读取源会话一次，把确定性 meta、标准化/脱敏后的 Facet 材料、选中 session key、source fingerprint 与 inventory 冻结到 `run.sqlite3`，并记录内容 hash 与 `snapshot_at`。只选择 primary 与 legacy_primary；subagent、automation、headless 只记录 cohort 数量。快照不包含原始路径或未脱敏正文。
 
 恢复直接读取该快照，不重新扫描活跃 JSONL，也不要求十几分钟内源文件保持不变。源文件在快照后追加不会改变当前报告；下一轮发现新的 source fingerprint 时自然使对应 facet 缓存失效。恢复仍核对语言、快照 hash 与已提交 Insights state hash；不一致则 fail closed。
 
@@ -65,3 +78,5 @@ SIGINT/SIGTERM 触发：立即终止所有在途 `codex exec`，删除 `.partial
 eligible = analyzed + skipped + remaining
 selected = succeeded + skipped
 ```
+
+其中 `primary_total` 在资格过滤前统计主会话总数；`eligible`/`primary_eligible` 只统计通过极短会话与自分析排除的主会话。页首消息、项目和行为统计使用 analyzed-only 样本，页尾方法区单独显示 eligible 与其他来源 cohort。

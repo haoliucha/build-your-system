@@ -79,7 +79,17 @@ _TEXT = {
         "average": "平均",
         "seconds": "秒",
         "multi_note": "并行期间消息：{during} / {total}（{percent}%）。检测条件：同一任务两条消息之间穿插另一任务消息。",
+        "chart_total": "{total} 次",
+        "chart_context": "条形表示本图内占比",
+        "friction_chart_context": "统计已识别的摩擦事件；同一事件不重复计数",
+        "satisfaction_chart_context": "只统计用户明确表达的反馈信号",
         "coverage_limit": "仍有 {remaining} 个合格会话尚未完成语义分析。确定性统计覆盖 {eligible} 个；叙事洞察覆盖 {analyzed} 个。",
+        "primary_total": "主会话总数",
+        "analyzed": "已分析主会话",
+        "skipped": "跳过",
+        "subagent": "子代理",
+        "automation": "自动化",
+        "headless": "无头执行",
     },
     "en": {
         "title": "Codex Session Insights",
@@ -142,11 +152,34 @@ _TEXT = {
         "average": "Average",
         "seconds": "seconds",
         "multi_note": "Messages during overlap: {during} / {total} ({percent}%). Detection requires another task between two messages from the same task.",
+        "chart_total": "{total} events",
+        "chart_context": "Bars show the share within this chart",
+        "friction_chart_context": "Observed friction events; one event is counted once",
+        "satisfaction_chart_context": "Only explicit user feedback signals are counted",
         "coverage_limit": "{remaining} eligible sessions have not completed semantic analysis. Deterministic stats cover {eligible}; narrative insights cover {analyzed}.",
+        "primary_total": "Primary sessions",
+        "analyzed": "Analyzed primary sessions",
+        "skipped": "Skipped",
+        "subagent": "Subagents",
+        "automation": "Automations",
+        "headless": "Headless runs",
     },
 }
 
 _LABELS_ZH = {
+    "debug_investigate": "调试与排查",
+    "implement_feature": "实现功能",
+    "fix_bug": "修复缺陷",
+    "write_script_tool": "编写脚本或工具",
+    "refactor_code": "重构代码",
+    "configure_system": "配置系统",
+    "create_pr_commit": "提交与合并请求",
+    "analyze_data": "分析数据",
+    "understand_codebase": "理解代码库",
+    "write_tests": "编写测试",
+    "write_docs": "编写文档",
+    "deploy_infra": "部署与基础设施",
+    "warmup_minimal": "简短热身",
     "single_task": "单一任务",
     "multi_task": "多任务",
     "iterative_refinement": "迭代完善",
@@ -173,6 +206,7 @@ _LABELS_ZH = {
     "buggy_code": "代码有误",
     "user_rejected_action": "用户否决操作",
     "claude_got_blocked": "Codex 受阻",
+    "codex_got_blocked": "Codex 受阻",
     "user_stopped_early": "用户提前停止",
     "wrong_file_or_location": "文件或位置错误",
     "excessive_changes": "改动过度",
@@ -180,6 +214,7 @@ _LABELS_ZH = {
     "tool_failed": "工具失败",
     "user_unclear": "用户意图不清",
     "external_issue": "外部问题",
+    "repeated_instruction": "重复指令",
     "frustrated": "沮丧",
     "dissatisfied": "不满意",
     "likely_satisfied": "可能满意",
@@ -263,9 +298,21 @@ def _safe_language(language: Any) -> str:
     return candidate if _LANGUAGE_RE.fullmatch(candidate) else "zh-CN"
 
 
+def _rich_inline(value: Any) -> str:
+    escaped = _escape(value)
+    return re.sub(r"\*\*([^*\n]+)\*\*", r"<strong>\1</strong>", escaped)
+
+
 def _paragraph(value: Any, class_name: str = "") -> str:
     class_attr = f' class="{class_name}"' if class_name else ""
-    return f"<p{class_attr}>{_escape(value)}</p>"
+    return f"<p{class_attr}>{_rich_inline(value)}</p>"
+
+
+def _paragraphs(value: Any, class_name: str = "") -> str:
+    parts = [part.strip() for part in re.split(r"\n\s*\n", str(value or "")) if part.strip()]
+    if not parts:
+        return _paragraph("", class_name)
+    return "".join(_paragraph(part, class_name if index == 0 else "") for index, part in enumerate(parts))
 
 
 def _code(value: Any) -> str:
@@ -281,10 +328,13 @@ def _chart(
     labels: Mapping[str, str],
     preserve_order: bool = False,
     note: str = "",
+    context: str = "",
+    total_template: str = "{total}",
 ) -> str:
     rows = _mapping(values)
     numeric = [float(value) for value in rows.values() if isinstance(value, (int, float)) and not isinstance(value, bool)]
     maximum = max(numeric, default=0.0)
+    total = sum(max(0.0, value) for value in numeric)
     body: list[str] = []
     entries = list(rows.items())
     if not preserve_order:
@@ -297,19 +347,27 @@ def _chart(
         entries = entries[:8]
     for label, raw_value in entries:
         numeric_value = float(raw_value) if isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool) else 0.0
-        percent = 0 if maximum <= 0 else max(0, min(100, round(numeric_value / maximum * 100)))
+        share = 0.0 if total <= 0 else max(0.0, min(100.0, numeric_value / total * 100))
+        percent = 0 if share <= 0 else max(2, min(100, round(share)))
         body.append(
             '<div class="chart-row">'
+            '<div class="chart-row-head">'
             f'<span class="chart-label">{_escape(labels.get(str(label), label))}</span>'
-            f'<progress max="100" value="{percent}">{percent}%</progress>'
-            f'<strong>{_number(raw_value)}</strong>'
+            '<span class="chart-metric">'
+            f'<strong class="chart-value">{_number(raw_value)}</strong>'
+            f'<span class="chart-share">{share:.1f}%</span>'
+            '</span></div>'
+            f'<span class="bar-track"><span class="bar-fill" style="width:{percent}%"></span></span>'
             "</div>"
         )
     if not body:
         body.append(f'<p class="empty">{_escape(no_data)}</p>')
     return (
-        f'<section class="chart-card" data-chart="{_escape(chart_id)}">'
-        f"<h3>{_escape(title)}</h3>{''.join(body)}"
+        f'<section class="chart-card chart-{_escape(chart_id)}" data-chart="{_escape(chart_id)}">'
+        '<div class="chart-heading">'
+        f'<h3>{_escape(title)}</h3><span class="chart-total">'
+        f'{_escape(total_template.format(total=_number(int(total) if total.is_integer() else total)))}</span></div>'
+        f'<p class="chart-context">{_escape(context)}</p>{"".join(body)}'
         f'{f"<p class=\"chart-note\">{_escape(note)}</p>" if note else ""}</section>'
     )
 
@@ -327,8 +385,12 @@ def _time_periods(values: Any) -> dict[str, int]:
     return result
 
 
-def _glance_card(title: str, body: Any, tone: str) -> str:
-    return f'<article class="glance-card {tone}"><h3>{_escape(title)}</h3>{_paragraph(body)}</article>'
+def _glance_item(title: str, body: Any, target: str) -> str:
+    return (
+        '<p class="glance-item">'
+        f'<a href="#{_escape(target)}"><strong>{_escape(title)}</strong></a> '
+        f'{_rich_inline(body)}</p>'
+    )
 
 
 def _project_areas(lens: Mapping[str, Any], t: Mapping[str, str]) -> str:
@@ -364,7 +426,7 @@ def _friction_categories(lens: Mapping[str, Any], t: Mapping[str, str]) -> str:
         examples_html = f"<ul>{''.join(example_items)}</ul>" if example_items else ""
         cards.append(
             '<article class="item-card friction-card">'
-            f'<h3>{_escape(item.get("category"))}</h3>{_paragraph(item.get("description"))}{examples_html}</article>'
+            f'<h3>{_escape(item.get("title"))}</h3>{_paragraph(item.get("description"))}{examples_html}</article>'
         )
     return "".join(cards) or f'<p class="empty">{_escape(t["no_data"])}</p>'
 
@@ -490,6 +552,12 @@ def render_native_report(
             labels=labels,
             preserve_order=preserve_order,
             note=note,
+            context=(
+                t["friction_chart_context"] if chart_id == "friction"
+                else t["satisfaction_chart_context"] if chart_id == "satisfaction"
+                else t["chart_context"]
+            ),
+            total_template=t["chart_total"],
         )
         for chart_id, title, values, preserve_order, note in chart_specs
     }
@@ -502,9 +570,32 @@ def render_native_report(
     horizon = _mapping(lenses.get("on_the_horizon"))
     fun_ending = _mapping(lenses.get("fun_ending"))
 
+    analyzed = _count(coverage.get("analyzed")) or _count(aggregate.get("sessions_with_facets"))
+    primary_total = (
+        _count(coverage.get("primary_total"))
+        or _count(coverage.get("eligible"))
+        or _count(aggregate.get("total_sessions"))
+    )
+    if safe_language.lower().startswith("zh"):
+        report_meta = (
+            f'{_number(aggregate.get("total_messages"))} 条消息，来自 {analyzed} 个会话'
+            f'（共 {primary_total} 个）｜{_escape(date_range.get("start", "—"))} 至 '
+            f'{_escape(date_range.get("end", "—"))}'
+        )
+    else:
+        report_meta = (
+            f'{_number(aggregate.get("total_messages"))} messages across {analyzed} sessions '
+            f'({primary_total} total) | {_escape(date_range.get("start", "—"))} to '
+            f'{_escape(date_range.get("end", "—"))}'
+        )
+    method_keys = (
+        "primary_total", "analyzed", "skipped", "remaining",
+        "subagent", "automation", "headless",
+    )
     coverage_html = "".join(
         f'<span><strong>{_escape(t[key])}</strong> {_number(coverage.get(key))}</span>'
-        for key in ("eligible", "cached", "selected", "remaining")
+        for key in method_keys
+        if key in coverage
     )
     snapshot_html = ""
     if coverage.get("snapshot_at"):
@@ -512,27 +603,11 @@ def render_native_report(
             f'<p><strong>{_escape(t["snapshot_at"])}：</strong>'
             f'{_escape(coverage.get("snapshot_at"))}</p>'
         )
-    remaining = _count(coverage.get("remaining"))
-    coverage_notice = ""
-    if remaining:
-        coverage_notice = (
-            '<p class="coverage-warning">'
-            + _escape(
-                t["coverage_limit"].format(
-                    remaining=remaining,
-                    eligible=_count(coverage.get("eligible")),
-                    analyzed=_count(aggregate.get("sessions_with_facets")),
-                )
-            )
-            + "</p>"
-        )
-
     css = """
-    :root{color-scheme:light;--canvas:#f4f5f7;--ink:#172033;--muted:#667085;--line:#dfe3e8;--card:#fff;--blue:#eaf2ff;--blue-ink:#175cd3;--green:#eaf8ef;--green-ink:#18794e;--red:#fff0f0;--red-ink:#b42318;--purple:#f3efff;--purple-ink:#6938ef;--yellow:#fff7df;--yellow-ink:#8a5b00;--shadow:0 8px 24px rgba(16,24,40,.07)}
-    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--canvas);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;line-height:1.65}a{color:inherit}a:focus-visible,progress:focus-visible{outline:3px solid #84adff;outline-offset:3px}.page{display:grid;grid-template-columns:220px minmax(0,800px);gap:32px;justify-content:center;align-items:start;padding:32px 24px 72px}.sidebar{position:sticky;top:24px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:var(--shadow)}.sidebar h2{font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}.sidebar nav{display:grid;gap:4px}.sidebar a{text-decoration:none;border-radius:9px;padding:8px 10px;font-size:.92rem}.sidebar a:hover{background:var(--blue);color:var(--blue-ink)}main{min-width:0}.hero{margin-bottom:22px}.hero h1{font-size:clamp(2rem,6vw,3.4rem);line-height:1.05;letter-spacing:-.04em;margin:0 0 12px}.hero p{margin:3px 0;color:var(--muted)}.coverage-warning{background:var(--yellow);border:1px solid #f4d77d;border-radius:12px;padding:10px 12px;color:var(--yellow-ink)!important}.glance{background:var(--yellow);border:1px solid #f4d77d;border-radius:20px;padding:22px;margin:20px 0}.glance>h2{margin:0 0 14px}.glance-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.glance-card{background:rgba(255,255,255,.72);border-radius:14px;padding:14px;border:1px solid rgba(138,91,0,.12)}.glance-card h3{font-size:.94rem;margin:0 0 6px;color:var(--yellow-ink)}.glance-card p{margin:0}.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:9px;margin:18px 0 28px}.stat{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:13px 10px;text-align:center}.stat span{display:block;color:var(--muted);font-size:.76rem}.stat strong{display:block;font-size:1.05rem;margin-top:4px}.report-section{scroll-margin-top:24px;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:24px;margin:18px 0;box-shadow:var(--shadow)}.report-section>h2{margin:0 0 14px;font-size:1.5rem}.lead{font-size:1.04rem;color:#344054}.key-pattern{background:var(--blue);border-left:4px solid var(--blue-ink);padding:12px 14px;border-radius:0 10px 10px 0}.item-card,.action-card,.chart-card{border:1px solid var(--line);border-radius:14px;padding:16px;margin:12px 0;background:#fff}.item-card h3,.action-card h3,.action-card h4,.chart-card h3{margin:0 0 8px}.item-card p,.action-card p{margin:6px 0}.item-heading{display:flex;gap:12px;justify-content:space-between;align-items:start}.pill{white-space:nowrap;background:var(--blue);color:var(--blue-ink);border-radius:999px;padding:3px 9px;font-size:.76rem}.success-card{background:var(--green);border-color:#b7e3c8}.friction-card{background:var(--red);border-color:#fac5c2}.future-card{background:var(--purple);border-color:#d9ccff}.section-features{border-top:5px solid var(--blue-ink)}.section-wins{border-top:5px solid var(--green-ink)}.section-friction{border-top:5px solid var(--red-ink)}.section-horizon{border-top:5px solid var(--purple-ink)}.subsection-title{font-size:1.12rem;margin:22px 0 8px}.charts{display:grid;grid-template-columns:1fr 1fr;gap:12px}.chart-card{margin:0}.chart-row{display:grid;grid-template-columns:minmax(90px,1fr) 2fr auto;align-items:center;gap:10px;margin:9px 0;font-size:.84rem}.chart-label{overflow-wrap:anywhere}progress{width:100%;height:10px;border:0;border-radius:999px;overflow:hidden;background:#e9edf3}progress::-webkit-progress-bar{background:#e9edf3;border-radius:999px}progress::-webkit-progress-value{background:#4c80e8;border-radius:999px}progress::-moz-progress-bar{background:#4c80e8;border-radius:999px}.code-label{font-size:.78rem;color:var(--muted);margin-top:12px!important}.chart-note{color:var(--muted);font-size:.78rem}pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0 0;background:#172033;color:#f8fafc;border-radius:10px;padding:12px;font-size:.84rem;line-height:1.5}code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}.fun-ending{background:var(--yellow);border:1px solid #f4d77d;border-radius:16px;padding:18px;margin-top:18px}.fun-ending h3{margin:0 0 6px}.fun-ending p{margin:0}.method{color:var(--muted);font-size:.84rem;border-top:1px solid var(--line);margin-top:30px;padding-top:18px}.coverage{display:flex;flex-wrap:wrap;gap:10px 18px}.empty{color:var(--muted);font-style:italic}
-    @media(max-width:900px){.page{grid-template-columns:180px minmax(0,1fr)}.stats{grid-template-columns:repeat(3,1fr)}.charts{grid-template-columns:1fr}}
-    @media(max-width:640px){.page{display:block;padding:16px 12px 48px}.sidebar{position:static;margin-bottom:18px;padding:10px}.sidebar h2{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}.sidebar nav{display:flex;overflow-x:auto;gap:4px;white-space:nowrap;position:sticky;top:0}.sidebar a{background:#f8fafc}.glance-grid{grid-template-columns:1fr}.stats{grid-template-columns:1fr 1fr}.report-section{padding:18px}.chart-row{grid-template-columns:minmax(80px,1fr) 1.5fr auto}.hero h1{font-size:2.25rem}}
-    @media print{body{background:#fff}.page{display:block;padding:0}.sidebar{position:static;box-shadow:none;margin-bottom:16px}.sidebar nav{display:flex;flex-wrap:wrap}.report-section,.glance,.stat{box-shadow:none;break-inside:avoid}.charts{display:block}.chart-card{break-inside:avoid;margin:10px 0}pre{white-space:pre-wrap;color:#000;background:#f3f4f6;border:1px solid #d0d5dd}}
+    :root{color-scheme:light;--canvas:#f7f7f8;--ink:#202123;--muted:#6b7280;--line:#e3e3e3;--blue:#2563eb;--green:#2f855a;--red:#c53030;--purple:#6b46c1;--yellow:#fff8df}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--canvas);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif;line-height:1.65}.page{max-width:800px;margin:0 auto;padding:42px 24px 72px}a{color:inherit}a:focus-visible{outline:3px solid #84adff;outline-offset:3px}.hero h1{font-size:32px;line-height:1.2;letter-spacing:-.025em;margin:0 0 4px}.report-meta{margin:0;color:var(--muted);font-size:14px;white-space:nowrap}.glance{background:var(--yellow);border:1px solid #ead799;border-radius:10px;padding:18px 22px;margin:26px 0 18px}.glance h2{font-size:20px;margin:0 0 10px}.glance-item{margin:9px 0}.glance-item a{text-decoration:none;color:#8a5b00}.top-nav{display:flex;flex-wrap:wrap;gap:8px 18px;border-bottom:1px solid var(--line);padding:4px 0 14px;margin-bottom:18px}.top-nav a{font-size:13px;text-decoration:none;color:#4b5563}.top-nav a:hover{text-decoration:underline}.stats{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid var(--line);padding:0 0 18px;margin:0 0 32px}.stat{text-align:center;border-right:1px solid var(--line);padding:4px 8px}.stat:last-child{border-right:0}.stat span{display:block;color:var(--muted);font-size:12px}.stat strong{display:block;font-size:17px;margin-top:2px}.report-section{scroll-margin-top:18px;border-top:1px solid var(--line);padding:30px 0 4px;margin:0}.report-section>h2{margin:0 0 14px;font-size:24px}.lead{font-size:16px;color:#34373d}.key-pattern{background:#eef4ff;border-left:3px solid var(--blue);padding:10px 12px}.item-card,.action-card{border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin:10px 0;background:#fff}.item-card h3,.action-card h3,.action-card h4{margin:0 0 7px}.item-card p,.action-card p{margin:6px 0}.item-heading{display:flex;gap:12px;justify-content:space-between;align-items:start}.pill{white-space:nowrap;background:#eef4ff;color:#1d4ed8;border-radius:999px;padding:2px 8px;font-size:12px}.success-card{border-left:4px solid var(--green)}.friction-card{border-left:4px solid var(--red)}.future-card{border-left:4px solid var(--purple)}.subsection-title{font-size:18px;margin:22px 0 8px}.charts{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:24px 0}.chart-card{min-width:0;background:#fff;border:1px solid #dfe3e8;border-radius:10px;padding:15px 16px 14px}.chart-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.chart-card h3{font-size:15px;line-height:1.35;margin:0}.chart-total{flex:none;color:#475569;background:#f1f5f9;border-radius:999px;padding:1px 8px;font-size:11px;font-variant-numeric:tabular-nums}.chart-context{min-height:34px;color:var(--muted);font-size:11px;line-height:1.45;margin:4px 0 12px}.chart-row{border-top:1px solid #eef0f3;padding:9px 0 8px}.chart-row-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:5px}.chart-label{min-width:0;overflow-wrap:anywhere;font-size:12px}.chart-metric{display:flex;align-items:baseline;gap:6px;white-space:nowrap;font-variant-numeric:tabular-nums}.chart-value{font-size:12px}.chart-share{color:var(--muted);font-size:10px;min-width:36px;text-align:right}.bar-track{display:block;height:5px;background:#edf0f4;border-radius:99px;overflow:hidden}.bar-fill{display:block;height:100%;background:var(--blue);border-radius:99px}.chart-successes .bar-fill,.chart-outcomes .bar-fill{background:var(--green)}.chart-friction{border-top:3px solid #dc6b6b}.chart-friction .bar-fill,.chart-tool-errors .bar-fill{background:var(--red)}.chart-satisfaction{border-top:3px solid #d6a532}.chart-satisfaction .bar-fill{background:#d6a532}.chart-multi-clauding .bar-fill{background:var(--purple)}.chart-note{border-top:1px solid #eef0f3;color:var(--muted);font-size:11px;margin:9px 0 0;padding-top:8px}.code-label{font-size:12px;color:var(--muted);margin-top:10px!important}pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:5px 0 0;background:#f3f4f6;color:#25272b;border:1px solid #e1e4e8;border-radius:6px;padding:10px 12px;font-size:13px;line-height:1.5}code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace}.fun-ending{background:var(--yellow);border:1px solid #ead799;border-radius:10px;padding:18px 20px;margin:30px 0}.fun-ending h2,.fun-ending h3{margin:0 0 6px}.method{color:var(--muted);font-size:13px;border-top:1px solid var(--line);margin-top:34px;padding-top:20px}.method h2{font-size:18px;color:var(--ink)}.coverage{display:flex;flex-wrap:wrap;gap:7px 18px}.empty{color:var(--muted);font-style:italic}
+    @media(max-width:640px){.page{padding:24px 14px 48px}.report-meta{white-space:normal}.top-nav{overflow-x:auto;flex-wrap:nowrap;white-space:nowrap}.stats{grid-template-columns:repeat(2,1fr);gap:10px}.stat{border-right:0;border-bottom:1px solid var(--line);padding:8px}.stats .stat:last-child{grid-column:1/-1}.charts{grid-template-columns:1fr}.chart-context{min-height:0}.hero h1{font-size:28px}}
+    @media print{body{background:#fff}.page{max-width:none;padding:0}.top-nav{display:none}.report-section,.glance,.item-card,.action-card,.chart-card{break-inside:avoid}.charts{display:block}.chart-card{margin:12px 0}pre{color:#000;background:#f3f4f6}}
     """
 
     return f'''<!doctype html>
@@ -546,15 +621,15 @@ def render_native_report(
 </head>
 <body>
 <div class="page">
-<aside class="sidebar"><h2>{_escape(t["nav"])}</h2><nav aria-label="{_escape(t["nav"])}">{nav_html}</nav></aside>
 <main>
-<header class="hero"><h1>{_escape(t["title"])}</h1><p>{_escape(t["subtitle"])}</p><p>{_escape(t["range"])}：{range_text}</p>{coverage_notice}</header>
-<section class="glance" aria-labelledby="glance-title"><h2 id="glance-title">{_escape(t["glance"])}</h2><div class="glance-grid">
-{_glance_card(t["working"], at_a_glance.get("whats_working"), "glance-success")}
-{_glance_card(t["hindering"], at_a_glance.get("whats_hindering"), "glance-friction")}
-{_glance_card(t["quick"], at_a_glance.get("quick_wins"), "glance-quick")}
-{_glance_card(t["ambitious"], at_a_glance.get("ambitious_workflows"), "glance-future")}
-</div></section>
+<header class="hero"><h1>{_escape(t["title"])}</h1><p class="report-meta">{report_meta}</p></header>
+<section class="glance" aria-labelledby="glance-title"><h2 id="glance-title">{_escape(t["glance"])}</h2>
+{_glance_item(t["working"], at_a_glance.get("whats_working"), "section-wins")}
+{_glance_item(t["hindering"], at_a_glance.get("whats_hindering"), "section-friction")}
+{_glance_item(t["quick"], at_a_glance.get("quick_wins"), "section-features")}
+{_glance_item(t["ambitious"], at_a_glance.get("ambitious_workflows"), "section-horizon")}
+</section>
+<nav class="top-nav" aria-label="{_escape(t["nav"])}">{nav_html}</nav>
 <section class="stats" aria-label="headline statistics">
 <div class="stat"><span>{_escape(t["messages"])}</span><strong>{_number(aggregate.get("total_messages"))}</strong></div>
 <div class="stat"><span>{_escape(t["lines"])}</span><strong>{line_stat}</strong></div>
@@ -565,12 +640,12 @@ def render_native_report(
 
 <section class="report-section" id="section-work"><h2>{_escape(t["work"])}</h2>
 {_project_areas(project_areas, t)}
-<div class="charts">{charts["goals"]}</div></section>
+<div class="charts">{charts["goals"]}{charts["tools"]}{charts["languages"]}{charts["session-types"]}</div></section>
 
 <section class="report-section" id="section-usage"><h2>{_escape(t["usage"])}</h2>
-{_paragraph(interaction.get("narrative"), "lead")}
+{_paragraphs(interaction.get("narrative"), "lead")}
 <p class="key-pattern"><strong>{_escape(t["key_pattern"])}：</strong>{_escape(interaction.get("key_pattern"))}</p>
-<div class="charts">{charts["tools"]}{charts["languages"]}{charts["session-types"]}{charts["response-time"]}{charts["multi-clauding"]}{charts["message-hours"]}{charts["tool-errors"]}</div></section>
+<div class="charts">{charts["response-time"]}{charts["multi-clauding"]}{charts["message-hours"]}{charts["tool-errors"]}</div></section>
 
 <section class="report-section section-wins" id="section-wins"><h2>{_escape(t["wins"])}</h2>
 {_paragraph(what_works.get("intro"), "lead")}{_workflows(what_works, t)}
@@ -588,8 +663,9 @@ def render_native_report(
 <h3 class="subsection-title">{_escape(t["usage_patterns"])}</h3>{_usage_patterns(suggestions, t)}</section>
 
 <section class="report-section section-horizon" id="section-horizon"><h2>{_escape(t["horizon"])}</h2>
-{_paragraph(horizon.get("intro"), "lead")}<h3 class="subsection-title">{_escape(t["opportunities"])}</h3>{_opportunities(horizon, t)}
-<aside class="fun-ending"><h3>{_escape(t["memorable"])}：{_escape(fun_ending.get("headline"))}</h3>{_paragraph(fun_ending.get("detail"))}</aside></section>
+{_paragraphs(horizon.get("intro"), "lead")}<h3 class="subsection-title">{_escape(t["opportunities"])}</h3>{_opportunities(horizon, t)}</section>
+
+<section class="fun-ending" id="section-memorable"><h2>{_escape(t["memorable"])}</h2><h3>{_escape(fun_ending.get("headline"))}</h3>{_paragraphs(fun_ending.get("detail"))}</section>
 
 <footer class="method"><h2>{_escape(t["method"])}</h2><div class="coverage">{coverage_html}</div>{snapshot_html}</footer>
 </main>
@@ -598,4 +674,186 @@ def render_native_report(
 </html>'''
 
 
-__all__ = ["render_native_report"]
+def _report_metrics(source: str) -> dict[str, Any]:
+    source_without_method = re.sub(
+        r'<footer class="method"[^>]*>.*?</footer>',
+        "",
+        source,
+        flags=re.S | re.I,
+    )
+    narrative_blocks = [
+        re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", value))).strip().casefold()
+        for value in re.findall(r"<(?:p|div)[^>]*>(.*?)</(?:p|div)>", source_without_method, re.S | re.I)
+    ]
+    coverage_disclaimers = sum(
+        1
+        for value in narrative_blocks
+        if any(marker in value for marker in ("已分析", "analyzed facet", "analyzed subset"))
+        and any(marker in value for marker in ("未分析", "未纳入", "尚未分析", "remaining session"))
+    )
+    section_ids = re.findall(r'<h2[^>]+id="(section-[^"]+)"', source)
+    if not section_ids:
+        section_ids = re.findall(r'<section[^>]+id="(section-(?:work|usage|wins|friction|features|patterns|horizon))"', source)
+    max_widths = [int(value) for value in re.findall(r"max-width\s*:\s*(\d+)px", source)]
+    h1_sizes = [int(value) for value in re.findall(r"h1\s*\{[^}]*font-size\s*:\s*(\d+)px", source)]
+    radii = [int(value) for value in re.findall(r"border-radius\s*:\s*(\d+)px", source) if int(value) <= 24]
+    headings = [
+        html.unescape(re.sub(r"<[^>]+>", "", value)).strip()
+        for value in re.findall(r"<h[234][^>]*>(.*?)</h[234]>", source, re.S | re.I)
+    ]
+    chart_labels = [
+        html.unescape(re.sub(r"<[^>]+>", "", value)).strip()
+        for value in re.findall(r'<span class="chart-label">(.*?)</span>', source, re.S | re.I)
+    ]
+    article_depth = 0
+    max_article_depth = 0
+    for token in re.findall(r"</?article\b[^>]*>", source, re.I):
+        if token.startswith("</"):
+            article_depth = max(0, article_depth - 1)
+        else:
+            article_depth += 1
+            max_article_depth = max(max_article_depth, article_depth)
+    report_meta_match = re.search(r'<p class="report-meta">(.*?)</p>', source, re.S | re.I)
+    report_meta = html.unescape(re.sub(r"<[^>]+>", "", report_meta_match.group(1))).strip() if report_meta_match else ""
+    nav_match = re.search(r'<nav class="top-nav"[^>]*>(.*?)</nav>', source, re.S | re.I)
+    nav_hrefs = re.findall(r'href="#(section-[^"]+)"', nav_match.group(1)) if nav_match else []
+    glance_items = [
+        html.unescape(re.sub(r"<[^>]+>", " ", value)).strip()
+        for value in re.findall(r'<(?:p|div) class="glance-item">(.*?)</(?:p|div)>', source, re.S | re.I)
+    ]
+    section_text: dict[str, str] = {}
+    section_pre_blocks: dict[str, int] = {}
+    for section_id in section_ids:
+        match = re.search(
+            rf'<section[^>]+id="{re.escape(section_id)}"[^>]*>(.*?)</section>',
+            source,
+            re.S | re.I,
+        )
+        body = match.group(1) if match else ""
+        section_text[section_id] = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", body))).strip()
+        section_pre_blocks[section_id] = len(re.findall(r"<pre\b", body, re.I))
+    charts = re.findall(r'<section[^>]+data-chart="([^"]+)"', source)
+    if not charts:
+        reference_chart_titles = [
+            html.unescape(re.sub(r"<[^>]+>", " ", value)).strip()
+            for value in re.findall(
+                r'<div[^>]+class="[^"]*chart-title[^"]*"[^>]*>(.*?)</div>',
+                source,
+                re.S | re.I,
+            )
+        ]
+        title_markers = (
+            ("What You Wanted", "goals"),
+            ("Top Tools Used", "tools"),
+            ("Languages", "languages"),
+            ("Session Types", "session-types"),
+            ("User Response Time Distribution", "response-time"),
+            ("Multi-Clauding", "multi-clauding"),
+            ("Time of Day", "message-hours"),
+            ("Tool Errors Encountered", "tool-errors"),
+            ("What Helped Most", "successes"),
+            ("Outcomes", "outcomes"),
+            ("Primary Friction Types", "friction"),
+            ("Inferred Satisfaction", "satisfaction"),
+        )
+        charts = [
+            chart_id
+            for title in reference_chart_titles
+            for marker, chart_id in title_markers
+            if marker.lower() in re.sub(r"\s+", " ", title).lower()
+        ]
+    return {
+        "section_ids": section_ids,
+        "max_width": max_widths[0] if max_widths else 0,
+        "h1_size": h1_sizes[0] if h1_sizes else 0,
+        "radius_median": sorted(radii)[len(radii) // 2] if radii else 0,
+        "shadow_declarations": len(re.findall(r"box-shadow\s*:", source)),
+        "max_article_depth": max_article_depth,
+        "paragraphs": len(re.findall(r"<p\b", source, re.I)),
+        "pre_blocks": len(re.findall(r"<pre\b", source, re.I)),
+        "report_meta": report_meta,
+        "glance_items": glance_items,
+        "stat_count": len(re.findall(r'<div class="stat">', source)),
+        "nav_hrefs": nav_hrefs,
+        "section_text": section_text,
+        "section_pre_blocks": section_pre_blocks,
+        "charts": charts,
+        "chart_contexts": len(re.findall(r'class="chart-context"', source)),
+        "chart_shares": len(re.findall(r'class="chart-share"', source)),
+        "chart_rows": len(re.findall(r'class="chart-row"', source)),
+        "machine_headings": [
+            heading
+            for heading in headings
+            if re.fullmatch(r"[a-z0-9]+(?:_[a-z0-9]+)+", heading)
+        ],
+        "machine_chart_labels": [
+            label for label in chart_labels
+            if label in _LABELS_ZH
+            and re.fullmatch(r"[a-z0-9]+(?:_[a-z0-9]+)+", label)
+        ],
+        "coverage_disclaimers": coverage_disclaimers,
+    }
+
+
+def compare_report_structure(candidate_html: str, reference_html: str) -> dict[str, Any]:
+    """Compare a candidate with a read-only Claude report without copying content."""
+
+    candidate = _report_metrics(candidate_html)
+    reference = _report_metrics(reference_html)
+    expected_sections = [
+        "section-work", "section-usage", "section-wins", "section-friction",
+        "section-features", "section-patterns", "section-horizon",
+    ]
+    chart_order = [
+        "goals", "tools", "languages", "session-types", "response-time",
+        "multi-clauding", "message-hours", "tool-errors", "successes",
+        "outcomes", "friction", "satisfaction",
+    ]
+    glance_at = candidate_html.find('class="glance"')
+    nav_at = candidate_html.find('<nav class="top-nav"')
+    stats_at = candidate_html.find('class="stats"')
+
+    checks = [
+        ("reference-readable", len(reference_html) > 1_000),
+        ("single-line-header", bool(re.fullmatch(
+            r"(?:[\d,]+ 条消息，来自 \d+ 个会话（共 \d+ 个）｜\d{4}-\d{2}-\d{2} 至 \d{4}-\d{2}-\d{2}|[\d,]+ messages across \d+ sessions \(\d+ total\) \| \d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2})",
+            candidate["report_meta"],
+        ))),
+        ("four-distinct-glance-items", len(candidate["glance_items"]) == 4 and len(set(candidate["glance_items"])) == 4 and all(len(item) >= 12 for item in candidate["glance_items"])),
+        ("five-headline-stats", candidate["stat_count"] == 5),
+        ("linear-overview-nav-stats", -1 < glance_at < nav_at < stats_at),
+        ("seven-section-order", candidate["section_ids"][:7] == expected_sections),
+        ("reference-seven-section-order", reference["section_ids"][:7] == expected_sections),
+        ("navigation-targets", candidate["nav_hrefs"] == expected_sections),
+        ("twelve-chart-order", candidate["charts"] == chart_order),
+        ("reference-twelve-chart-order", reference["charts"] == chart_order),
+        ("container-width", candidate["max_width"] == reference["max_width"] == 800),
+        ("title-scale", abs(candidate["h1_size"] - reference["h1_size"]) <= 2),
+        ("card-nesting", candidate["max_article_depth"] <= max(1, reference["max_article_depth"] + 1)),
+        ("shadow-density", candidate["shadow_declarations"] <= reference["shadow_declarations"] + 1),
+        ("radius-scale", abs(candidate["radius_median"] - reference["radius_median"]) <= 4),
+        ("narrative-depth", candidate["paragraphs"] >= 20),
+        ("action-blocks", candidate["pre_blocks"] >= 4),
+        ("section-content-depth", all(len(candidate["section_text"].get(section, "")) >= 80 for section in expected_sections)),
+        ("action-block-placement", candidate["section_pre_blocks"].get("section-features", 0) >= 4 and candidate["section_pre_blocks"].get("section-patterns", 0) >= 2 and candidate["section_pre_blocks"].get("section-horizon", 0) >= 3),
+        ("localized-headings", not candidate["machine_headings"]),
+        ("localized-chart-labels", not candidate["machine_chart_labels"]),
+        ("chart-information-depth", candidate["chart_contexts"] == len(candidate["charts"]) and candidate["chart_shares"] == candidate["chart_rows"]),
+        ("coverage-disclaimer-centralized", candidate["coverage_disclaimers"] == 0),
+        ("no-sidebar", 'class="sidebar"' not in candidate_html),
+    ]
+    serialized = [
+        {"name": name, "passed": passed}
+        for name, passed in checks
+    ]
+    return {
+        "passed": all(item["passed"] for item in serialized),
+        "score": sum(item["passed"] for item in serialized),
+        "total": len(serialized),
+        "checks": serialized,
+        "candidate": candidate,
+        "reference": reference,
+    }
+
+
+__all__ = ["compare_report_structure", "render_native_report"]

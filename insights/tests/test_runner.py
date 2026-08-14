@@ -59,7 +59,7 @@ def write_session(path: Path, session_id: str, minute: int, *, tool_name: str | 
 def facet_result() -> dict:
     return {
         "underlying_goal": "完成用户明确任务",
-        "goal_categories": {"implementation": 1},
+        "goal_categories": {"implement_feature": 1},
         "outcome": "fully_achieved",
         "user_satisfaction_counts": {"satisfied": 1},
         "claude_helpfulness": "very_helpful",
@@ -75,10 +75,10 @@ def facet_result() -> dict:
 
 def lens_result(lens_id: str) -> dict:
     values = {
-        "project_areas": {"areas": [{"name": f"领域 {i}", "session_count": 50, "description": "持续完成项目任务。"} for i in range(4)]},
+        "project_areas": {"areas": [{"name": f"领域 {i}", "project_ids": [f"project-{i:02d}"], "description": "持续完成项目任务。"} for i in range(4)]},
         "interaction_style": {"narrative": "你倾向先明确目标，再验证结果。", "key_pattern": "证据闭环"},
         "what_works": {"intro": "结构化执行最有效。", "impressive_workflows": [{"title": f"工作流 {i}", "description": "从目标到验证形成闭环。"} for i in range(3)]},
-        "friction_analysis": {"intro": "主要摩擦来自执行偏差。", "categories": [{"category": f"摩擦 {i}", "description": "需要更早验证。", "examples": ["例一", "例二"]} for i in range(3)]},
+        "friction_analysis": {"intro": "主要摩擦来自执行偏差。", "categories": [{"title": f"摩擦模式 {i}", "description": "需要更早验证。", "examples": ["例一", "例二"]} for i in range(3)]},
         "suggestions": {
             "agents_md_additions": [{"addition": f"规则 {i}", "why": "减少偏差。", "prompt_scaffold": "先验证目标。"} for i in range(2)],
             "features_to_try": [{"feature": "Fast mode", "one_liner": "提高吞吐。", "why_for_you": "适合批量分析。", "example_code": "/fast on"} for _ in range(2)],
@@ -253,18 +253,21 @@ class RunnerReleaseGateTests(unittest.IsolatedAsyncioTestCase):
 
             executor = AppendingExecutor(self.m)
             runner = self.m.InsightsRunner(config, executor=executor)
-            result = await runner.run()
-            self.assertEqual(result["coverage"]["selected"], 200)
-            self.assertEqual(result["coverage"]["analyzed"], 200)
-            self.assertTrue(Path(result["report_path"]).exists())
-            state = json.loads((home / "usage-data" / "insights" / "state.json").read_text(encoding="utf-8"))
-            manifest = json.loads((home / "usage-data" / "insights" / "manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(len(state["sessions"]), 200)
-            self.assertEqual(manifest["state_sha256"], self.m.sha256_file(home / "usage-data" / "insights" / "state.json"))
-            self.assertEqual(result["coverage"]["eligible"], result["coverage"]["analyzed"] + result["coverage"]["skipped"] + result["coverage"]["remaining"])
-            self.assertEqual(len([call for call in executor.calls if call[0] == "session_facet"]), 200)
-            next_run = self.m.core.prepare_run(home, max_new_sessions=1)
-            self.assertEqual(next_run["inventory"]["selected"], 1)
+            try:
+                result = await runner.run()
+                self.assertEqual(result["coverage"]["selected"], 200)
+                self.assertEqual(result["coverage"]["analyzed"], 200)
+                self.assertTrue(Path(result["report_path"]).exists())
+                state = json.loads((home / "usage-data" / "insights" / "state.json").read_text(encoding="utf-8"))
+                manifest = json.loads((home / "usage-data" / "insights" / "manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(len(state["sessions"]), 200)
+                self.assertEqual(manifest["state_sha256"], self.m.sha256_file(home / "usage-data" / "insights" / "state.json"))
+                self.assertEqual(result["coverage"]["eligible"], result["coverage"]["analyzed"] + result["coverage"]["skipped"] + result["coverage"]["remaining"])
+                self.assertEqual(len([call for call in executor.calls if call[0] == "session_facet"]), 200)
+                next_run = self.m.core.prepare_run(home, max_new_sessions=1)
+                self.assertEqual(next_run["inventory"]["selected"], 1)
+            finally:
+                runner.store.close()
 
 
 if __name__ == "__main__":

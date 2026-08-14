@@ -63,7 +63,7 @@ def write_long_jsonl(path: Path) -> None:
 def native_facet() -> dict:
     return {
         "underlying_goal": "修复失败的缓存事务并验证回滚",
-        "goal_categories": {"debugging": 1, "testing": 1},
+        "goal_categories": {"fix_bug": 1, "write_tests": 1},
         "outcome": "fully_achieved",
         "user_satisfaction_counts": {"likely_satisfied": 1, "dissatisfied": 1},
         "claude_helpfulness": "very_helpful",
@@ -79,7 +79,7 @@ def native_lens_results() -> dict[str, dict]:
     return {
         "project_areas": {
             "areas": [
-                {"name": f"领域 {index}", "session_count": index + 1, "description": "具体项目工作。"}
+                {"name": f"领域 {index}", "project_ids": [f"project-{index}"], "description": "具体项目工作。"}
                 for index in range(4)
             ]
         },
@@ -98,7 +98,7 @@ def native_lens_results() -> dict[str, dict]:
             "intro": "主要摩擦来自目标误读、工具失败和过度改动。",
             "categories": [
                 {
-                    "category": f"摩擦 {index}",
+                    "title": f"摩擦 {index}",
                     "description": "可从会话证据中定位的根因。",
                     "examples": ["例子一", "例子二"],
                 }
@@ -171,7 +171,7 @@ class NativeAnalysisParityTests(unittest.TestCase):
         facet = native_facet()
         self.assertEqual(self.m.validate_native_facet(facet), facet)
 
-        wrong_categories = {**facet, "goal_categories": ["debugging", "testing"]}
+        wrong_categories = {**facet, "goal_categories": ["fix_bug", "write_tests"]}
         with self.assertRaises(self.m.FacetValidationError):
             self.m.validate_native_facet(wrong_categories)
         wrong_helpfulness = dict(facet)
@@ -238,6 +238,10 @@ class NativeAnalysisParityTests(unittest.TestCase):
             self.assertIn("human-readable", prompt)
         for prompt in [*(job["prompt"] for job in lenses), glance["prompt"]]:
             self.assertIn("coverage", prompt.casefold())
+            self.assertIn("do not repeat", prompt.casefold())
+            self.assertIn("method footer", prompt.casefold())
+            self.assertIn("do not invent numeric thresholds", prompt.casefold())
+            self.assertIn("later explicit instruction wins", prompt.casefold())
 
     def test_seven_lenses_are_distinct_single_jobs_with_native_like_schemas(self):
         expected_required = {
@@ -261,6 +265,8 @@ class NativeAnalysisParityTests(unittest.TestCase):
         suggestions_job = next(job for job in jobs if job["lens_id"] == "suggestions")
         self.assertIn("2-3", suggestions_job["prompt"])
         self.assertIn("Codex capability reference", suggestions_job["prompt"])
+        interaction_job = next(job for job in jobs if job["lens_id"] == "interaction_style")
+        self.assertIn("do not repeat it in the narrative", interaction_job["prompt"])
         suggestions = native_lens_results()["suggestions"]
         self.assertEqual(self.m.validate_lens_result("suggestions", suggestions), suggestions)
         for field in ("agents_md_additions", "features_to_try", "usage_patterns"):

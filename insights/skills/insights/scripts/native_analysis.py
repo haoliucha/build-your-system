@@ -15,6 +15,7 @@ this module; they are implementation guardrails rather than analysis stages.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import PurePath
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -60,6 +61,25 @@ PRIMARY_SUCCESSES = frozenset(
         "proactive_help",
         "multi_file_changes",
         "good_debugging",
+    }
+)
+GOAL_CATEGORIES = frozenset(
+    {
+        "debug_investigate", "implement_feature", "fix_bug", "write_script_tool",
+        "refactor_code", "configure_system", "create_pr_commit", "analyze_data",
+        "understand_codebase", "write_tests", "write_docs", "deploy_infra",
+        "warmup_minimal",
+    }
+)
+SATISFACTION_SIGNALS = frozenset(
+    {"happy", "satisfied", "likely_satisfied", "dissatisfied", "frustrated"}
+)
+FRICTION_TYPES = frozenset(
+    {
+        "misunderstood_request", "wrong_approach", "buggy_code",
+        "user_rejected_action", "excessive_changes", "codex_got_blocked",
+        "user_stopped_early", "wrong_file_or_location", "slow_or_verbose",
+        "tool_failed", "external_issue", "repeated_instruction",
     }
 )
 
@@ -236,12 +256,16 @@ only from the following explicit satisfaction signals observed in Claude Code 2.
 - "that's not right" or "try again" -> dissatisfied
 - "this is broken" or "I give up" -> frustrated
 
-For friction_counts, use these canonical categories when applicable:
-- misunderstood_request: Codex interpreted the request incorrectly
-- wrong_approach: the goal was right but the solution method was wrong
-- buggy_code: generated or edited code did not work correctly
-- user_rejected_action: the user explicitly rejected or stopped an action
-- excessive_changes: Codex over-engineered or changed too much
+For goal_categories use only: debug_investigate, implement_feature, fix_bug,
+write_script_tool, refactor_code, configure_system, create_pr_commit,
+analyze_data, understand_codebase, write_tests, write_docs, deploy_infra, or
+warmup_minimal. Count each explicit user goal once under its best category.
+
+For friction_counts use only: misunderstood_request, wrong_approach,
+buggy_code, user_rejected_action, excessive_changes, codex_got_blocked,
+user_stopped_early, wrong_file_or_location, slow_or_verbose, tool_failed,
+external_issue, or repeated_instruction. Do not label legitimate user
+requirements as friction merely because they constrain the work.
 
 If the session is only a short setup, greeting, or warm-up, put
 warmup_minimal in goal_categories. It is not a session_type. Describe specific
@@ -293,7 +317,9 @@ def _require_string(
     return value
 
 
-def _require_count_map(value: Any, *, field: str) -> Mapping[str, int]:
+def _require_count_map(
+    value: Any, *, field: str, allowed: frozenset[str] | None = None
+) -> Mapping[str, int]:
     if not isinstance(value, Mapping):
         raise FacetValidationError(f"{field} must be an object of integer counts")
     for key, count in value.items():
@@ -301,6 +327,8 @@ def _require_count_map(value: Any, *, field: str) -> Mapping[str, int]:
             raise FacetValidationError(f"{field} keys must be non-empty strings")
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             raise FacetValidationError(f"{field}.{key} must be a non-negative integer")
+        if allowed is not None and key not in allowed:
+            raise FacetValidationError(f"invalid {field} category: {key!r}")
     return value
 
 
@@ -338,16 +366,20 @@ def validate_native_facet(value: Any) -> dict[str, Any]:
         raise FacetValidationError(f"facet has unknown fields: {sorted(unknown)}")
 
     _require_string(facet["underlying_goal"], field="underlying_goal", max_length=2_000)
-    _require_count_map(facet["goal_categories"], field="goal_categories")
+    _require_count_map(facet["goal_categories"], field="goal_categories", allowed=GOAL_CATEGORIES)
     _require_enum(facet["outcome"], field="outcome", allowed=OUTCOMES)
-    _require_count_map(facet["user_satisfaction_counts"], field="user_satisfaction_counts")
+    _require_count_map(
+        facet["user_satisfaction_counts"],
+        field="user_satisfaction_counts",
+        allowed=SATISFACTION_SIGNALS,
+    )
     _require_enum(
         facet["claude_helpfulness"],
         field="claude_helpfulness",
         allowed=HELPFULNESS_LEVELS,
     )
     _require_enum(facet["session_type"], field="session_type", allowed=SESSION_TYPES)
-    _require_count_map(facet["friction_counts"], field="friction_counts")
+    _require_count_map(facet["friction_counts"], field="friction_counts", allowed=FRICTION_TYPES)
     _require_string(
         facet["friction_detail"],
         field="friction_detail",
@@ -396,8 +428,12 @@ LENS_SCHEMAS: dict[str, dict[str, Any]] = {
         ("areas",),
         {
             "areas": _array_of_object(
-                ("name", "session_count", "description"),
-                {"name": _STRING, "session_count": {"type": "integer", "minimum": 1}, "description": _STRING},
+                ("name", "project_ids", "description"),
+                {
+                    "name": _STRING,
+                    "project_ids": {"type": "array", "items": _STRING, "minItems": 1},
+                    "description": _STRING,
+                },
             )
         },
     ),
@@ -419,8 +455,8 @@ LENS_SCHEMAS: dict[str, dict[str, Any]] = {
         {
             "intro": _STRING,
             "categories": _array_of_object(
-                ("category", "description", "examples"),
-                {"category": _STRING, "description": _STRING, "examples": {"type": "array", "items": _STRING}},
+                ("title", "description", "examples"),
+                {"title": _STRING, "description": _STRING, "examples": {"type": "array", "items": _STRING}},
             ),
         },
     ),
@@ -464,10 +500,10 @@ LENS_SCHEMAS: dict[str, dict[str, Any]] = {
 
 
 _LENS_INSTRUCTIONS = {
-    "project_areas": """Identify 4-5 meaningful project areas. Group related work, give an evidence-based session count and a concrete description. Exclude internal Codex housekeeping or the Insights run itself.""",
-    "interaction_style": """Write a 2-3 paragraph second-person narrative about how the user collaborates with Codex. Use concrete examples from the material and end with one concise key pattern.""",
+    "project_areas": """Identify 4-5 meaningful project areas. Group related work using only stable project IDs present in project_distribution. Return project_ids, never a guessed session count; the helper computes counts after validation. Give a concrete description and exclude internal Codex housekeeping or the Insights run itself.""",
+    "interaction_style": """Write a 2-3 paragraph second-person narrative about how the user collaborates with Codex. Use concrete examples from the material. Put the concise core pattern only in `key_pattern`; do not repeat it in the narrative.""",
     "what_works": """Explain what works especially well, then select exactly three impressive, repeatable workflows. Each workflow needs a concrete title and description grounded in successful sessions.""",
-    "friction_analysis": """Explain the main friction, then produce exactly three distinct root-cause categories with two concrete examples each. Separate Codex failures, user-side constraints, and external/tool constraints when the evidence supports it.""",
+    "friction_analysis": """Explain the main friction, then produce exactly three distinct evidence-based problem patterns with two concrete examples each. Use a localized human-readable title such as \"过早宣称完成\" or \"缺少直接证据的诊断\"; never expose a snake_case machine key. Do not force Codex, user, and external factors into three actor buckets, and do not blame legitimate requirements merely because they constrain the work.""",
     "suggestions": """Return 2-3 actionable recommendations in each of three groups: additions the user can paste into AGENTS.md, relevant Codex features to try, and improved usage patterns. Every item must explain why it fits this user and include a copyable scaffold or example. Codex capability reference: Skills, subagents, MCP, headless `codex exec`, Fast mode, long-running goals, and isolated worktrees. Choose feature recommendations only from this reference and only when the evidence makes them relevant. Do not suggest unsupported Claude-only features.""",
     "on_the_horizon": """Describe what may become possible over the next 3-6 months and give exactly three ambitious but testable opportunities. Each needs a small first experiment and a copyable prompt.""",
     "fun_ending": """End with one warm, memorable qualitative observation about this user's distinctive way of working. Do not turn it into a statistic or generic praise.""",
@@ -487,9 +523,12 @@ def build_lens_jobs(
 {_LENS_INSTRUCTIONS[lens_id]}
 
 Use only the compressed evidence below. Do not invent facts, quotations, or
-statistics. Respect its coverage fields: when remaining sessions exist, state
-that semantic conclusions cover only the analyzed facet subset. Respond with
-ONLY a JSON object matching this schema:
+statistics. Use its coverage fields to calibrate certainty and never generalize
+an analyzed subset to all sessions. Do not repeat coverage disclaimers or
+coverage counts in any lens field; the renderer shows them once in the method footer.
+Do not invent numeric thresholds, timeouts, or automatic interruption rules that
+are absent from the evidence. When dated instructions conflict, the later explicit instruction wins.
+Respond with ONLY a JSON object matching this schema:
 {json.dumps(LENS_SCHEMAS[lens_id], ensure_ascii=False, sort_keys=True)}
 
 COMPRESSED EVIDENCE
@@ -547,8 +586,8 @@ def validate_lens_result(lens_id: str, value: Any) -> dict[str, Any]:
         areas = _validate_object_array(
             result["areas"],
             field="areas",
-            fields=("name", "session_count", "description"),
-            count_field="session_count",
+            fields=("name", "project_ids", "description"),
+            string_list_field="project_ids",
         )
         if not 4 <= len(areas) <= 5:
             raise FacetValidationError("project_areas.areas must contain 4-5 items")
@@ -569,13 +608,20 @@ def validate_lens_result(lens_id: str, value: Any) -> dict[str, Any]:
         categories = _validate_object_array(
             result["categories"],
             field="categories",
-            fields=("category", "description", "examples"),
+            fields=("title", "description", "examples"),
             string_list_field="examples",
         )
         if len(categories) != 3:
             raise FacetValidationError("friction_analysis.categories must contain 3 items")
         if any(len(category["examples"]) != 2 for category in categories):
             raise FacetValidationError("each friction category must contain 2 examples")
+        if any(
+            re.fullmatch(r"[a-z0-9]+(?:_[a-z0-9]+)+", category["title"])
+            for category in categories
+        ):
+            raise FacetValidationError(
+                "friction titles must be localized display text, not snake_case keys"
+            )
     elif lens_id == "suggestions":
         groups = (
             _validate_object_array(
@@ -609,6 +655,62 @@ def validate_lens_result(lens_id: str, value: Any) -> dict[str, Any]:
         _require_string(result["headline"], field="headline")
         _require_string(result["detail"], field="detail")
     return dict(result)
+
+
+def finalize_project_areas(
+    value: Mapping[str, Any],
+    project_distribution: Mapping[str, Any],
+    *,
+    language: str = "zh-CN",
+) -> dict[str, Any]:
+    """Replace model grouping IDs with deterministic helper-owned counts."""
+
+    counts = {
+        str(project_id): int(count)
+        for project_id, count in project_distribution.items()
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0
+    }
+    assigned: set[str] = set()
+    areas: list[dict[str, Any]] = []
+    raw_areas = value.get("areas", []) if isinstance(value, Mapping) else []
+    if isinstance(raw_areas, Sequence) and not isinstance(raw_areas, (str, bytes, bytearray)):
+        for raw in raw_areas:
+            if not isinstance(raw, Mapping):
+                continue
+            project_ids = raw.get("project_ids", [])
+            if not isinstance(project_ids, Sequence) or isinstance(project_ids, (str, bytes, bytearray)):
+                continue
+            accepted = [
+                str(project_id)
+                for project_id in project_ids
+                if str(project_id) in counts and str(project_id) not in assigned
+            ]
+            session_count = sum(counts[project_id] for project_id in accepted)
+            if not accepted or session_count <= 0:
+                continue
+            assigned.update(accepted)
+            areas.append(
+                {
+                    "name": str(raw.get("name", "")),
+                    "session_count": session_count,
+                    "description": str(raw.get("description", "")),
+                }
+            )
+    remaining = sum(count for project_id, count in counts.items() if project_id not in assigned)
+    if remaining:
+        chinese = language.lower().startswith("zh")
+        areas.append(
+            {
+                "name": "其他项目" if chinese else "Other Projects",
+                "session_count": remaining,
+                "description": (
+                    "未归入上述领域的主会话。"
+                    if chinese
+                    else "Primary sessions not assigned to the areas above."
+                ),
+            }
+        )
+    return {"areas": areas}
 
 
 AT_A_GLANCE_FIELDS = (
@@ -647,7 +749,11 @@ Write 2-3 concrete coaching sentences for each field. Use no headline statistics
 and no generic praise. `whats_hindering` must distinguish Codex mistakes from
 user-side or external friction when the evidence supports that distinction.
 `ambitious_workflows` should look 3-6 months ahead. Respect coverage limits and
-never generalize an analyzed facet subset to all eligible sessions. Respond with ONLY JSON
+never generalize an analyzed facet subset to all eligible sessions. Do not repeat
+coverage disclaimers or counts; the renderer shows them once in the method footer.
+Do not invent numeric thresholds, timeouts, or automatic interruption rules that
+are absent from the evidence. When dated instructions conflict, the later explicit instruction wins.
+Respond with ONLY JSON
 matching this schema:
 {json.dumps(AT_A_GLANCE_SCHEMA, ensure_ascii=False, sort_keys=True)}
 
@@ -679,17 +785,25 @@ __all__ = [
     "AT_A_GLANCE_SCHEMA",
     "CHUNK_SIZE",
     "FacetValidationError",
+    "FACET_EXTENSION_FIELDS",
+    "FRICTION_TYPES",
+    "GOAL_CATEGORIES",
+    "HELPFULNESS_LEVELS",
     "InsightsError",
     "LENS_IDS",
     "LENS_SCHEMAS",
     "LONG_SESSION_THRESHOLD",
     "NATIVE_FACET_FIELDS",
     "PRIMARY_SUCCESSES",
+    "SATISFACTION_SIGNALS",
+    "SESSION_TYPES",
+    "OUTCOMES",
     "USER_TEXT_LIMIT",
     "build_at_a_glance_job",
     "build_chunk_summary_prompt",
     "build_facet_prompt",
     "build_lens_jobs",
+    "finalize_project_areas",
     "normalize_session",
     "split_analysis_text",
     "validate_at_a_glance",

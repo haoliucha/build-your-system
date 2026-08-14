@@ -208,12 +208,12 @@ class NativeAggregateParityTests(unittest.TestCase):
         facets = {
             "aaaaaaaa11111111": facet(
                 goal="修复 Alpha 的调试缺口",
-                goal_categories={"coding": 2, "debugging": 1, "ignored_zero": 0},
+                goal_categories={"fix_bug": 2, "debug_investigate": 1},
                 outcome="fully_achieved",
-                satisfaction={"positive": 1, "correction": 1},
+                satisfaction={"satisfied": 1, "dissatisfied": 1},
                 helpfulness="very_helpful",
                 session_type="iterative_refinement",
-                friction={"tool_failed": 1, "ignored_zero": 0},
+                friction={"tool_failed": 1},
                 friction_detail="Alpha 工具失败一次。",
                 primary_success="good_debugging",
                 brief_summary="Alpha facet summary",
@@ -221,9 +221,9 @@ class NativeAggregateParityTests(unittest.TestCase):
             ),
             "bbbbbbbb22222222": facet(
                 goal="实现 Beta 并验证",
-                goal_categories={"coding": 1, "testing": 1},
+                goal_categories={"implement_feature": 1, "write_tests": 1},
                 outcome="partially_achieved",
-                satisfaction={"negative": 1},
+                satisfaction={"dissatisfied": 1},
                 helpfulness="moderately_helpful",
                 session_type="single_task",
                 friction={"tool_failed": 2},
@@ -234,9 +234,9 @@ class NativeAggregateParityTests(unittest.TestCase):
             ),
             "cccccccc33333333": facet(
                 goal="调研 Gamma 方案",
-                goal_categories={"research": 1},
+                goal_categories={"understand_codebase": 1},
                 outcome="fully_achieved",
-                satisfaction={"positive": 2},
+                satisfaction={"satisfied": 2},
                 helpfulness="very_helpful",
                 session_type="exploration",
                 friction={"external_issue": 1},
@@ -268,10 +268,10 @@ class NativeAggregateParityTests(unittest.TestCase):
 
         self.assertEqual(
             aggregate["goal_categories"],
-            {"coding": 3, "debugging": 1, "testing": 1, "research": 1},
+            {"fix_bug": 2, "debug_investigate": 1, "implement_feature": 1, "write_tests": 1, "understand_codebase": 1},
         )
         self.assertEqual(aggregate["outcomes"], {"fully_achieved": 2, "partially_achieved": 1})
-        self.assertEqual(aggregate["satisfaction"], {"positive": 3, "correction": 1, "negative": 1})
+        self.assertEqual(aggregate["satisfaction"], {"satisfied": 3, "dissatisfied": 2})
         self.assertEqual(aggregate["helpfulness"], {"very_helpful": 2, "moderately_helpful": 1})
         self.assertEqual(
             aggregate["session_types"],
@@ -359,9 +359,9 @@ class NativeAggregateParityTests(unittest.TestCase):
             )
             facets[session_id] = facet(
                 goal=f"goal-{index:02d}",
-                goal_categories={"testing": 1},
+                goal_categories={"write_tests": 1},
                 outcome="fully_achieved",
-                satisfaction={"positive": 1},
+                satisfaction={"satisfied": 1},
                 helpfulness="very_helpful",
                 session_type="single_task",
                 friction={"tool_failed": 1},
@@ -378,8 +378,8 @@ class NativeAggregateParityTests(unittest.TestCase):
 
         material = self.m.build_lens_material(aggregate, facets)
         self.assertIsInstance(material, str)
-        self.assertIn("facet-summary-00 (fully_achieved, very_helpful)", material)
-        self.assertIn("facet-summary-49 (fully_achieved, very_helpful)", material)
+        self.assertIn('"summary":"facet-summary-00"', material)
+        self.assertIn('"summary":"facet-summary-49"', material)
         self.assertNotIn("facet-summary-50", material)
         self.assertIn("friction-19", material)
         self.assertNotIn("friction-20", material)
@@ -388,7 +388,7 @@ class NativeAggregateParityTests(unittest.TestCase):
         self.assertLess(material.index("facet-summary-00"), material.index("facet-summary-49"))
         self.assertLess(material.index("friction-00"), material.index("friction-19"))
         self.assertLess(material.index("instruction-00"), material.index("instruction-14"))
-        self.assertIn("USER INSTRUCTIONS TO CODEX", material)
+        self.assertIn('"repeated_instructions"', material)
 
     def test_warmup_facet_removes_its_matching_meta_and_runtime_keys_keep_summaries(self):
         warmup_meta = meta(
@@ -425,7 +425,7 @@ class NativeAggregateParityTests(unittest.TestCase):
         )
         useful = facet(
             goal="修复缓存",
-            goal_categories={"debugging": 1},
+            goal_categories={"debug_investigate": 1},
             outcome="fully_achieved",
             satisfaction={"satisfied": 1},
             helpfulness="very_helpful",

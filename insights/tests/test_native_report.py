@@ -31,9 +31,9 @@ def aggregate_fixture():
         "git_commits": 4,
         "git_pushes": 2,
         "projects": {"build-your-system": 7, "haoliucha": 3},
-        "goal_categories": {"coding": 61, "research": 8},
+        "goal_categories": {"implement_feature": 61, "understand_codebase": 8},
         "outcomes": {"fully_achieved": 41, "partially_achieved": 3},
-        "satisfaction": {"positive": 33, "negative": 2, "correction": 4},
+        "satisfaction": {"satisfied": 33, "dissatisfied": 2, "frustrated": 4},
         "helpfulness": {"very_helpful": 8, "moderately_helpful": 2},
         "session_types": {"single_task": 34, "iterative_refinement": 6},
         "friction": {"tool_failed": 22, "wrong_approach": 5},
@@ -96,7 +96,7 @@ def lenses_fixture():
             "intro": "主要摩擦来自过早抽象，而不是工作量本身。",
             "categories": [
                 {
-                    "category": "方案偏航",
+                    "title": "方案偏航",
                     "description": "实现了安全流程，但没有复刻原生命令语义。",
                     "examples": ["把跨会话模式误当作原生主流程", "报告章节偏离原生结构"],
                 }
@@ -198,7 +198,7 @@ class NativeReportParityTests(unittest.TestCase):
     def test_all_twelve_native_chart_meanings_render_real_aggregate_data(self):
         report = render(self.m)
         charts = (
-            ("goals", "你想完成什么", "coding", 61),
+            ("goals", "你想完成什么", "实现功能", 61),
             ("tools", "最常用工具", "exec", 52),
             ("languages", "编程语言", "Python", 43),
             ("session-types", "会话类型", "单一任务", 34),
@@ -209,7 +209,7 @@ class NativeReportParityTests(unittest.TestCase):
             ("successes", "最有效的帮助", "出色调试", 39),
             ("outcomes", "结果", "完全达成", 41),
             ("friction", "主要摩擦类型", "工具失败", 22),
-            ("satisfaction", "推断满意度", "正向", 33),
+            ("satisfaction", "推断满意度", "满意", 33),
         )
 
         starts = []
@@ -243,6 +243,24 @@ class NativeReportParityTests(unittest.TestCase):
         for raw in ("fully_achieved", "single_task", "good_debugging", "tool_failed"):
             self.assertNotIn(f'>{raw}<', report)
 
+    def test_diagnostic_charts_explain_denominator_and_show_count_plus_share(self):
+        report = render(self.m)
+        friction = report[
+            report.index('data-chart="friction"'):
+            report.index('data-chart="satisfaction"')
+        ]
+        satisfaction = report[report.index('data-chart="satisfaction"'):]
+
+        self.assertIn('class="chart-heading"', friction)
+        self.assertIn('class="chart-total">27 次</span>', friction)
+        self.assertIn('class="chart-context">统计已识别的摩擦事件；同一事件不重复计数</p>', friction)
+        self.assertIn('class="chart-share">81.5%</span>', friction)
+        self.assertIn('class="chart-value">22</strong>', friction)
+
+        self.assertIn('class="chart-total">39 次</span>', satisfaction)
+        self.assertIn('class="chart-context">只统计用户明确表达的反馈信号</p>', satisfaction)
+        self.assertIn('class="chart-share">84.6%</span>', satisfaction)
+
     def test_seven_semantic_sections_and_navigation_preserve_lens_outputs(self):
         report = render(self.m)
         expected_sections = (
@@ -255,7 +273,8 @@ class NativeReportParityTests(unittest.TestCase):
             ("section-horizon", "未来机会"),
         )
 
-        links = re.findall(r'href="#(section-[^"]+)"', report)
+        nav = report[report.index('<nav class="top-nav"'):report.index('</nav>')]
+        links = re.findall(r'href="#(section-[^"]+)"', nav)
         self.assertEqual(links, [section_id for section_id, _ in expected_sections])
         self.assertNotIn("section-feedback", report)
         for section_id, title in expected_sections:
@@ -305,9 +324,9 @@ class NativeReportParityTests(unittest.TestCase):
         self.assertNotRegex(report, r"(?i)\son[a-z]+\s*=")
         self.assertNotRegex(report, r'(?i)(?:href|src)=["\'](?:https?:|//)')
         self.assertNotRegex(report, r"(?i)<(?:link|iframe|form)\b")
-        self.assertIn("<aside", report)
+        self.assertNotIn('class="sidebar"', report)
         self.assertIn("<nav", report)
-        self.assertRegex(compact_css, r"position:sticky")
+        self.assertRegex(compact_css, r"max-width:800px")
         self.assertRegex(compact_css, r"@media\(max-width:640px\)")
         self.assertRegex(compact_css, r"@mediaprint")
         self.assertRegex(compact_css, r":focus(?:-visible)?")
@@ -337,9 +356,8 @@ class NativeReportParityTests(unittest.TestCase):
                 "snapshot_at": "2026-08-14T09:12:34Z",
             },
         )
-        self.assertIn("仍有 2 个合格会话尚未完成语义分析", report)
-        self.assertIn("确定性统计覆盖 14 个", report)
-        self.assertIn("叙事洞察覆盖 10 个", report)
+        self.assertNotIn("仍有 2 个合格会话尚未完成语义分析", report)
+        self.assertIn("尚待处理", report)
         self.assertIn("分析快照时间", report)
         self.assertIn("2026-08-14T09:12:34Z", report)
 

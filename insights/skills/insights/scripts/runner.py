@@ -45,6 +45,38 @@ def _load_core():
 core = _load_core()
 
 
+def _validate_release_receipt(path: str | Path, *, codex_home: str | Path) -> bool:
+    """Validate the user-confirmed 0.4 preview receipt for a development run."""
+
+    home = Path(codex_home).expanduser().resolve()
+    preview = home / "usage-data" / "insights" / "previews" / "0.4.0"
+    receipt_path = Path(path).expanduser().resolve()
+    try:
+        receipt_path.relative_to(preview.resolve())
+        value = json.loads(receipt_path.read_text(encoding="utf-8"))
+        report = preview / "report.html"
+        comparison = preview / "comparison.json"
+        comparison_value = json.loads(comparison.read_text(encoding="utf-8"))
+    except (ValueError, OSError, json.JSONDecodeError):
+        return False
+    digest = lambda item: hashlib.sha256(item.read_bytes()).hexdigest()
+    return bool(
+        value.get("user_confirmed") is True
+        and comparison_value.get("passed") is True
+        and value.get("preview_report_sha256") == digest(report)
+        and value.get("comparison_sha256") == digest(comparison)
+    )
+
+
+def _development_receipt_required(max_new_sessions: int) -> bool:
+    manifest_path = SCRIPT_DIR.parents[2] / ".codex-plugin" / "plugin.json"
+    try:
+        version = str(json.loads(manifest_path.read_text(encoding="utf-8")).get("version", ""))
+    except (OSError, json.JSONDecodeError):
+        version = ""
+    return max_new_sessions > 3 and version != "0.4.0"
+
+
 MODEL_BY_KIND = {
     "chunk_summary": ("gpt-5.6-luna", "low"),
     "session_facet": ("gpt-5.6-terra", "medium"),
@@ -660,14 +692,9 @@ def _restore_snapshot(snapshot: Mapping[str, Any], output: Path) -> dict[str, An
 
 
 def _facet_json_schema() -> dict[str, Any]:
-    goal_keys = (
-        "coding", "debugging", "testing", "research", "writing", "planning",
-        "analysis", "configuration", "automation", "data_analysis", "design",
-        "documentation", "review", "deployment", "project_management",
-        "warmup_minimal", "other",
-    )
-    satisfaction_keys = ("happy", "satisfied", "likely_satisfied", "dissatisfied", "frustrated")
-    friction_keys = ("misunderstood_request", "wrong_approach", "buggy_code", "user_rejected_action", "excessive_changes")
+    goal_keys = tuple(sorted(native_analysis.GOAL_CATEGORIES))
+    satisfaction_keys = tuple(sorted(native_analysis.SATISFACTION_SIGNALS))
+    friction_keys = tuple(sorted(native_analysis.FRICTION_TYPES))
 
     def strict_counter(keys: Sequence[str]) -> dict[str, Any]:
         return {
@@ -700,7 +727,7 @@ def _model_job(raw: Mapping[str, Any], wave: int) -> ModelJob:
     if kind == "session_facet":
         schema = _facet_json_schema()
         raw = dict(raw)
-        raw["prompt"] = str(raw["prompt"]) + "\nFor schema compatibility, return every counter key declared in the output schema and use 0 when absent; use goal category other when no named category fits."
+        raw["prompt"] = str(raw["prompt"]) + "\nFor schema compatibility, return every counter key declared in the output schema and use 0 when absent. Never invent an `other` goal category."
     elif kind == "chunk_summary":
         schema = {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"], "additionalProperties": False}
     return ModelJob(
@@ -981,6 +1008,15 @@ async def _run_cli(args: argparse.Namespace) -> int:
             return 0 if ok else 1
         finally:
             shutil.rmtree(probe_dir, ignore_errors=True)
+    if _development_receipt_required(args.max_new_sessions) and not (
+        args.release_receipt
+        and _validate_release_receipt(args.release_receipt, codex_home=args.codex_home)
+    ):
+        print(json.dumps({
+            "status": "preview_confirmation_required",
+            "message": "0.4 开发态正式运行需要通过报告门禁并由用户确认预览。",
+        }, ensure_ascii=False), flush=True)
+        return 2
     unfinished: list[str] = []
     for database in sorted((output / "runs").glob("*/run.sqlite3")):
         try:
@@ -1051,13 +1087,14 @@ async def _run_cli(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Codex Insights 0.3 persistent exec runner")
+    parser = argparse.ArgumentParser(description="Codex Insights 0.4 candidate persistent exec runner")
     parser.add_argument("--codex-home", default=os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
     parser.add_argument("--max-new-sessions", type=int, default=200)
     parser.add_argument("--language", default="zh-CN")
     parser.add_argument("--resume", metavar="RUN_ID")
     parser.add_argument("--new", action="store_true")
     parser.add_argument("--probe", action="store_true", help="run exactly three real codex exec contract jobs")
+    parser.add_argument("--release-receipt", help="user-confirmed pre-200 preview receipt (development candidate only)")
     args = parser.parse_args(argv)
     return asyncio.run(_run_cli(args))
 

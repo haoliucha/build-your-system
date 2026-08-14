@@ -39,7 +39,7 @@ def write_session(path: Path, session_id: str = "cache-session") -> None:
 
 def facet() -> dict:
     return {
-        "underlying_goal": "修复缓存事务", "goal_categories": {"debugging": 1},
+        "underlying_goal": "修复缓存事务", "goal_categories": {"fix_bug": 1},
         "outcome": "fully_achieved", "user_satisfaction_counts": {"satisfied": 1},
         "claude_helpfulness": "very_helpful", "session_type": "single_task",
         "friction_counts": {}, "friction_detail": "", "primary_success": "good_debugging",
@@ -50,10 +50,10 @@ def facet() -> dict:
 
 def lens(lens_id: str) -> dict:
     return {
-        "project_areas": {"areas": [{"name": f"领域 {i}", "session_count": 1, "description": "缓存事务。"} for i in range(4)]},
+        "project_areas": {"areas": [{"name": f"领域 {i}", "project_ids": ["project-00"], "description": "缓存事务。"} for i in range(4)]},
         "interaction_style": {"narrative": "先复现再验证。", "key_pattern": "证据闭环"},
         "what_works": {"intro": "失败注入有效。", "impressive_workflows": [{"title": f"流程 {i}", "description": "验证回滚。"} for i in range(3)]},
-        "friction_analysis": {"intro": "边界易遗漏。", "categories": [{"category": f"风险 {i}", "description": "需复核。", "examples": ["例一", "例二"]} for i in range(3)]},
+        "friction_analysis": {"intro": "边界易遗漏。", "categories": [{"title": f"风险模式 {i}", "description": "需复核。", "examples": ["例一", "例二"]} for i in range(3)]},
         "suggestions": {
             "agents_md_additions": [{"addition": f"规则 {i}", "why": "防回归。", "prompt_scaffold": "验证事务。"} for i in range(2)],
             "features_to_try": [{"feature": "Fast", "one_liner": "提速。", "why_for_you": "批量分析。", "example_code": "/fast"} for _ in range(2)],
@@ -103,7 +103,8 @@ class CacheTransactionTests(unittest.TestCase):
             job = self.m._facet_jobs(run)[0]
             run["job_results"][job["job_id"]] = self.m._validated_job_result(run, job, facet())
             self.m._ensure_aggregate(run)
-            self.assertEqual((run["aggregate"]["total_sessions"], run["aggregate"]["sessions_with_facets"]), (2, 1))
+            self.assertEqual((run["aggregate"]["total_sessions"], run["aggregate"]["sessions_with_facets"]), (1, 1))
+            self.assertEqual(run["eligible_aggregate"]["total_sessions"], 2)
             self.assertIn("coverage_limited", run["lens_material"])
 
     def test_legacy_analysis_version_is_not_reused(self):
@@ -113,6 +114,27 @@ class CacheTransactionTests(unittest.TestCase):
             (output / "state.json").write_text(json.dumps({"generation": 9, "analysis_version": "old", "sessions": {}}), encoding="utf-8")
             prepared = self.m.prepare_run(home, output, max_new_sessions=1)
             self.assertTrue(prepared["legacy_cache_detected"]); self.assertEqual(prepared["inventory"]["selected"], 1)
+
+    def test_legacy_cache_is_archived_and_orphan_facets_are_removed_after_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"; output = home / "usage-data" / "insights"
+            old_facet = output / "facets" / "deadbeefdeadbeef-cafebabecafebabe.json"
+            old_facet.parent.mkdir(parents=True)
+            old_facet.write_text('{"legacy":true}', encoding="utf-8")
+            (output / "state.json").write_text(json.dumps({"generation": 9, "analysis_version": "old", "sessions": {}}), encoding="utf-8")
+            (output / "manifest.json").write_text('{"generation":9}', encoding="utf-8")
+            run, _ = self.ready(home)
+            result = self.m.commit_run(run)
+            legacy_dirs = list((output / "legacy").iterdir())
+            self.assertEqual(len(legacy_dirs), 1)
+            self.assertTrue((legacy_dirs[0] / "state.json").is_file())
+            self.assertTrue((legacy_dirs[0] / "manifest.json").is_file())
+            self.assertTrue((legacy_dirs[0] / "facets" / old_facet.name).is_file())
+            state = json.loads((output / "state.json").read_text(encoding="utf-8"))
+            expected = {entry["facet_file"] for entry in state["sessions"].values()}
+            actual = {path.relative_to(output).as_posix() for path in (output / "facets").glob("*.json")}
+            self.assertEqual(actual, expected)
+            self.assertEqual(result["facet_count"], len(expected))
 
     def test_source_append_does_not_abort_snapshot_commit_and_invalidates_next_run(self):
         with tempfile.TemporaryDirectory() as tmp:

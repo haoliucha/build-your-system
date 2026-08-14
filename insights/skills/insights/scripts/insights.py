@@ -31,23 +31,25 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import native_analysis as _native_analysis
 import native_meta as _native_meta
-from native_report import render_native_report
+from native_report import compare_report_structure, render_native_report
 
 
 MAX_NEW_SESSIONS = 200
 LANGUAGE = "zh-CN"
-ANALYSIS_VERSION = "codex-exec-runner-v1"
-META_SCHEMA_VERSION = "native-meta-v1"
+ANALYSIS_VERSION = "codex-exec-runner-v2-primary"
+META_SCHEMA_VERSION = "native-meta-v2-source-class"
 NORMALIZER_VERSION = "claude-2.1.228-shape-v1"
-FACET_PROMPT_VERSION = "claude-2.1.229-codex-exec-v1"
-FACET_SCHEMA_VERSION = "native-facet-v1"
-REPORT_SCHEMA_VERSION = "native-report-v2"
+FACET_PROMPT_VERSION = "claude-2.1.229-codex-fixed-enums-v2"
+FACET_SCHEMA_VERSION = "native-facet-v2"
+LENS_PROMPT_VERSION = "claude-2.1.229-codex-lens-v4"
+REPORT_SCHEMA_VERSION = "claude-report-structure-v4"
 
 OUTCOMES = tuple(sorted(_native_analysis.OUTCOMES))
 HELPFULNESS = tuple(sorted(_native_analysis.HELPFULNESS_LEVELS))
 SESSION_TYPES = tuple(sorted(_native_analysis.SESSION_TYPES))
 PRIMARY_SUCCESSES = tuple(sorted(_native_analysis.PRIMARY_SUCCESSES))
 LENS_IDS = _native_analysis.LENS_IDS
+classify_session_origin = _native_meta.classify_session_origin
 CHUNK_TARGET = _native_analysis.CHUNK_SIZE
 CHUNK_HARD_LIMIT = _native_analysis.CHUNK_SIZE
 
@@ -383,6 +385,13 @@ def discover_sessions(
         raw_id_signatures.setdefault(signature[0], set()).add(signature)
 
     excluded = {"current": 0, "insights": 0, "short_messages": 0, "short_duration": 0}
+    cohorts = {
+        "primary": 0,
+        "legacy_primary": 0,
+        "subagent": 0,
+        "automation": 0,
+        "headless": 0,
+    }
     eligible: list[dict[str, Any]] = []
     for signature, branches in grouped.items():
         chosen = max(
@@ -407,6 +416,10 @@ def discover_sessions(
         ):
             excluded["insights"] += 1
             continue
+        session_class = classify_session_origin(meta)
+        cohorts[session_class] += 1
+        if session_class not in {"primary", "legacy_primary"}:
+            continue
         if int(meta.get("user_message_count", 0)) < 2:
             excluded["short_messages"] += 1
             continue
@@ -415,6 +428,8 @@ def discover_sessions(
             continue
         origins = {branch["origin"] for branch in branches}
         chosen = dict(chosen)
+        chosen["session_class"] = session_class
+        chosen["meta"] = {**meta, "session_class": session_class}
         chosen["session_key"] = _session_key(chosen)
         chosen["project_alias"] = _project_alias(str(meta.get("project_path", "")))
         chosen["project_label"] = _project_label(str(meta.get("project_path", "")))
@@ -438,6 +453,9 @@ def discover_sessions(
         "excluded_insights": excluded["insights"],
         "excluded_short_messages": excluded["short_messages"],
         "excluded_short_duration": excluded["short_duration"],
+        **cohorts,
+        "primary_total": cohorts["primary"] + cohorts["legacy_primary"],
+        "primary_eligible": len(eligible),
     }
     return eligible, stats
 
@@ -537,7 +555,6 @@ def _cache_integrity_valid(output_dir: Path, state: Mapping[str, Any], state_byt
             ("normalizer", NORMALIZER_VERSION),
             ("facet_prompt", FACET_PROMPT_VERSION),
             ("facet_schema", FACET_SCHEMA_VERSION),
-            ("report_schema", REPORT_SCHEMA_VERSION),
         )
     ):
         return False
@@ -599,7 +616,6 @@ def _read_state(output_dir: Path) -> tuple[dict[str, Any], bool]:
         or value.get("meta_schema_version") != META_SCHEMA_VERSION
         or value.get("normalizer_version") != NORMALIZER_VERSION
         or value.get("facet_prompt_version") != FACET_PROMPT_VERSION
-        or value.get("report_schema_version") != REPORT_SCHEMA_VERSION
         or any(not _valid_state_entry(key, entry) for key, entry in value.get("sessions", {}).items())
     ):
         return _legacy_state(value)
@@ -629,6 +645,7 @@ def _validate_persisted_facet(value: Any, expected: Mapping[str, Any] | None = N
         "project_alias",
         "project_label",
         "session_origin",
+        "session_class",
         "session_meta",
         "privacy_redactions",
     }
@@ -741,6 +758,7 @@ def _public_session_meta(meta: Mapping[str, Any], project_alias: str, project_la
         "user_message_timestamps": list(meta.get("user_message_timestamps", [])),
         "project_alias": project_alias,
         "project_label": project_label,
+        "session_class": str(meta.get("session_class", "legacy_primary")),
     }
 
 
@@ -759,6 +777,7 @@ def _helper_fields(session: Mapping[str, Any]) -> dict[str, Any]:
         "project_alias": session["project_alias"],
         "project_label": session["project_label"],
         "session_origin": session["session_origin"],
+        "session_class": session["session_class"],
         "session_meta": _public_session_meta(meta, session["project_alias"], session["project_label"]),
         "privacy_redactions": {"policy": "model-input-guardrail-v2"},
     }
@@ -942,7 +961,12 @@ def aggregate_usage(metas: Iterable[Mapping[str, Any]], facets: Iterable[Mapping
         total_duration_minutes += int(meta.get("duration_minutes", 0))
         _increment(tool_counts, meta.get("tool_counts", {}))
         _increment(languages, meta.get("languages", {}))
-        label = str(meta.get("project_label") or meta.get("project_alias") or meta.get("project_path") or "unknown")
+        label = str(
+            meta.get("project_alias")
+            or meta.get("project_label")
+            or meta.get("project_path")
+            or "project-unknown"
+        )
         projects[label] = projects.get(label, 0) + 1
         _increment(tool_error_categories, meta.get("tool_error_categories", {}))
         raw_hours = meta.get("message_hours", [])
@@ -1041,53 +1065,141 @@ def aggregate_usage(metas: Iterable[Mapping[str, Any]], facets: Iterable[Mapping
     }
 
 
+def _facet_tokens(facet: Mapping[str, Any]) -> set[str]:
+    tokens = {
+        "project:" + str(facet.get("project_alias", "project-unknown")),
+        "outcome:" + str(facet.get("outcome", "")),
+        "help:" + str(facet.get("claude_helpfulness", "")),
+        "success:" + str(facet.get("primary_success", "none")),
+        "month:" + str(facet.get("date", ""))[:7],
+    }
+    tokens.update("friction:" + str(key) for key, count in facet.get("friction_counts", {}).items() if count)
+    tokens.update(
+        "satisfaction:" + str(key)
+        for key, count in facet.get("user_satisfaction_counts", {}).items()
+        if count
+    )
+    return tokens
+
+
+def _representative_facets(
+    facets: Sequence[Mapping[str, Any]], *, limit: int
+) -> list[Mapping[str, Any]]:
+    """Greedily cover project/time/outcome/friction/feedback strata."""
+
+    remaining = sorted(
+        facets,
+        key=lambda facet: (
+            str(facet.get("date", "")),
+            str(facet.get("session_key", "")),
+        ),
+        reverse=True,
+    )
+    selected: list[Mapping[str, Any]] = []
+    covered: set[str] = set()
+    while remaining and len(selected) < limit:
+        best_index = max(
+            range(len(remaining)),
+            key=lambda index: (
+                len(_facet_tokens(remaining[index]) - covered),
+                str(remaining[index].get("date", "")),
+                str(remaining[index].get("session_key", "")),
+            ),
+        )
+        chosen = remaining.pop(best_index)
+        selected.append(chosen)
+        covered.update(_facet_tokens(chosen))
+    return selected
+
+
+def build_lens_evidence(
+    aggregate: Mapping[str, Any],
+    facets: Iterable[Mapping[str, Any]],
+    coverage: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    facet_list = list(facets.values()) if isinstance(facets, Mapping) else list(facets)
+    representatives = _representative_facets(facet_list, limit=50)
+    summary_rows = [
+        {
+            "session": str(facet.get("session_key", ""))[:24],
+            "date": str(facet.get("date", "")),
+            "project_id": str(facet.get("project_alias", "project-unknown")),
+            "goal": str(facet.get("underlying_goal", "")),
+            "summary": str(facet.get("brief_summary", "")),
+            "outcome": str(facet.get("outcome", "")),
+            "helpfulness": str(facet.get("claude_helpfulness", "")),
+            "success": str(facet.get("primary_success", "none")),
+            "friction": dict(facet.get("friction_counts", {})),
+            "satisfaction": dict(facet.get("user_satisfaction_counts", {})),
+            "evidence": list(facet.get("evidence_anchors", []))[:4],
+        }
+        for facet in representatives
+    ]
+    friction_candidates = [
+        facet
+        for facet in facet_list
+        if str(facet.get("friction_detail", "")).strip()
+    ]
+    friction_rows = [
+        {
+            "date": str(facet.get("date", "")),
+            "project_id": str(facet.get("project_alias", "project-unknown")),
+            "types": [str(key) for key, count in facet.get("friction_counts", {}).items() if count],
+            "detail": str(facet.get("friction_detail", "")),
+        }
+        for facet in _representative_facets(friction_candidates, limit=20)
+    ]
+    instruction_groups: dict[str, dict[str, Any]] = {}
+    for facet in facet_list:
+        date = str(facet.get("date", ""))
+        for raw in facet.get("user_instructions_to_codex", []):
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            text = raw.strip()
+            key = re.sub(r"\s+", " ", text).casefold()
+            entry = instruction_groups.setdefault(
+                key, {"text": text, "count": 0, "dates": set(), "latest_date": ""}
+            )
+            entry["count"] += 1
+            if date:
+                entry["dates"].add(date)
+                if date >= entry["latest_date"]:
+                    entry["latest_date"] = date
+                    entry["text"] = text
+    repeated_instructions = sorted(
+        (
+            {
+                "text": entry["text"],
+                "count": entry["count"],
+                "dates": sorted(entry["dates"]),
+                "latest_date": entry["latest_date"],
+            }
+            for entry in instruction_groups.values()
+        ),
+        key=lambda entry: (-entry["count"], entry["latest_date"], entry["text"]),
+    )[:15]
+    return {
+        "aggregate": dict(aggregate),
+        "project_distribution": dict(aggregate.get("projects", {})),
+        "representative_summaries": summary_rows,
+        "friction_details": friction_rows,
+        "repeated_instructions": repeated_instructions,
+        "coverage": dict(coverage or {}),
+        "coverage_limited": bool((coverage or {}).get("remaining", 0)),
+        "instruction_authority": "When instructions conflict, the latest explicit correction is authoritative.",
+    }
+
+
 def build_lens_material(
     aggregate: Mapping[str, Any],
     facets: Iterable[Mapping[str, Any]],
     coverage: Mapping[str, Any] | None = None,
 ) -> str:
-    facet_list = list(facets.values()) if isinstance(facets, Mapping) else list(facets)
-    core = {
-        "sessions": aggregate.get("total_sessions", 0),
-        "analyzed": aggregate.get("sessions_with_facets", 0),
-        "date_range": aggregate.get("date_range", {}),
-        "messages": aggregate.get("total_messages", 0),
-        "hours": aggregate.get("total_duration_hours", 0),
-        "commits": aggregate.get("git_commits", 0),
-        "top_tools": aggregate.get("tool_counts", {}),
-        "top_goals": aggregate.get("goal_categories", {}),
-        "outcomes": aggregate.get("outcomes", {}),
-        "satisfaction": aggregate.get("satisfaction", {}),
-        "friction": aggregate.get("friction", {}),
-        "success": aggregate.get("success", {}),
-        "languages": aggregate.get("languages", {}),
-        "coverage": dict(coverage or {}),
-        "coverage_limited": bool((coverage or {}).get("remaining", 0)),
-    }
-    summaries = [
-        f"- {facet.get('brief_summary', '')} ({facet.get('outcome', '')}, {facet.get('claude_helpfulness', '')})"
-        for facet in facet_list[:50]
-    ]
-    friction = [
-        str(facet.get("friction_detail", ""))
-        for facet in facet_list
-        if str(facet.get("friction_detail", "")).strip()
-    ][:20]
-    instructions = [
-        instruction
-        for facet in facet_list
-        for instruction in facet.get("user_instructions_to_codex", [])
-        if isinstance(instruction, str) and instruction.strip()
-    ][:15]
-    return (
-        "USAGE DATA\n"
-        + json.dumps(core, ensure_ascii=False, sort_keys=True, indent=2)
-        + "\n\nSESSION SUMMARIES\n"
-        + "\n".join(summaries)
-        + "\n\nFRICTION DETAILS\n"
-        + "\n".join(f"- {item}" for item in friction)
-        + "\n\nUSER INSTRUCTIONS TO CODEX\n"
-        + "\n".join(f"- {item}" for item in instructions)
+    return json.dumps(
+        build_lens_evidence(aggregate, facets, coverage=coverage),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     )
 
 
@@ -1190,8 +1302,10 @@ def _ensure_aggregate(run: dict[str, Any]) -> None:
     if run.get("aggregate") is not None:
         return
     facets = _combined_facets(run)
-    metas = list(run.get("eligible_metas") or _combined_metas(run, facets))
-    run["aggregate"] = aggregate_usage(metas, facets)
+    analyzed_metas = _combined_metas(run, facets)
+    eligible_metas = list(run.get("eligible_metas") or analyzed_metas)
+    run["eligible_aggregate"] = aggregate_usage(eligible_metas, facets)
+    run["aggregate"] = aggregate_usage(analyzed_metas, facets)
     run["lens_material"] = build_lens_material(
         run["aggregate"], facets, coverage=run["inventory"]
     )
@@ -1212,18 +1326,29 @@ def _lens_jobs(run: dict[str, Any]) -> list[dict[str, Any]]:
     return jobs
 
 
-def _lens_results(run: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+def _lens_results(
+    run: Mapping[str, Any], *, finalize_project_counts: bool = True
+) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
     for lens_id in LENS_IDS:
         job_id = _job_id(run["run_id"], "lens", lens_id)
         value = run["job_results"].get(job_id)
         if isinstance(value, Mapping):
-            results[lens_id] = dict(value)
+            if lens_id == "project_areas" and finalize_project_counts:
+                results[lens_id] = _native_analysis.finalize_project_areas(
+                    value,
+                    (run.get("aggregate") or {}).get("projects", {}),
+                    language=str(run.get("language", LANGUAGE)),
+                )
+            else:
+                results[lens_id] = dict(value)
     return results
 
 
 def _glance_job(run: dict[str, Any]) -> dict[str, Any] | None:
-    lenses = _lens_results(run)
+    # At-a-Glance consumes the seven validated model schemas. Project counts
+    # are helper-owned report data and are finalized only for rendering.
+    lenses = _lens_results(run, finalize_project_counts=False)
     terminal = set(lenses) | {
         lens_id
         for lens_id in LENS_IDS
@@ -1381,6 +1506,7 @@ def _validated_job_result(run: Mapping[str, Any], job: Mapping[str, Any], value:
                 "project_alias",
                 "project_label",
                 "session_origin",
+                "session_class",
                 "session_meta",
                 "privacy_redactions",
             )
@@ -1488,6 +1614,16 @@ def commit_run(run: dict[str, Any], failpoint: str | None = None) -> dict[str, A
             "report.html": report,
             timestamp_name: report,
         }
+        old_facet_paths = sorted((output / "facets").glob("*.json")) if (output / "facets").exists() else []
+        if legacy:
+            legacy_stamp = timestamp_name.removeprefix("report-").removesuffix(".html")
+            legacy_root = f"legacy/{legacy_stamp}"
+            for name in ("state.json", "manifest.json"):
+                path = output / name
+                if path.is_file():
+                    artifacts[f"{legacy_root}/{name}"] = path.read_bytes()
+            for path in old_facet_paths:
+                artifacts[f"{legacy_root}/facets/{path.name}"] = path.read_bytes()
         sessions = {} if legacy else dict(current["sessions"])
         for facet in supplied:
             filename = _facet_filename(facet)
@@ -1504,6 +1640,7 @@ def commit_run(run: dict[str, Any], failpoint: str | None = None) -> dict[str, A
             "meta_schema_version": META_SCHEMA_VERSION,
             "normalizer_version": NORMALIZER_VERSION,
             "facet_prompt_version": FACET_PROMPT_VERSION,
+            "lens_prompt_version": LENS_PROMPT_VERSION,
             "report_schema_version": REPORT_SCHEMA_VERSION,
             "sessions": sessions,
             "coverage": run["inventory"],
@@ -1513,6 +1650,7 @@ def commit_run(run: dict[str, Any], failpoint: str | None = None) -> dict[str, A
         manifest_files = {
             name: hashlib.sha256(data).hexdigest()
             for name, data in sorted(artifacts.items())
+            if not name.startswith("legacy/")
         }
         for entry in sessions.values():
             relative = entry["facet_file"]
@@ -1534,7 +1672,7 @@ def commit_run(run: dict[str, Any], failpoint: str | None = None) -> dict[str, A
             "language": run["language"],
             "report": "report.html",
             "timestamp_report": timestamp_name,
-            "facet_count": len(combined),
+            "facet_count": len(sessions),
             "coverage": run["inventory"],
             "analysis": {
                 "analysis_version": ANALYSIS_VERSION,
@@ -1542,6 +1680,7 @@ def commit_run(run: dict[str, Any], failpoint: str | None = None) -> dict[str, A
                 "normalizer": NORMALIZER_VERSION,
                 "facet_prompt": FACET_PROMPT_VERSION,
                 "facet_schema": FACET_SCHEMA_VERSION,
+                "lens_prompt": LENS_PROMPT_VERSION,
                 "report_schema": REPORT_SCHEMA_VERSION,
             },
             "state_sha256": state_digest,
@@ -1569,6 +1708,21 @@ def commit_run(run: dict[str, Any], failpoint: str | None = None) -> dict[str, A
             installed.append(target)
             if failpoint == "before_state" and relative != "state.json" and index == len(ordered) - 2:
                 raise RuntimeError("injected failure before state commit")
+        referenced = {entry["facet_file"] for entry in sessions.values()}
+        for old_path in old_facet_paths:
+            relative = old_path.relative_to(output).as_posix()
+            if relative in referenced or not old_path.exists():
+                continue
+            saved = backup / ".orphan-facets" / old_path.name
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(old_path, saved)
+            backed_up.append((saved, old_path))
+        actual_facets = {
+            path.relative_to(output).as_posix()
+            for path in (output / "facets").glob("*.json")
+        } if (output / "facets").exists() else set()
+        if actual_facets != referenced:
+            raise InsightsError("facet directory does not match committed state")
         shutil.rmtree(staging, ignore_errors=True)
         shutil.rmtree(backup, ignore_errors=True)
         return {
@@ -1576,7 +1730,7 @@ def commit_run(run: dict[str, Any], failpoint: str | None = None) -> dict[str, A
             "report_path": str(output / "report.html"),
             "timestamp_report_path": str(output / timestamp_name),
             "manifest_path": str(output / "manifest.json"),
-            "facet_count": len(combined),
+            "facet_count": len(sessions),
             "coverage": run["inventory"],
         }
     except Exception:

@@ -511,6 +511,22 @@ def extract_native_session_meta(
     session_id = session_payload.get("id", session_payload.get("session_id", ""))
     project_path = session_payload.get("cwd", session_payload.get("project_path", ""))
     summary = session_payload.get("summary", "")
+    raw_source = session_payload.get("source")
+    explicit_thread_source = session_payload.get("thread_source")
+    if isinstance(explicit_thread_source, str):
+        thread_source = explicit_thread_source.casefold()
+    elif isinstance(raw_source, Mapping):
+        thread_source = next(
+            (
+                name
+                for name in ("user", "subagent", "automation")
+                if name in raw_source
+            ),
+            "",
+        )
+    else:
+        thread_source = ""
+    source_kind = raw_source if isinstance(raw_source, str) else thread_source
 
     return {
         "session_id": str(session_id),
@@ -554,7 +570,32 @@ def extract_native_session_meta(
         "message_hours": dict(sorted(message_hours.items())),
         "user_message_timestamps": user_message_timestamps,
         "origin": str(origin),
+        # Keep only classification inputs.  Parent IDs and nested subagent
+        # metadata are intentionally reduced to a boolean before persistence.
+        "thread_source": thread_source,
+        "source_kind": str(source_kind or ""),
+        "originator": str(session_payload.get("originator", "")),
+        "forked": bool(session_payload.get("forked_from_id")),
     }
+
+
+def classify_session_origin(meta: Mapping[str, Any]) -> str:
+    """Classify a Codex transcript without treating workers as user sessions."""
+
+    thread_source = str(meta.get("thread_source", "")).strip().casefold()
+    source_kind = str(meta.get("source_kind", "")).strip().casefold()
+    originator = str(meta.get("originator", "")).strip().casefold()
+    if bool(meta.get("forked")) or thread_source == "subagent" or source_kind == "subagent":
+        return "subagent"
+    if thread_source == "automation" or source_kind == "automation" or any(
+        marker in originator for marker in ("scheduled", "automation")
+    ):
+        return "automation"
+    if source_kind in {"codex_exec", "exec"} or originator in {"codex_exec", "exec"}:
+        return "headless"
+    if thread_source == "user":
+        return "primary"
+    return "legacy_primary"
 
 
 def compute_source_fingerprint(rows: Iterable[Mapping[str, Any]]) -> str:
@@ -636,6 +677,7 @@ def detect_multi_clauding(
 
 
 __all__ = [
+    "classify_session_origin",
     "compute_source_fingerprint",
     "detect_multi_clauding",
     "extract_native_session_meta",
