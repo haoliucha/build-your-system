@@ -10,18 +10,18 @@ function prepareProfileCopy(env = process.env, fsModule = fs) {
   const policy = assertIndependentProfile(env);
   let sourceStat;
   try {
-    sourceStat = fsModule.statSync(policy.sourceProfileDir);
+    sourceStat = fsModule.statSync(policy.sourceCanonicalPath);
   } catch {
     throw new Error('SOURCE_PROFILE_DIR must be an existing directory');
   }
   if (!sourceStat.isDirectory()) throw new Error('SOURCE_PROFILE_DIR must be an existing directory');
   if (fsModule.existsSync(policy.profileDir)) throw new Error('PROFILE_DIR already exists; refusing to overwrite');
-  fsModule.cpSync(policy.sourceProfileDir, policy.profileDir, {
+  fsModule.cpSync(policy.sourceCanonicalPath, policy.profileDir, {
     recursive: true,
     force: false,
     errorOnExist: true,
   });
-  return policy;
+  return assertIndependentProfile(env);
 }
 
 if (require.main === module) {

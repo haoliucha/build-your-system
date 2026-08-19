@@ -160,7 +160,7 @@ bash run.sh
 ## 5. 测试
 
 ```bash
-node tests/run-tests.cjs      # 纯逻辑 + 离线集成，141 项，无需浏览器
+node tests/run-tests.cjs      # 纯逻辑 + 离线集成，164 项，无需浏览器
 ```
 
 覆盖:`parseCount`(万/亿/K/M/B/逗号/异常)、`isCryptoHandle`、`decide` 全部判定分支与顺序、`backoffMs` 退避表 + 封顶、`buildSkipSet` 并集去重、`classifyAnomaly`(尤其 **推文正文不误触发** 这条核心修复)、`build-queue` 的 followed∪rejected 跳过 + 币圈开关。

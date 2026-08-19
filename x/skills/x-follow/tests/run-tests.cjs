@@ -231,6 +231,24 @@ test('NOCRYPTO=0 keeps crypto handle', () => {
   const d = fixtureDir();
   assert.deepStrictEqual(runBuildQueue(d, '0').sort(), ['BTCwhale', 'carol', 'dave']);
 });
+test('tracker handles skip candidates case-insensitively', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-case-skip-'));
+  fs.writeFileSync(path.join(d, 'tracker.json'), JSON.stringify({
+    followed: [], rejected: [{ h: 'Charlie', r: 'pre_existing_follow' }],
+  }));
+  fs.writeFileSync(path.join(d, 'cand-01.json'), JSON.stringify({
+    items: [{ handle: 'charlie' }, { handle: 'Delta' }],
+  }));
+  assert.deepStrictEqual(runBuildQueue(d, '0'), ['Delta']);
+});
+test('candidate handles dedupe case-insensitively while preserving the first spelling', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-case-dedup-'));
+  fs.writeFileSync(path.join(d, 'tracker.json'), JSON.stringify({ followed: [], rejected: [] }));
+  fs.writeFileSync(path.join(d, 'cand-01.json'), JSON.stringify({
+    items: [{ handle: 'MiXeD' }, { handle: 'mixed' }, { handle: 'MIXED' }],
+  }));
+  assert.deepStrictEqual(runBuildQueue(d, '0'), ['MiXeD']);
+});
 
 group('build-queue.cjs DROP_NONBLUE (pre-filter non-verified before campaign)');
 function runBuildQueueEnv(dir, env) {
@@ -593,11 +611,236 @@ test('run.sh TERM forwards to its active inherited worker before releasing the o
   });
 });
 
+test('run.sh queues TERM delivered after fork but before recording the child PID', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-fork-window-'));
+  const fakeBin = path.join(root, 'bin');
+  const dataDir = path.join(root, 'data');
+  const jobDir = path.join(dataDir, 'runs', 'fork-window');
+  const source = path.join(root, 'source-profile');
+  const profile = path.join(root, 'campaign-profile');
+  const bashEnv = path.join(root, 'bash-env');
+  const childPidPath = path.join(root, 'child.pid');
+  const heartbeatPath = path.join(root, 'heartbeat');
+  fs.mkdirSync(fakeBin);
+  fs.mkdirSync(source);
+  fs.mkdirSync(profile);
+  fs.writeFileSync(path.join(fakeBin, 'node'), [
+    '#!/bin/sh',
+    'case "$1" in',
+    '  */smoke-test.cjs) exec "$REAL_NODE" -e \'const fs=require("fs"); setInterval(()=>fs.appendFileSync(process.env.TEST_HEARTBEAT_PATH,"."),20)\' ;;',
+    'esac',
+    'exec "$REAL_NODE" "$@"',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(fakeBin, 'pkill'), '#!/bin/sh\nexit 1\n');
+  fs.writeFileSync(bashEnv, [
+    'set -T',
+    'trap \'if [[ "$BASH_COMMAND" == worker_pid=* ]]; then trap - DEBUG; printf "%s\\n" "$!" > "$TEST_CHILD_PID_PATH"; kill -TERM "$$"; fi\' DEBUG',
+    '',
+  ].join('\n'));
+  for (const file of ['node', 'pkill']) fs.chmodSync(path.join(fakeBin, file), 0o755);
+
+  const coordinator = `
+    const fs = require('fs');
+    const path = require('path');
+    const { spawn } = require('child_process');
+    const [runSh, fakeBin, dataDir, jobDir, source, profile, bashEnv, childPidPath, heartbeatPath, realNode] = process.argv.slice(1);
+    const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    (async () => {
+      const owner = spawn('bash', [runSh], {
+        env: {
+          ...process.env,
+          BASH_ENV: bashEnv,
+          PATH: fakeBin + path.delimiter + process.env.PATH,
+          REAL_NODE: realNode,
+          TEST_CHILD_PID_PATH: childPidPath,
+          TEST_HEARTBEAT_PATH: heartbeatPath,
+          TARGET: '0',
+          X_FOLLOW_DATA_DIR: dataDir,
+          X_FOLLOW_RUN_ID: 'fork-window',
+          JOB_DIR: jobDir,
+          SOURCE_PROFILE_DIR: source,
+          PROFILE_DIR: profile,
+        },
+        stdio: 'ignore',
+      });
+      const ownerExit = await Promise.race([
+        new Promise(resolve => owner.once('exit', (code, signal) => resolve({ code, signal }))),
+        delay(3000).then(() => null),
+      ]);
+      if (!ownerExit) owner.kill('SIGKILL');
+      let childPid = 0;
+      for (let i = 0; i < 50; i++) {
+        if (fs.existsSync(childPidPath)) { childPid = Number(fs.readFileSync(childPidPath, 'utf8').trim()); break; }
+        await delay(10);
+      }
+      const sizeBefore = fs.existsSync(heartbeatPath) ? fs.statSync(heartbeatPath).size : 0;
+      await delay(120);
+      const sizeAfter = fs.existsSync(heartbeatPath) ? fs.statSync(heartbeatPath).size : 0;
+      const childAlive = childPid > 0 && alive(childPid);
+      if (childAlive) process.kill(childPid, 'SIGKILL');
+      process.stdout.write(JSON.stringify({ ownerExit, childPidRecorded: childPid > 0, childAlive, heartbeatStopped: sizeBefore === sizeAfter }));
+    })().catch(error => { process.stderr.write(error.stack + '\\n'); process.exit(1); });
+  `;
+  const observed = JSON.parse(execFileSync(process.execPath, [
+    '-e', coordinator, path.join(__dirname, '..', 'run.sh'), fakeBin, dataDir, jobDir,
+    source, profile, bashEnv, childPidPath, heartbeatPath, process.execPath,
+  ], { encoding: 'utf8', timeout: 10000 }));
+  assert.deepStrictEqual(observed, {
+    ownerExit: { code: 143, signal: null },
+    childPidRecorded: true,
+    childAlive: false,
+    heartbeatStopped: true,
+  });
+});
+
+function runInterruptibleWaitScenario(waitSeconds, state) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), `xf-run-wait-${state}-`));
+  const fakeBin = path.join(root, 'bin');
+  const dataDir = path.join(root, 'data');
+  const jobDir = path.join(dataDir, 'runs', state);
+  const source = path.join(root, 'source-profile');
+  const profile = path.join(root, 'campaign-profile');
+  const childPidPath = path.join(root, 'sleep.pid');
+  const exitPath = path.join(root, 'sleep-exit');
+  const heartbeatPath = path.join(root, 'sleep-heartbeat');
+  fs.mkdirSync(fakeBin);
+  fs.mkdirSync(source);
+  fs.mkdirSync(profile);
+  fs.writeFileSync(path.join(fakeBin, 'node'), [
+    '#!/bin/sh',
+    'case "$1" in',
+    '  */smoke-test.cjs) exit 0 ;;',
+    '  */harvest.cjs)',
+    '    if [ "$TEST_WAIT_STATE" = cooldown ]; then printf \'{"count":0,"rateLimited":true,"items":[]}\\n\';',
+    '    else printf \'{"count":1,"rateLimited":false,"items":[{"handle":"Alpha","blue":true}]}\\n\'; fi',
+    '    exit 0 ;;',
+    '  */build-queue.cjs)',
+    '    if [ "$TEST_WAIT_STATE" = cooldown ]; then printf \'[]\' > "$JOB_DIR/queue.json";',
+    '    else printf \'["Alpha"]\' > "$JOB_DIR/queue.json"; fi',
+    '    exit 0 ;;',
+    '  */campaign.cjs) exit 99 ;;',
+    '  */verify-follows.cjs) printf \'{"failed":[]}\\n\'; exit 0 ;;',
+    'esac',
+    'exec "$REAL_NODE" "$@"',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(fakeBin, 'pkill'), '#!/bin/sh\nexit 1\n');
+  fs.writeFileSync(path.join(fakeBin, 'sleep'), [
+    '#!/bin/sh',
+    'if [ "$1" != "$TEST_SIGNAL_SLEEP_SECONDS" ]; then exit 0; fi',
+    'printf "%s\\n" "$$" > "$TEST_CHILD_PID_PATH"',
+    'trap \'touch "$TEST_EXIT_PATH"; exit 0\' TERM INT',
+    'kill -TERM "$PPID"',
+    'i=0',
+    'while [ "$i" -lt 60 ]; do printf . >> "$TEST_HEARTBEAT_PATH"; /bin/sleep 0.02; i=$((i + 1)); done',
+    '',
+  ].join('\n'));
+  for (const file of ['node', 'pkill', 'sleep']) fs.chmodSync(path.join(fakeBin, file), 0o755);
+  const started = Date.now();
+  const result = spawnSync('bash', [path.join(__dirname, '..', 'run.sh')], {
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH}`,
+      REAL_NODE: process.execPath,
+      TEST_WAIT_STATE: state,
+      TEST_SIGNAL_SLEEP_SECONDS: String(waitSeconds),
+      TEST_CHILD_PID_PATH: childPidPath,
+      TEST_EXIT_PATH: exitPath,
+      TEST_HEARTBEAT_PATH: heartbeatPath,
+      TARGET: state === 'cleanup' ? '0' : '1',
+      CAND_MULT: '1',
+      POOL_MIN_GAIN: '1',
+      ROUND_COOLDOWN_RL_S: '300',
+      X_FOLLOW_DATA_DIR: dataDir,
+      X_FOLLOW_RUN_ID: state,
+      JOB_DIR: jobDir,
+      SOURCE_PROFILE_DIR: source,
+      PROFILE_DIR: profile,
+    },
+    encoding: 'utf8', timeout: 5000,
+  });
+  const elapsed = Date.now() - started;
+  const childPid = fs.existsSync(childPidPath) ? Number(fs.readFileSync(childPidPath, 'utf8').trim()) : 0;
+  const alive = childPid > 0 && (() => { try { process.kill(childPid, 0); return true; } catch { return false; } })();
+  if (alive) process.kill(childPid, 'SIGKILL');
+  return { result, elapsed, childPid, alive, exitPath, heartbeatPath };
+}
+
+for (const [name, seconds, state] of [
+  ['cleanup wait without an X-facing worker', 1, 'cleanup'],
+  ['rate-limit cooldown', 300, 'cooldown'],
+  ['transient retry pause', 20, 'transient'],
+]) {
+  test(`run.sh TERM interrupts the ${name} promptly`, () => {
+    const observed = runInterruptibleWaitScenario(seconds, state);
+    assert.strictEqual(observed.result.status, 143, observed.result.stderr + observed.result.stdout);
+    assert.ok(observed.childPid > 0, `${state}: sleep child must be observed`);
+    assert.ok(observed.elapsed < 800, `${state}: owner took ${observed.elapsed}ms to exit`);
+    assert.strictEqual(observed.alive, false, `${state}: sleep child still active`);
+    assert.ok(fs.existsSync(observed.exitPath), `${state}: sleep child did not receive TERM`);
+  });
+}
+
+for (const handoff of ['pid-file-only', 'lock-and-pid']) {
+  test(`run.sh old owner preserves replacement run.pid after ${handoff} handoff`, () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `xf-run-pid-handoff-${handoff}-`));
+    const fakeBin = path.join(root, 'bin');
+    const dataDir = path.join(root, 'data');
+    const jobDir = path.join(dataDir, 'runs', 'handoff');
+    const source = path.join(root, 'source-profile');
+    const profile = path.join(root, 'campaign-profile');
+    fs.mkdirSync(fakeBin);
+    fs.mkdirSync(source);
+    fs.mkdirSync(profile);
+    fs.writeFileSync(path.join(fakeBin, 'node'), [
+      '#!/bin/sh',
+      'case "$1" in',
+      '  */smoke-test.cjs)',
+      '    exec "$REAL_NODE" -e \'',
+      '      const fs=require("fs"), path=require("path");',
+      '      const pid=Number(process.env.TEST_REPLACEMENT_PID);',
+      '      fs.writeFileSync(path.join(process.env.JOB_DIR,"run.pid"), String(pid)+"\\n");',
+      '      if(process.env.TEST_HANDOFF==="lock-and-pid") fs.writeFileSync(path.join(process.env.X_FOLLOW_DATA_DIR,"network-run.lock","owner.json"), JSON.stringify({pid,token:"replacement",jobDir:"/replacement",startedAt:new Date().toISOString()}));',
+      '      process.exit(7);',
+      '    \' ;;',
+      'esac',
+      'exec "$REAL_NODE" "$@"',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(fakeBin, 'pkill'), '#!/bin/sh\nexit 1\n');
+    fs.writeFileSync(path.join(fakeBin, 'sleep'), '#!/bin/sh\nexit 0\n');
+    for (const file of ['node', 'pkill', 'sleep']) fs.chmodSync(path.join(fakeBin, file), 0o755);
+    const result = spawnSync('bash', [path.join(__dirname, '..', 'run.sh')], {
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        REAL_NODE: process.execPath,
+        TEST_REPLACEMENT_PID: String(process.pid),
+        TEST_HANDOFF: handoff,
+        TARGET: '0',
+        X_FOLLOW_DATA_DIR: dataDir,
+        X_FOLLOW_RUN_ID: 'handoff',
+        JOB_DIR: jobDir,
+        SOURCE_PROFILE_DIR: source,
+        PROFILE_DIR: profile,
+      },
+      encoding: 'utf8', timeout: 5000,
+    });
+    assert.strictEqual(result.status, 7, result.stderr + result.stdout);
+    assert.strictEqual(fs.readFileSync(path.join(jobDir, 'run.pid'), 'utf8'), `${process.pid}\n`);
+    if (handoff === 'pid-file-only') assert.ok(!fs.existsSync(path.join(dataDir, 'network-run.lock')));
+    else assert.strictEqual(inspectLock(path.join(dataDir, 'network-run.lock')).record.token, 'replacement');
+  });
+}
+
 test('run.sh routes every X-facing Node launch through the recorded-PID wrapper', () => {
   const run = fs.readFileSync(path.join(__dirname, '..', 'run.sh'), 'utf8');
   const lines = run.split('\n');
   const expected = new Map([
     ['smoke-test.cjs', 1],
+    ['snapshot-following.cjs', 1],
     ['harvest.cjs', 1],
     ['campaign.cjs', 2],
     ['verify-follows.cjs', 1],
@@ -613,6 +856,7 @@ test('run.sh routes every X-facing Node launch through the recorded-PID wrapper'
   assert.match(handler, /worker_pid="\$CURRENT_X_WORKER_PID"/);
   assert.match(handler, /kill -s "\$signal" "\$worker_pid"/);
   assert.doesNotMatch(handler, /pkill|kill\s+-9/);
+  assert.doesNotMatch(run, /(?:^|[;&]\s*)sleep\s+(?:1|20|"\$ROUND_COOLDOWN_RL_S")/m);
 });
 
 test('owner schema rejects empty, incomplete, and wrong-type JSON without stale recovery', () => {
@@ -1012,6 +1256,20 @@ test('profile copy copies an independent existing source into a new target', () 
   assert.strictEqual(result.status, 0, result.stderr);
   assert.strictEqual(fs.readFileSync(path.join(target, 'nested', 'cookie'), 'utf8'), 'preserved');
 });
+test('profile copy dereferences a symlink source into an independent real target directory', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-profile-copy-source-link-'));
+  const realSource = path.join(root, 'real-source');
+  const sourceLink = path.join(root, 'source-link');
+  const target = path.join(root, 'campaign-copy');
+  fs.mkdirSync(path.join(realSource, 'nested'), { recursive: true });
+  fs.writeFileSync(path.join(realSource, 'nested', 'cookie'), 'preserved');
+  fs.symlinkSync(realSource, sourceLink);
+  const result = runProfileCopy(sourceLink, target);
+  assert.strictEqual(result.status, 0, result.stderr);
+  assert.ok(fs.lstatSync(target).isDirectory(), 'target must be a real directory, not a symlink');
+  assert.notStrictEqual(fs.realpathSync(target), fs.realpathSync(sourceLink));
+  assert.strictEqual(fs.readFileSync(path.join(target, 'nested', 'cookie'), 'utf8'), 'preserved');
+});
 test('all x-follow profile-copy guidance uses the guarded entry and never raw cp -R', () => {
   const docs = [
     path.join(__dirname, '..', 'SKILL.md'),
@@ -1281,10 +1539,104 @@ test('README stop and empty BIO_BLACKLIST guidance matches safe runtime behavior
   assert.doesNotMatch(readme, /空串会回退默认词表故用占位 token/);
   assert.match(readme, /BIO_BLACKLIST.*空串.*空黑名单/);
 });
+test('README reports the final offline test count', () => {
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+  assert.match(readme, /纯逻辑 \+ 离线集成，164 项，无需浏览器/);
+});
 
 group('Skill manual workflow static contract');
 group('pre-existing following merge');
 const preExistingMergeScript = path.join(SCRIPTS, 'merge-pre-existing.cjs');
+
+function runAutomaticSnapshotScenario(mode, myHandle = 'Me') {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), `xf-auto-snapshot-${mode}-`));
+  const fakeBin = path.join(root, 'bin');
+  const dataDir = path.join(root, 'data');
+  const jobDir = path.join(dataDir, 'runs', mode);
+  const source = path.join(root, 'source-profile');
+  const profile = path.join(root, 'campaign-profile');
+  const snapshotCalled = path.join(root, 'snapshot-called');
+  fs.mkdirSync(fakeBin);
+  fs.mkdirSync(source);
+  fs.mkdirSync(profile);
+  fs.writeFileSync(path.join(fakeBin, 'node'), [
+    '#!/bin/sh',
+    'case "$1" in',
+    '  */smoke-test.cjs) exit 0 ;;',
+    '  */snapshot-following.cjs)',
+    '    touch "$TEST_SNAPSHOT_CALLED"',
+    '    case "$TEST_SNAPSHOT_MODE" in',
+    '      valid) printf \'{"count":2,"handles":["Existing","EXISTING"]}\\n\'; exit 0 ;;',
+    '      fail) printf \'{"partial":\'; exit 7 ;;',
+    '      invalid) printf \'{"handles":"wrong"}\\n\'; exit 0 ;;',
+    '    esac ;;',
+    '  */verify-follows.cjs) printf \'{"failed":[]}\\n\'; exit 0 ;;',
+    'esac',
+    'exec "$REAL_NODE" "$@"',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(fakeBin, 'pkill'), '#!/bin/sh\nexit 1\n');
+  fs.writeFileSync(path.join(fakeBin, 'sleep'), '#!/bin/sh\nexit 0\n');
+  for (const file of ['node', 'pkill', 'sleep']) fs.chmodSync(path.join(fakeBin, file), 0o755);
+  const result = spawnSync('bash', [path.join(__dirname, '..', 'run.sh')], {
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH}`,
+      REAL_NODE: process.execPath,
+      TEST_SNAPSHOT_MODE: mode,
+      TEST_SNAPSHOT_CALLED: snapshotCalled,
+      TARGET: '0',
+      MY_HANDLE: myHandle,
+      X_FOLLOW_DATA_DIR: dataDir,
+      X_FOLLOW_RUN_ID: mode,
+      JOB_DIR: jobDir,
+      SOURCE_PROFILE_DIR: source,
+      PROFILE_DIR: profile,
+    },
+    encoding: 'utf8', timeout: 5000,
+  });
+  const trackerPath = path.join(jobDir, 'tracker.json');
+  const snapshotPath = path.join(jobDir, 'my-following.json');
+  const temporary = fs.existsSync(jobDir)
+    ? fs.readdirSync(jobDir).filter(name => /^\.my-following\..*\.tmp$/.test(name))
+    : [];
+  return { result, trackerPath, snapshotPath, snapshotCalled, temporary };
+}
+
+test('recommended runner snapshots and merges pre-existing follows before queue work', () => {
+  const observed = runAutomaticSnapshotScenario('valid');
+  assert.strictEqual(observed.result.status, 0, observed.result.stderr + observed.result.stdout);
+  assert.ok(fs.existsSync(observed.snapshotCalled));
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(observed.snapshotPath, 'utf8')), {
+    count: 2, handles: ['Existing', 'EXISTING'],
+  });
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(observed.trackerPath, 'utf8')).rejected, [
+    { h: 'Existing', r: 'pre_existing_follow' },
+  ]);
+  assert.deepStrictEqual(observed.temporary, []);
+});
+
+for (const [mode, expectedStatus] of [['fail', 7], ['invalid', 2]]) {
+  test(`recommended runner fails closed and preserves tracker for ${mode} snapshot output`, () => {
+    const observed = runAutomaticSnapshotScenario(mode);
+    assert.strictEqual(observed.result.status, expectedStatus, observed.result.stderr + observed.result.stdout);
+    assert.ok(fs.existsSync(observed.snapshotCalled));
+    assert.ok(!fs.existsSync(observed.snapshotPath));
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(observed.trackerPath, 'utf8')), {
+      followed: [], rejected: [], stats: { profiles_checked: 0, follow_success: 0 },
+    });
+    assert.deepStrictEqual(observed.temporary, []);
+  });
+}
+
+test('recommended runner does not snapshot when MY_HANDLE is empty', () => {
+  const observed = runAutomaticSnapshotScenario('valid', '');
+  assert.strictEqual(observed.result.status, 0, observed.result.stderr + observed.result.stdout);
+  assert.ok(!fs.existsSync(observed.snapshotCalled));
+  assert.ok(!fs.existsSync(observed.snapshotPath));
+  assert.deepStrictEqual(observed.temporary, []);
+});
+
 test('snapshot merge preserves tracker fields and case-insensitively adds only new valid handles', () => {
   const { mergePreExisting } = require(preExistingMergeScript);
   const tracker = {

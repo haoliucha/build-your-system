@@ -142,16 +142,45 @@ export X_FOLLOW_NETWORK_LOCK="$NETWORK_LOCK" X_FOLLOW_NETWORK_LOCK_TOKEN="$LOCK_
 
 # Write own PID so callers can stop the whole process tree reliably.
 echo $$ > "$PID_FILE"
+SNAPSHOT_TMP=""
 release_run_lock() {
+  if [ -n "$SNAPSHOT_TMP" ]; then rm -f -- "$SNAPSHOT_TMP"; fi
+  RUN_PID_FILE="$PID_FILE" RUN_OWNER_PID="$$" RUN_LOCK_TOKEN="$LOCK_TOKEN" node -e '
+    const fs = require("fs");
+    const { readLock } = require(process.argv[1]);
+    try {
+      const ownerPid = Number(process.env.RUN_OWNER_PID);
+      const owner = readLock(process.argv[2]);
+      const pidFileOwner = fs.readFileSync(process.env.RUN_PID_FILE, "utf8").trim();
+      if (owner && owner.pid === ownerPid && owner.token === process.env.RUN_LOCK_TOKEN
+        && pidFileOwner === String(ownerPid)) fs.unlinkSync(process.env.RUN_PID_FILE);
+    } catch {}
+  ' "$SCRIPTS/lib/run-lock.cjs" "$NETWORK_LOCK" >/dev/null 2>&1 || true
   node "$SCRIPTS/lib/run-lock.cjs" release "$NETWORK_LOCK" "$LOCK_TOKEN" "$$" >/dev/null 2>&1 || true
-  rm -f "$PID_FILE"
 }
 CURRENT_X_WORKER_PID=""
+PENDING_X_SIGNAL=""
+PENDING_X_EXIT_CODE=""
+record_pending_signal() {
+  if [ -z "$PENDING_X_SIGNAL" ]; then
+    PENDING_X_SIGNAL="$1"
+    PENDING_X_EXIT_CODE="$2"
+  fi
+}
 run_x_worker() {
   local worker_pid code
+  PENDING_X_SIGNAL=""
+  PENDING_X_EXIT_CODE=""
+  trap 'record_pending_signal INT 130' INT
+  trap 'record_pending_signal TERM 143' TERM
   "$@" &
   worker_pid=$!
   CURRENT_X_WORKER_PID="$worker_pid"
+  trap 'forward_worker_signal INT 130' INT
+  trap 'forward_worker_signal TERM 143' TERM
+  if [ -n "$PENDING_X_SIGNAL" ]; then
+    forward_worker_signal "$PENDING_X_SIGNAL" "$PENDING_X_EXIT_CODE"
+  fi
   wait "$worker_pid"
   code=$?
   if [ "$CURRENT_X_WORKER_PID" = "$worker_pid" ]; then CURRENT_X_WORKER_PID=""; fi
@@ -159,9 +188,10 @@ run_x_worker() {
 }
 forward_worker_signal() {
   local signal="$1" code="$2" worker_pid="$CURRENT_X_WORKER_PID"
-  # A second signal must not terminate the owner while it is waiting for the inherited
-  # worker's identity cleanup. Only the exact unreaped child recorded from `$!` is targeted.
-  trap '' INT TERM
+  # While waiting for cleanup, later signals are recorded rather than ignored or allowed to
+  # re-enter this handler. Only the exact unreaped child recorded from `$!` is targeted.
+  trap 'record_pending_signal INT 130' INT
+  trap 'record_pending_signal TERM 143' TERM
   if [[ "$worker_pid" =~ ^[0-9]+$ ]]; then
     kill -s "$signal" "$worker_pid" 2>/dev/null || true
     wait "$worker_pid" 2>/dev/null || true
@@ -179,7 +209,7 @@ followed() {
   ' 2>/dev/null || echo 0
 }
 
-cleanup_locks() { pkill -9 -f "user-data-dir=$PROFILE_DIR" 2>/dev/null; rm -f "$PROFILE_DIR"/Singleton* 2>/dev/null; sleep 1; }
+cleanup_locks() { pkill -9 -f "user-data-dir=$PROFILE_DIR" 2>/dev/null; rm -f "$PROFILE_DIR"/Singleton* 2>/dev/null; run_x_worker sleep 1; }
 
 # ---- Phase 0: profile ------------------------------------------------------
 if [ ! -d "$PROFILE_DIR" ]; then
@@ -209,6 +239,43 @@ cleanup_locks
 # SKIP_GLOB on every queue build, automatically reclaiming误杀的瞬时错误 + 过期阈值拒绝.
 if [ ! -f "$TRACKER" ]; then
   node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({followed:[],rejected:[],stats:{profiles_checked:0,follow_success:0}}))' "$TRACKER"
+fi
+if [ -n "$MY_HANDLE" ]; then
+  SNAPSHOT_TMP="$JOB_DIR/.my-following.$$.$RANDOM.tmp"
+  run_x_worker env PROFILE_DIR="$PROFILE_DIR" node "$SCRIPTS/snapshot-following.cjs" "$MY_HANDLE" >"$SNAPSHOT_TMP"
+  SNAPSHOT_CODE=$?
+  if [ "$SNAPSHOT_CODE" -ne 0 ]; then
+    rm -f -- "$SNAPSHOT_TMP"
+    SNAPSHOT_TMP=""
+    say "snapshot-following failed (exit $SNAPSHOT_CODE) — refusing to build a queue"
+    exit "$SNAPSHOT_CODE"
+  fi
+  node -e '
+    try {
+      const snapshot = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+      if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.handles)) throw new Error("handles must be an array");
+    } catch (error) {
+      process.stderr.write(`FATAL: invalid following snapshot: ${error.message}\n`);
+      process.exit(2);
+    }
+  ' "$SNAPSHOT_TMP"
+  SNAPSHOT_CODE=$?
+  if [ "$SNAPSHOT_CODE" -ne 0 ]; then
+    rm -f -- "$SNAPSHOT_TMP"
+    SNAPSHOT_TMP=""
+    exit "$SNAPSHOT_CODE"
+  fi
+  mv "$SNAPSHOT_TMP" "$JOB_DIR/my-following.json"
+  SNAPSHOT_CODE=$?
+  if [ "$SNAPSHOT_CODE" -ne 0 ]; then
+    rm -f -- "$SNAPSHOT_TMP"
+    SNAPSHOT_TMP=""
+    exit "$SNAPSHOT_CODE"
+  fi
+  SNAPSHOT_TMP=""
+  node "$SCRIPTS/merge-pre-existing.cjs" "$JOB_DIR/my-following.json" "$TRACKER"
+  SNAPSHOT_CODE=$?
+  if [ "$SNAPSHOT_CODE" -ne 0 ]; then exit "$SNAPSHOT_CODE"; fi
 fi
 SKIP_N=$(SKIP_GLOB="$SKIP_GLOB" SOFT_TTL_DAYS="$SOFT_TTL_DAYS" FERS_MAX="$FERS_MAX" FOLLOW_RATIO_MIN="$FOLLOW_RATIO_MIN" node -e '
   const {buildSkipSetFromPaths}=require(process.argv[1]);
@@ -286,7 +353,7 @@ while [ "$(followed)" -lt "$TARGET" ]; do
           status halted_rl "rate-limited at $(followed)/$TARGET"
           break
         fi
-        sleep "$ROUND_COOLDOWN_RL_S"
+        run_x_worker sleep "$ROUND_COOLDOWN_RL_S"
         continue
       fi
       # Pool-exhaustion guard: a clean (non-429) harvest that still yields almost nothing means
@@ -319,7 +386,7 @@ while [ "$(followed)" -lt "$TARGET" ]; do
     10|11|12|13|14)
       say "!!! ANOMALY (exit $code) — HALT. See $ALERT. Not operating the account further."
       exit "$code" ;;
-    *) say "transient exit=$code — pausing 20s then retrying"; sleep 20 ;;
+    *) say "transient exit=$code — pausing 20s then retrying"; run_x_worker sleep 20 ;;
   esac
 done
 

@@ -68,18 +68,19 @@ catch (error) { process.stderr.write(`FATAL: failed to expand SKIP_GLOB: ${error
 const fromGlob = buildSkipSetFromPaths(paths, skipOpts);
 skipHandles = skipHandles.concat(fromGlob);
 process.stderr.write(`[build-queue] skip-glob trackers=${paths.length} released=${JSON.stringify(skipStats)}\n`);
-const skip = new Set(skipHandles);
+const skip = new Set(skipHandles.map((handle) => String(handle).toLowerCase()));
 
 const seen = new Set();
 const queue = [];
 const stats = { raw: 0, dup: 0, inSkip: 0, crypto: 0, nonblue: 0, kept: 0 };
 // `trusted` skips the blue filter (priority handles have no blue flag but are pre-qualified).
 const push = (h, blue, trusted) => {
-  if (!h || !/^[A-Za-z0-9_]+$/.test(h)) return;
+  if (typeof h !== 'string' || !/^[A-Za-z0-9_]+$/.test(h)) return;
+  const key = h.toLowerCase();
   stats.raw++;
-  if (seen.has(h)) { stats.dup++; return; }
-  seen.add(h);
-  if (skip.has(h)) { stats.inSkip++; return; }
+  if (seen.has(key)) { stats.dup++; return; }
+  seen.add(key);
+  if (skip.has(key)) { stats.inSkip++; return; }
   if (NOCRYPTO && isCryptoHandle(h)) { stats.crypto++; return; }
   if (DROP_NONBLUE && !trusted && blue === false) { stats.nonblue++; return; }
   queue.push(h); stats.kept++;
