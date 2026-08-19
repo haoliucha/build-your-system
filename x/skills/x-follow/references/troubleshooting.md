@@ -10,9 +10,9 @@
 
 **修复**:
 ```bash
-rm -f "$PROFILE_DIR"/{SingletonLock,SingletonCookie,SingletonSocket}
-# 确认没有其他 Chrome 进程占用同 profile dir
-ps aux | grep -i chrome | grep -i playwright-chrome-profile
+# 关闭占用副本的浏览器后，直接重跑 run.sh。
+# 它会先通过 canonical 门禁与 network-run.lock，再安全处理副本的 Singleton。
+# 手动调试也先经过同一门禁；不要手工清理 Singleton。
 ```
 
 ---
@@ -218,14 +218,15 @@ const VERIFY_JS = `(async () => { ... })()`;
 
 ```bash
 SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
-PROFILE_DIR=~/.config/playwright-chrome-profile-campaign
+PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
+export SOURCE_PROFILE_DIR PROFILE_DIR
 X_FOLLOW_DATA_DIR=~/.config/x-follow-data
 
 # 1. 复制(保留 cookies/history/localStorage)
 cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"
 
-# 2. 删除 singleton 锁(必须)
-rm -f "$PROFILE_DIR"/SingletonLock "$PROFILE_DIR"/SingletonCookie "$PROFILE_DIR"/SingletonSocket
+# 2. 直接运行 run.sh；通过 canonical 门禁与 network-run.lock 后，它才安全处理副本 Singleton。
+# 手动调试也先走同一门禁，不手工清理。
 
 # 3. 校验
 ls -la "$PROFILE_DIR"/Cookies > /dev/null || { echo "ERR: no cookies"; exit 1; }

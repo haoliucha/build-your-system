@@ -43,9 +43,14 @@ RED 的任何一项 → 拒绝启动 campaign。
 **永远复用**用户已登录 + 浏览过的 profile。不要让脚本自己 login。
 
 复用步骤:
-1. `SOURCE_PROFILE_DIR` 优先（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`），默认 `~/.config/playwright-chrome-profile`；`PROFILE_DIR` 默认 `~/.config/playwright-chrome-profile-campaign`。
+1. 定义并导出 `SOURCE_PROFILE_DIR`（优先；兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`，默认 `~/.config/playwright-chrome-profile`）和 `PROFILE_DIR`（默认 `~/.config/playwright-chrome-profile-campaign`）：
+   ```bash
+   SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
+   PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
+   export SOURCE_PROFILE_DIR PROFILE_DIR
+   ```
 2. `cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"` (复制,保留 cookies/history/localStorage)
-3. `rm -f "$PROFILE_DIR"/{SingletonLock,SingletonCookie,SingletonSocket}` (必须,否则 Chrome 拒启)
+3. 复制后直接运行 `run.sh`；它在 canonical 门禁和 `network-run.lock` 通过后才安全处理副本的 Singleton。手动调试也必须先经同一门禁，不能手工清理。
 4. 启动时指定 `--user-data-dir=$PROFILE_DIR`，只在独立副本上运行。
 5. 工作流**不自动清理 profile**。关闭浏览器后，由用户核对 `PROFILE_DIR` 的 canonical path 与 `SOURCE_PROFILE_DIR` 不同，再通过 Finder/废纸篓等可恢复方式处理。
 

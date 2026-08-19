@@ -118,13 +118,14 @@ quiet_hours: []                   # [2,7] = 凌晨 2-7 点暂停
 # 1. 从原始登录态复制到独立 campaign 目录；后续只使用 PROFILE_DIR
 SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
 PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
+export SOURCE_PROFILE_DIR PROFILE_DIR
 cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"
 
-# 2. 删 lock 文件(必须,否则 Chrome 启动失败)
-rm -f "$PROFILE_DIR"/{SingletonLock,SingletonCookie,SingletonSocket}
+# 2. 复制后直接运行 run.sh；它在同一 canonical 门禁和 network-run.lock 通过后
+#    才安全处理副本的 Singleton。手动调试也必须先经过该门禁，不能手工删除。
 
 # 3. 跑 smoke test(6 项指纹/登录态检查,RED 拒启)
-PROFILE_DIR="$PROFILE_DIR" \
+SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
   node "$SKILL_DIR/scripts/smoke-test.cjs"
 ```
 
@@ -138,8 +139,10 @@ PROFILE_DIR="$PROFILE_DIR" \
 - ❌ **不要**用 `harvest.cjs followers` 挖别人的 followers/following — 违反"候选必须发过互关帖"约束
 
 ```bash
-node "$SKILL_DIR/scripts/harvest.cjs" search "蓝V互关" > /tmp/cand-1.json
-node "$SKILL_DIR/scripts/harvest.cjs" replies "https://x.com/SomeUser/status/123" > /tmp/cand-2.json
+SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
+  node "$SKILL_DIR/scripts/harvest.cjs" search "蓝V互关" > /tmp/cand-1.json
+SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
+  node "$SKILL_DIR/scripts/harvest.cjs" replies "https://x.com/SomeUser/status/123" > /tmp/cand-2.json
 # 合并/去重/去 skip(followed∪rejected)/按默认不过滤币圈 → queue.json:
 JOB_DIR=/tmp FILTER_CRYPTO=0 node "$SKILL_DIR/scripts/build-queue.cjs"
 ```
@@ -149,7 +152,8 @@ JOB_DIR=/tmp FILTER_CRYPTO=0 node "$SKILL_DIR/scripts/build-queue.cjs"
 强烈建议先 snapshot 自己的 `/following`,把所有已关注的账号一次性进 `skip set`。本次实战这一步省了 30% 时间。
 
 ```bash
-node "$SKILL_DIR/scripts/snapshot-following.cjs" "$MY_HANDLE" > /tmp/my-following.json
+SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
+  node "$SKILL_DIR/scripts/snapshot-following.cjs" "$MY_HANDLE" > /tmp/my-following.json
 # 合并到 tracker.rejected (reason: pre_existing_follow)
 ```
 
@@ -160,7 +164,7 @@ node "$SKILL_DIR/scripts/snapshot-following.cjs" "$MY_HANDLE" > /tmp/my-followin
 ```bash
 # 参数全部通过 env 传入
 TARGET=100 \
-PROFILE_DIR="$PROFILE_DIR" \
+SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
 MY_HANDLE=haoliucha \
 FERS_MAX=3000 FOLLOW_RATIO_MIN=0.5 FILTER_CRYPTO=0 \
 node "$SKILL_DIR/scripts/campaign.cjs"
@@ -179,7 +183,7 @@ node "$SKILL_DIR/scripts/campaign.cjs"
 `followed_assumed`(点了但 DOM 没及时翻成「正在关注」)会**虚报**。跑完复核,把没成的踢回 queue 重关,直到「确认数 == target」:
 
 ```bash
-FIX_TRACKER=1 PROFILE_DIR="$PROFILE_DIR" \
+FIX_TRACKER=1 SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
   node "$SKILL_DIR/scripts/verify-follows.cjs" --assumed
 # 若 failed>0 且 followed<target,再跑一次 campaign.cjs 补关(run.sh 自动做这一步)
 ```

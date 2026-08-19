@@ -125,13 +125,20 @@ class StructureTests(unittest.TestCase):
 
     def test_follow_docs_do_not_recommend_recursive_profile_deletion(self):
         docs = {
+            "x-readme": X / "README.md",
             "skill": X / "skills" / "x-follow" / "SKILL.md",
+            "skill-readme": X / "skills" / "x-follow" / "README.md",
             "pacing": X / "skills" / "x-follow" / "references" / "pacing-anti-detection.md",
             "troubleshooting": X / "skills" / "x-follow" / "references" / "troubleshooting.md",
+            "candidates": X / "skills" / "x-follow" / "references" / "candidate-sources.md",
         }
         for name, path in docs.items():
             with self.subTest(document=name):
-                self.assertNotIn("rm -rf", path.read_text(encoding="utf-8"))
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn("rm -rf", text)
+                self.assertNotRegex(text, r"rm\s+-f[^\n]*Singleton")
+                if "cp -R" in text:
+                    self.assertIn("export SOURCE_PROFILE_DIR PROFILE_DIR", text)
 
     def test_follow_reference_docs_share_safe_profile_lock_and_pacing_contracts(self):
         refs = X / "skills" / "x-follow" / "references"

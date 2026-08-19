@@ -42,11 +42,13 @@ Claude 的 `/x:image` 还需要安装 OpenAI Codex 插件并运行 `/codex:setup
 - 账号工作流使用独立副本，默认路径为 `~/.config/playwright-chrome-profile-campaign`：
 
   ```bash
-  cp -R ~/.config/playwright-chrome-profile ~/.config/playwright-chrome-profile-campaign
-  rm -f ~/.config/playwright-chrome-profile-campaign/Singleton*
+  SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
+  PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
+  export SOURCE_PROFILE_DIR PROFILE_DIR
+  cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"
   ```
 
-原始登录态源目录由 `SOURCE_PROFILE_DIR` 指定（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`；前者优先），默认 `~/.config/playwright-chrome-profile`；`PROFILE_DIR` 默认 `~/.config/playwright-chrome-profile-campaign`。x-follow 运行时强制要求两者的 canonical path 不同：相同路径、`..` 归一化后相同或现有 symlink 指向同一目录，都会在获取锁、清理或加载 Playwright 前以 exit 2 拒绝。`x-unfollow` 还要求 `MY_HANDLE`，默认数据目录为 `~/.config/x-unfollow-data`，可用 `XU_DATA_DIR` 覆盖。
+原始登录态源目录由 `SOURCE_PROFILE_DIR` 指定（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`；前者优先），默认 `~/.config/playwright-chrome-profile`；`PROFILE_DIR` 默认 `~/.config/playwright-chrome-profile-campaign`。x-follow 复制后直接运行 `run.sh`；它在 canonical 门禁和锁通过后才会安全处理副本的 Singleton。x-follow 运行时强制要求两者的 canonical path 不同：相同路径、`..` 归一化后相同或现有 symlink 指向同一目录，都会在获取锁、清理或加载 Playwright 前以 exit 2 拒绝。`x-unfollow` 还要求 `MY_HANDLE`，默认数据目录为 `~/.config/x-unfollow-data`，可用 `XU_DATA_DIR` 覆盖。
 
 ## x-unfollow — 关注卫生与安全取关
 

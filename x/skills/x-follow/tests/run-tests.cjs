@@ -685,6 +685,23 @@ test('profile policy resolves an existing symlink before comparing source and pr
   fs.symlinkSync(source, alias);
   assert.throws(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: alias }), /PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR/);
 });
+test('document profile exports reach a child policy process and preserve the source gate', () => {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-doc-source-'));
+  const policyModule = path.join(SCRIPTS, 'lib', 'runtime-gate.cjs');
+  const runDocumentShell = (profile) => spawnSync('bash', ['-c', [
+    `SOURCE_PROFILE_DIR=${JSON.stringify(source)}`,
+    `PROFILE_DIR=${JSON.stringify(profile)}`,
+    'export SOURCE_PROFILE_DIR PROFILE_DIR',
+    `node -e 'try { require(process.argv[1]).assertIndependentProfile(process.env); process.stdout.write(process.env.SOURCE_PROFILE_DIR + "\\n" + process.env.PROFILE_DIR); } catch (error) { console.error(error.message); process.exit(2); }' ${JSON.stringify(policyModule)}`,
+  ].join('\n')], { encoding: 'utf8' });
+  const same = runDocumentShell(source);
+  assert.strictEqual(same.status, 2);
+  assert.match(same.stderr, /PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR/);
+  const copy = `${source}-campaign`;
+  const different = runDocumentShell(copy);
+  assert.strictEqual(different.status, 0);
+  assert.strictEqual(different.stdout, `${source}\n${copy}`);
+});
 
 group('shared crypto filter policy');
 test('FILTER_CRYPTO defaults off for direct callers', () => {
