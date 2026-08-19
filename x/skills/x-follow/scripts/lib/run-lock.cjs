@@ -52,15 +52,37 @@ function ownerRecord(details = {}) {
   };
 }
 
+function leaseIdentityPath(directory, record) {
+  const identity = crypto.createHash('sha256').update(`${record.pid}\0${record.token}`).digest('hex').slice(0, 16);
+  return path.join(directory, `.lease-${identity}`);
+}
+
 function writeOwner(directory, record) {
   const temp = path.join(directory, `${OWNER_FILE}.${record.token}.tmp`);
-  fs.writeFileSync(temp, JSON.stringify(record) + '\n', { mode: 0o600 });
-  fs.renameSync(temp, path.join(directory, OWNER_FILE));
+  const identity = leaseIdentityPath(directory, record);
+  const identityTemp = `${identity}.tmp`;
+  try {
+    fs.writeFileSync(identityTemp, 'lease identity\n', { mode: 0o600 });
+    fs.renameSync(identityTemp, identity);
+    fs.writeFileSync(temp, JSON.stringify(record) + '\n', { mode: 0o600 });
+    fs.renameSync(temp, path.join(directory, OWNER_FILE));
+  } catch (error) {
+    for (const ownPath of [temp, identityTemp, identity]) {
+      try { fs.unlinkSync(ownPath); } catch {}
+    }
+    throw error;
+  }
 }
 
 function createDirectoryLease(directory, record) {
   fs.mkdirSync(directory, { mode: 0o700 });
-  writeOwner(directory, record);
+  try { writeOwner(directory, record); }
+  catch (error) {
+    // rmdir only removes an empty directory created above; never recursively remove a path
+    // that another process may have populated after a failed publication.
+    try { fs.rmdirSync(directory); } catch {}
+    throw error;
+  }
 }
 
 function recoveryPathFor(lockPath) { return `${lockPath}.recovery`; }
@@ -69,25 +91,104 @@ function waitForCoordination() {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
 }
 
-function replaceStaleMarker(markerPath, observed, replacement) {
+function isolatedPath(directory, kind) {
+  return `${directory}.${kind}-${crypto.randomUUID()}`;
+}
+
+function cleanupIsolated(directory) {
+  try { fs.rmSync(directory, { recursive: true, force: true }); } catch {}
+}
+
+function isolateDirectory(directory, kind) {
+  const isolated = isolatedPath(directory, kind);
+  fs.renameSync(directory, isolated);
+  return isolated;
+}
+
+function claimFiles(identityPath) {
+  try {
+    const prefix = `${path.basename(identityPath)}.claim-`;
+    return fs.readdirSync(path.dirname(identityPath))
+      .filter(name => name.startsWith(prefix))
+      .map(name => path.join(path.dirname(identityPath), name));
+  } catch { return []; }
+}
+
+function claimPid(claimPath, identityPath) {
+  const suffix = path.basename(claimPath).slice(`${path.basename(identityPath)}.claim-`.length);
+  const pid = Number(suffix.split('-', 1)[0]);
+  return Number.isInteger(pid) && pid > 0 ? pid : 0;
+}
+
+function acquireTakeover(markerPath, replacement, retry = 0) {
   const takeoverPath = `${markerPath}.takeover`;
-  const takeover = ownerRecord({ jobDir: replacement.jobDir });
-  try { createDirectoryLease(takeoverPath, takeover); }
+  const record = ownerRecord({ jobDir: replacement.jobDir });
+  try {
+    createDirectoryLease(takeoverPath, record);
+    return { takeoverPath, record };
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+  const observed = inspectLock(takeoverPath);
+  if (observed.state !== 'ready') throw new Error('network run lock coordination takeover is initializing or malformed');
+  if (isPidActive(observed.record.pid)) throw new Error(`network run lock coordination takeover already active (pid=${observed.record.pid})`);
+  const identity = leaseIdentityPath(takeoverPath, observed.record);
+  if (!fs.existsSync(identity)) {
+    const priorClaim = claimFiles(identity)[0];
+    if (!priorClaim) throw new Error('network run lock coordination takeover is missing its identity; refusing unsafe recovery');
+    if (isPidActive(claimPid(priorClaim, identity))) throw new Error(`network run lock coordination takeover already active (pid=${claimPid(priorClaim, identity)})`);
+    try { fs.renameSync(priorClaim, identity); }
+    catch (error) {
+      if (error.code === 'ENOENT' || error.code === 'EEXIST') return acquireTakeover(markerPath, replacement, retry + 1);
+      throw error;
+    }
+    return acquireTakeover(markerPath, replacement, retry + 1);
+  }
+  const claim = `${identity}.claim-${process.pid}-${crypto.randomUUID()}`;
+  try { fs.renameSync(identity, claim); }
   catch (error) {
-    if (error.code === 'EEXIST') throw new Error('network run lock coordination takeover in progress');
+    if (error.code === 'ENOENT' && retry < 12) return acquireTakeover(markerPath, replacement, retry + 1);
     throw error;
   }
+  try {
+    const current = inspectLock(takeoverPath);
+    if (current.state !== 'ready' || current.record.token !== observed.record.token || current.record.pid !== observed.record.pid) {
+      throw new Error('network run lock coordination takeover changed during recovery');
+    }
+    if (isPidActive(current.record.pid)) throw new Error(`network run lock coordination takeover already active (pid=${current.record.pid})`);
+    const isolated = isolateDirectory(takeoverPath, 'stale');
+    try { createDirectoryLease(takeoverPath, record); }
+    catch (error) { throw error; }
+    cleanupIsolated(isolated);
+    return { takeoverPath, record };
+  } finally {
+    // The claim moves with a successfully isolated directory. If recovery aborted before
+    // isolation, removing only this caller's claim lets a later owner retry safely.
+    try { fs.unlinkSync(claim); } catch {}
+  }
+}
+
+function releaseTakeover(lease) {
+  const current = inspectLock(lease.takeoverPath);
+  if (current.state !== 'ready' || current.record.token !== lease.record.token || current.record.pid !== lease.record.pid) return false;
+  const isolated = isolateDirectory(lease.takeoverPath, 'released');
+  cleanupIsolated(isolated);
+  return true;
+}
+
+function replaceStaleMarker(markerPath, observed, replacement) {
+  const takeover = acquireTakeover(markerPath, replacement);
   try {
     const current = inspectLock(markerPath);
     if (current.state !== 'ready' || current.record.token !== observed.token || current.record.pid !== observed.pid) {
       throw new Error('network run lock coordination changed during recovery');
     }
     if (isPidActive(current.record.pid)) throw new Error(`network run lock coordination already active (pid=${current.record.pid})`);
-    fs.renameSync(markerPath, `${markerPath}.stale-${current.record.token}-${crypto.randomUUID()}`);
+    const isolated = isolateDirectory(markerPath, 'stale');
     createDirectoryLease(markerPath, replacement);
+    cleanupIsolated(isolated);
   } finally {
-    const held = readLock(takeoverPath);
-    if (held && held.token === takeover.token && held.pid === takeover.pid) fs.rmSync(takeoverPath, { recursive: true, force: true });
+    releaseTakeover(takeover);
   }
 }
 
@@ -102,7 +203,10 @@ function acquireCoordination(lockPath, details = {}, retry = 0) {
     if (error.code !== 'EEXIST') throw error;
   }
   const existing = inspectLock(markerPath);
-  if (existing.state !== 'ready') throw new Error('network run lock coordination is initializing or malformed');
+  if (existing.state !== 'ready') {
+    if (details.waitForAvailability && retry < 12) { waitForCoordination(); return acquireCoordination(lockPath, details, retry + 1); }
+    throw new Error('network run lock coordination is initializing or malformed');
+  }
   if (isPidActive(existing.record.pid)) {
     if (details.waitForAvailability && retry < 12) { waitForCoordination(); return acquireCoordination(lockPath, details, retry + 1); }
     throw new Error(`network run lock coordination already active (pid=${existing.record.pid})`);
@@ -114,7 +218,8 @@ function acquireCoordination(lockPath, details = {}, retry = 0) {
 function releaseCoordination(lease) {
   const current = inspectLock(lease.markerPath);
   if (!current.record || current.record.token !== lease.token || current.record.pid !== lease.pid) return false;
-  fs.renameSync(lease.markerPath, `${lease.markerPath}.released-${lease.token}-${crypto.randomUUID()}`);
+  const isolated = isolateDirectory(lease.markerPath, 'released');
+  cleanupIsolated(isolated);
   return true;
 }
 
@@ -124,6 +229,23 @@ function releaseCoordinationFinally(lease) {
 
 function createMainLock(lockPath, record) {
   createDirectoryLease(lockPath, record);
+}
+
+function acquireMainUnderCoordination(lockPath, record, expected = null) {
+  const current = inspectLock(lockPath);
+  if (current.state === 'missing') {
+    createMainLock(lockPath, record);
+    return { ...record, recovered: null };
+  }
+  if (current.state !== 'ready') throw new Error('network run lock is initializing or malformed; refusing unsafe recovery');
+  if (isPidActive(current.record.pid)) throw new Error(`network run lock already active (pid=${current.record.pid}, jobDir=${current.record.jobDir || 'unknown'})`);
+  if (expected && (current.record.token !== expected.token || current.record.pid !== expected.pid)) {
+    throw new Error('network run lock changed during stale recovery');
+  }
+  const isolated = isolateDirectory(lockPath, 'stale');
+  createMainLock(lockPath, record);
+  cleanupIsolated(isolated);
+  return { ...record, recovered: current.record };
 }
 
 function acquireLock(lockPath, details = {}, retry = 0) {
@@ -137,8 +259,7 @@ function acquireLock(lockPath, details = {}, retry = 0) {
     }
     const coordination = acquireCoordination(lockPath, { jobDir: record.jobDir });
     try {
-      createMainLock(lockPath, record);
-      return { ...record, recovered: null };
+      return acquireMainUnderCoordination(lockPath, record);
     } finally { releaseCoordinationFinally(coordination); }
   }
   try {
@@ -156,18 +277,7 @@ function acquireLock(lockPath, details = {}, retry = 0) {
   if (isPidActive(observed.record.pid)) throw new Error(`network run lock already active (pid=${observed.record.pid}, jobDir=${observed.record.jobDir || 'unknown'})`);
   const coordination = acquireCoordination(lockPath, { jobDir: record.jobDir, waitForAvailability: true });
   try {
-    const current = inspectLock(lockPath);
-    if (current.state === 'missing') {
-      createMainLock(lockPath, record);
-      return { ...record, recovered: null };
-    }
-    if (current.state !== 'ready' || current.record.token !== observed.record.token || current.record.pid !== observed.record.pid) {
-      throw new Error('network run lock changed during stale recovery');
-    }
-    if (isPidActive(current.record.pid)) throw new Error(`network run lock already active (pid=${current.record.pid}, jobDir=${current.record.jobDir || 'unknown'})`);
-    fs.renameSync(lockPath, `${lockPath}.stale-${current.record.token}-${crypto.randomUUID()}`);
-    createMainLock(lockPath, record);
-    return { ...record, recovered: current.record };
+    return acquireMainUnderCoordination(lockPath, record, observed.record);
   } finally { releaseCoordinationFinally(coordination); }
 }
 
@@ -176,7 +286,8 @@ function releaseLock(lockPath, token, pid = process.pid) {
   try {
     const current = inspectLock(lockPath);
     if (current.state !== 'ready' || current.record.token !== token || current.record.pid !== pid) return false;
-    fs.renameSync(lockPath, `${lockPath}.released-${token}-${crypto.randomUUID()}`);
+    const isolated = isolateDirectory(lockPath, 'released');
+    cleanupIsolated(isolated);
     return true;
   } finally { releaseCoordinationFinally(coordination); }
 }
@@ -215,4 +326,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { acquireLock, releaseLock, readLock, inspectLock, isPidActive, acquireCoordination, releaseCoordination, acquireOrInheritLock, installLeaseCleanup };
+module.exports = { acquireLock, releaseLock, readLock, inspectLock, isPidActive, acquireCoordination, releaseCoordination, acquireOrInheritLock, installLeaseCleanup, leaseIdentityPath };

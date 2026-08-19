@@ -17,7 +17,7 @@ const { parseCount, isCryptoHandle, backoffMs, decide, CRYPTO_TOKENS } = require
 const { buildSkipSet, classifyReason, softRejectNowPasses } = require(path.join(SCRIPTS, 'lib', 'skipset.cjs'));
 const { classifyAnomaly } = require(path.join(SCRIPTS, 'lib', 'anomaly.cjs'));
 const { resolveCommentPolicy } = require(path.join(SCRIPTS, 'lib', 'comment-policy.cjs'));
-const { acquireLock, releaseLock, acquireOrInheritLock, installLeaseCleanup, inspectLock, acquireCoordination, releaseCoordination } = require(path.join(SCRIPTS, 'lib', 'run-lock.cjs'));
+const { acquireLock, releaseLock, acquireOrInheritLock, installLeaseCleanup, inspectLock, acquireCoordination, releaseCoordination, leaseIdentityPath } = require(path.join(SCRIPTS, 'lib', 'run-lock.cjs'));
 const { resolveRuntimeState, resolveFilterPolicy } = require(path.join(SCRIPTS, 'lib', 'runtime-state.cjs'));
 
 let pass = 0, fail = 0;
@@ -458,6 +458,103 @@ test('concurrent stale recovery and old-owner release leave only a replacement o
   const finalOwner = inspectLock(lockPath);
   assert.strictEqual(finalOwner.state, 'ready');
   assert.notStrictEqual(finalOwner.record.token, 'old-race-owner');
+});
+test('a stale recovery marker runs the main-lock state machine on the first acquire', () => {
+  const makeFixture = (main) => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-marker-main-'));
+    const lockPath = path.join(d, 'network-run.lock');
+    const marker = `${lockPath}.recovery`;
+    fs.mkdirSync(marker);
+    fs.writeFileSync(path.join(marker, 'owner.json'), JSON.stringify({ pid: 99999999, token: 'stale-marker', jobDir: '/coord', startedAt: '2026-08-01T00:00:00.000Z' }));
+    if (main) {
+      fs.mkdirSync(lockPath);
+      fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify(main));
+    }
+    return { lockPath };
+  };
+  const missing = makeFixture();
+  const missingOwner = acquireLock(missing.lockPath, { jobDir: '/new' });
+  assert.strictEqual(inspectLock(missing.lockPath).record.token, missingOwner.token);
+  assert.strictEqual(releaseLock(missing.lockPath, missingOwner.token), true);
+
+  const stale = makeFixture({ pid: 99999999, token: 'stale-main', jobDir: '/old', startedAt: '2026-08-01T00:00:00.000Z' });
+  const staleOwner = acquireLock(stale.lockPath, { jobDir: '/new' });
+  assert.notStrictEqual(staleOwner.token, 'stale-main');
+  assert.strictEqual(releaseLock(stale.lockPath, staleOwner.token), true);
+
+  const active = makeFixture({ pid: process.pid, token: 'active-main', jobDir: '/active', startedAt: '2026-08-19T00:00:00.000Z' });
+  assert.throws(() => acquireLock(active.lockPath, { jobDir: '/new' }), /already active/);
+  assert.strictEqual(inspectLock(active.lockPath).record.token, 'active-main');
+  assert.strictEqual(releaseLock(active.lockPath, 'active-main'), true);
+});
+test('stale recovery takeover leases are recovered while active ones block', () => {
+  const makeFixture = (takeover) => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-takeover-'));
+    const lockPath = path.join(d, 'network-run.lock');
+    const marker = `${lockPath}.recovery`;
+    fs.mkdirSync(marker);
+    fs.writeFileSync(path.join(marker, 'owner.json'), JSON.stringify({ pid: 99999999, token: 'stale-marker', jobDir: '/coord', startedAt: '2026-08-01T00:00:00.000Z' }));
+    fs.mkdirSync(`${marker}.takeover`);
+    fs.writeFileSync(path.join(`${marker}.takeover`, 'owner.json'), JSON.stringify(takeover));
+    fs.writeFileSync(leaseIdentityPath(`${marker}.takeover`, takeover), 'lease identity\n');
+    return { lockPath, marker };
+  };
+  const stale = makeFixture({ pid: 99999998, token: 'dead-takeover', jobDir: '/takeover', startedAt: '2026-08-01T00:00:00.000Z' });
+  const lease = acquireCoordination(stale.lockPath, { jobDir: '/new' });
+  assert.strictEqual(inspectLock(stale.marker).record.token, lease.token);
+  assert.ok(!fs.existsSync(`${stale.marker}.takeover`));
+  assert.strictEqual(releaseCoordination(lease), true);
+
+  const active = makeFixture({ pid: process.pid, token: 'live-takeover', jobDir: '/takeover', startedAt: '2026-08-19T00:00:00.000Z' });
+  assert.throws(() => acquireCoordination(active.lockPath, { jobDir: '/new' }), /takeover already active/);
+});
+test('failed owner publication removes the directory created by that call', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-publish-failure-'));
+  const lockPath = path.join(d, 'network-run.lock');
+  const originalWrite = fs.writeFileSync;
+  fs.writeFileSync = (file, ...args) => {
+    if (String(file).startsWith(`${lockPath}${path.sep}owner.json.`)) throw new Error('simulated owner publish failure');
+    return originalWrite(file, ...args);
+  };
+  try {
+    assert.throws(() => acquireLock(lockPath, { jobDir: '/new' }), /simulated owner publish failure/);
+  } finally {
+    fs.writeFileSync = originalWrite;
+  }
+  assert.ok(!fs.existsSync(lockPath));
+});
+test('failed takeover publication leaves the stale coordination marker recoverable', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-takeover-publish-failure-'));
+  const lockPath = path.join(d, 'network-run.lock');
+  const marker = `${lockPath}.recovery`;
+  const takeover = `${marker}.takeover`;
+  fs.mkdirSync(marker);
+  fs.writeFileSync(path.join(marker, 'owner.json'), JSON.stringify({ pid: 99999999, token: 'stale-marker', jobDir: '/coord', startedAt: '2026-08-01T00:00:00.000Z' }));
+  const originalWrite = fs.writeFileSync;
+  fs.writeFileSync = (file, ...args) => {
+    if (String(file).startsWith(`${takeover}${path.sep}owner.json.`)) throw new Error('simulated takeover publish failure');
+    return originalWrite(file, ...args);
+  };
+  try {
+    assert.throws(() => acquireCoordination(lockPath, { jobDir: '/new' }), /simulated takeover publish failure/);
+  } finally {
+    fs.writeFileSync = originalWrite;
+  }
+  assert.ok(!fs.existsSync(takeover));
+  const lease = acquireCoordination(lockPath, { jobDir: '/new' });
+  assert.strictEqual(inspectLock(marker).record.token, lease.token);
+  assert.strictEqual(releaseCoordination(lease), true);
+});
+test('long owner tokens do not lengthen isolated paths and successful isolation is cleaned', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-short-quarantine-'));
+  const lockPath = path.join(d, 'network-run.lock');
+  const longToken = 'a'.repeat(200);
+  fs.mkdirSync(lockPath);
+  fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({ pid: 99999999, token: longToken, jobDir: '/old', startedAt: '2026-08-01T00:00:00.000Z' }));
+  const replacement = acquireLock(lockPath, { jobDir: '/new' });
+  assert.deepStrictEqual(fs.readdirSync(d), ['network-run.lock']);
+  assert.strictEqual(releaseLock(lockPath, replacement.token), true);
+  assert.deepStrictEqual(fs.readdirSync(d), []);
 });
 
 group('runtime state resolver');
