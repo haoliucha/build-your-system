@@ -194,6 +194,14 @@ forward_worker_signal() {
   trap 'record_pending_signal TERM 143' TERM
   if [[ "$worker_pid" =~ ^[0-9]+$ ]]; then
     kill -s "$signal" "$worker_pid" 2>/dev/null || true
+    while kill -0 "$worker_pid" 2>/dev/null; do
+      wait "$worker_pid" 2>/dev/null || true
+      if kill -0 "$worker_pid" 2>/dev/null && [ -n "$PENDING_X_SIGNAL" ]; then
+        kill -s "$PENDING_X_SIGNAL" "$worker_pid" 2>/dev/null || true
+        PENDING_X_SIGNAL=""
+        PENDING_X_EXIT_CODE=""
+      fi
+    done
     wait "$worker_pid" 2>/dev/null || true
     CURRENT_X_WORKER_PID=""
   fi
@@ -253,12 +261,26 @@ if [ -n "$MY_HANDLE" ]; then
   node -e '
     try {
       const snapshot = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-      if (!snapshot || typeof snapshot !== "object" || !Array.isArray(snapshot.handles)) throw new Error("handles must be an array");
+      if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) throw new Error("snapshot must be an object");
+      if (Object.prototype.hasOwnProperty.call(snapshot, "error")) throw new Error(`snapshot reported ${snapshot.error}`);
+      if (!Number.isInteger(snapshot.count) || snapshot.count < 0) throw new Error("count must be a non-negative integer");
+      if (!Array.isArray(snapshot.handles)) throw new Error("handles must be an array");
+      if (snapshot.count !== snapshot.handles.length) throw new Error("count must equal handles.length");
+      if (!snapshot.handles.every(handle => typeof handle === "string" && /^[A-Za-z0-9_]{1,15}$/.test(handle))) {
+        throw new Error("handles contains an invalid X handle");
+      }
     } catch (error) {
       process.stderr.write(`FATAL: invalid following snapshot: ${error.message}\n`);
       process.exit(2);
     }
   ' "$SNAPSHOT_TMP"
+  SNAPSHOT_CODE=$?
+  if [ "$SNAPSHOT_CODE" -ne 0 ]; then
+    rm -f -- "$SNAPSHOT_TMP"
+    SNAPSHOT_TMP=""
+    exit "$SNAPSHOT_CODE"
+  fi
+  node "$SCRIPTS/merge-pre-existing.cjs" "$SNAPSHOT_TMP" "$TRACKER"
   SNAPSHOT_CODE=$?
   if [ "$SNAPSHOT_CODE" -ne 0 ]; then
     rm -f -- "$SNAPSHOT_TMP"
@@ -273,9 +295,6 @@ if [ -n "$MY_HANDLE" ]; then
     exit "$SNAPSHOT_CODE"
   fi
   SNAPSHOT_TMP=""
-  node "$SCRIPTS/merge-pre-existing.cjs" "$JOB_DIR/my-following.json" "$TRACKER"
-  SNAPSHOT_CODE=$?
-  if [ "$SNAPSHOT_CODE" -ne 0 ]; then exit "$SNAPSHOT_CODE"; fi
 fi
 SKIP_N=$(SKIP_GLOB="$SKIP_GLOB" SOFT_TTL_DAYS="$SOFT_TTL_DAYS" FERS_MAX="$FERS_MAX" FOLLOW_RATIO_MIN="$FOLLOW_RATIO_MIN" node -e '
   const {buildSkipSetFromPaths}=require(process.argv[1]);

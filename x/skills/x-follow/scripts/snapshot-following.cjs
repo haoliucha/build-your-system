@@ -72,6 +72,7 @@ async function main() {
     process.stderr.write(`[snapshot-following] /following did not render after ${nav.attempts} attempts\n`);
     console.log(JSON.stringify({ count: 0, handles: [], error: 'no_render' }, null, 2));
     await ctx.close();
+    process.exitCode = 3;
     return;
   }
   await page.waitForTimeout(1500);

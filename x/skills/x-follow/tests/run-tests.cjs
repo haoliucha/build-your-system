@@ -611,6 +611,83 @@ test('run.sh TERM forwards to its active inherited worker before releasing the o
   });
 });
 
+test('run.sh keeps waiting for its child after a second TERM interrupts wait', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-double-term-'));
+  const fakeBin = path.join(root, 'bin');
+  const dataDir = path.join(root, 'data');
+  const jobDir = path.join(dataDir, 'runs', 'double-term');
+  const source = path.join(root, 'source-profile');
+  const profile = path.join(root, 'campaign-profile');
+  const workerScript = path.join(root, 'worker.cjs');
+  const readyPath = path.join(root, 'ready.json');
+  const exitPath = path.join(root, 'worker-exit');
+  fs.mkdirSync(fakeBin);
+  fs.mkdirSync(source);
+  fs.mkdirSync(profile);
+  fs.writeFileSync(workerScript, `
+    const fs = require('fs');
+    fs.writeFileSync(process.env.TEST_READY_PATH, JSON.stringify({ pid: process.pid }));
+    let stopping = false;
+    process.on('SIGTERM', () => {
+      if (stopping) return;
+      stopping = true;
+      setTimeout(() => { fs.writeFileSync(process.env.TEST_EXIT_PATH, 'done'); process.exit(0); }, 350);
+    });
+    setInterval(() => {}, 1000);
+  `);
+  fs.writeFileSync(path.join(fakeBin, 'node'), [
+    '#!/bin/sh',
+    'case "$1" in',
+    '  */smoke-test.cjs) exec "$REAL_NODE" "$TEST_WORKER_SCRIPT" ;;',
+    'esac',
+    'exec "$REAL_NODE" "$@"',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(fakeBin, 'pkill'), '#!/bin/sh\nexit 1\n');
+  fs.writeFileSync(path.join(fakeBin, 'sleep'), '#!/bin/sh\nexit 0\n');
+  for (const file of ['node', 'pkill', 'sleep']) fs.chmodSync(path.join(fakeBin, file), 0o755);
+  const coordinator = `
+    const fs = require('fs');
+    const path = require('path');
+    const { spawn } = require('child_process');
+    const [runSh, fakeBin, dataDir, jobDir, source, profile, workerScript, readyPath, exitPath, realNode] = process.argv.slice(1);
+    const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    (async () => {
+      const owner = spawn('bash', [runSh], { env: {
+        ...process.env, PATH: fakeBin + path.delimiter + process.env.PATH,
+        REAL_NODE: realNode, TEST_WORKER_SCRIPT: workerScript, TEST_READY_PATH: readyPath,
+        TEST_EXIT_PATH: exitPath, TARGET: '0', X_FOLLOW_DATA_DIR: dataDir,
+        X_FOLLOW_RUN_ID: 'double-term', JOB_DIR: jobDir,
+        SOURCE_PROFILE_DIR: source, PROFILE_DIR: profile,
+      }, stdio: 'ignore' });
+      let workerPid = 0;
+      for (let i = 0; i < 150; i++) {
+        if (fs.existsSync(readyPath)) { workerPid = JSON.parse(fs.readFileSync(readyPath, 'utf8')).pid; break; }
+        await delay(20);
+      }
+      if (!workerPid) throw new Error('worker did not become ready');
+      const started = Date.now();
+      const ownerExit = new Promise(resolve => owner.once('exit', (code, signal) => resolve({ code, signal })));
+      owner.kill('SIGTERM');
+      await delay(80);
+      owner.kill('SIGTERM');
+      const result = await Promise.race([ownerExit, delay(2000).then(() => null)]);
+      if (!result) { if (alive(workerPid)) process.kill(workerPid, 'SIGKILL'); owner.kill('SIGKILL'); }
+      process.stdout.write(JSON.stringify({ result, elapsed: Date.now() - started, workerAlive: alive(workerPid), exitMarker: fs.existsSync(exitPath) }));
+    })().catch(error => { process.stderr.write(error.stack + '\\n'); process.exit(1); });
+  `;
+  const observed = JSON.parse(execFileSync(process.execPath, [
+    '-e', coordinator, path.join(__dirname, '..', 'run.sh'), fakeBin, dataDir, jobDir,
+    source, profile, workerScript, readyPath, exitPath, process.execPath,
+  ], { encoding: 'utf8', timeout: 10000 }));
+  assert.deepStrictEqual(observed.result, { code: 143, signal: null });
+  assert.ok(observed.elapsed >= 300, `owner exited before child cleanup (${observed.elapsed}ms)`);
+  assert.ok(observed.elapsed < 1800, `owner did not exit promptly (${observed.elapsed}ms)`);
+  assert.strictEqual(observed.workerAlive, false);
+  assert.strictEqual(observed.exitMarker, true);
+});
+
 test('run.sh queues TERM delivered after fork but before recording the child PID', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-fork-window-'));
   const fakeBin = path.join(root, 'bin');
@@ -1270,6 +1347,26 @@ test('profile copy dereferences a symlink source into an independent real target
   assert.notStrictEqual(fs.realpathSync(target), fs.realpathSync(sourceLink));
   assert.strictEqual(fs.readFileSync(path.join(target, 'nested', 'cookie'), 'utf8'), 'preserved');
 });
+test('profile copy failure cleans only its staging directory and leaves no final target', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-profile-copy-partial-'));
+  const source = path.join(root, 'source');
+  const target = path.join(root, 'campaign-copy');
+  fs.mkdirSync(source);
+  const { prepareProfileCopy } = require(path.join(SCRIPTS, 'prepare-profile-copy.cjs'));
+  const injectedFs = {
+    ...fs,
+    cpSync(_source, staging) {
+      fs.mkdirSync(path.join(staging, 'partial'), { recursive: true });
+      throw Object.assign(new Error('injected EIO'), { code: 'EIO' });
+    },
+  };
+  assert.throws(
+    () => prepareProfileCopy({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: target }, injectedFs),
+    /injected EIO/,
+  );
+  assert.ok(!fs.existsSync(target));
+  assert.deepStrictEqual(fs.readdirSync(root).sort(), ['source']);
+});
 test('all x-follow profile-copy guidance uses the guarded entry and never raw cp -R', () => {
   const docs = [
     path.join(__dirname, '..', 'SKILL.md'),
@@ -1541,14 +1638,14 @@ test('README stop and empty BIO_BLACKLIST guidance matches safe runtime behavior
 });
 test('README reports the final offline test count', () => {
   const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
-  assert.match(readme, /纯逻辑 \+ 离线集成，164 项，无需浏览器/);
+  assert.match(readme, /纯逻辑 \+ 离线集成，169 项，无需浏览器/);
 });
 
 group('Skill manual workflow static contract');
 group('pre-existing following merge');
 const preExistingMergeScript = path.join(SCRIPTS, 'merge-pre-existing.cjs');
 
-function runAutomaticSnapshotScenario(mode, myHandle = 'Me') {
+function runAutomaticSnapshotScenario(mode, myHandle = 'Me', previousSnapshot = null) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `xf-auto-snapshot-${mode}-`));
   const fakeBin = path.join(root, 'bin');
   const dataDir = path.join(root, 'data');
@@ -1569,6 +1666,9 @@ function runAutomaticSnapshotScenario(mode, myHandle = 'Me') {
     '      valid) printf \'{"count":2,"handles":["Existing","EXISTING"]}\\n\'; exit 0 ;;',
     '      fail) printf \'{"partial":\'; exit 7 ;;',
     '      invalid) printf \'{"handles":"wrong"}\\n\'; exit 0 ;;',
+    '      no_render) printf \'{"count":0,"handles":[],"error":"no_render"}\\n\'; exit 0 ;;',
+    '      mismatch) printf \'{"count":2,"handles":["OnlyOne"]}\\n\'; exit 0 ;;',
+    '      invalid_handle) printf \'{"count":1,"handles":["bad-handle!"]}\\n\'; exit 0 ;;',
     '    esac ;;',
     '  */verify-follows.cjs) printf \'{"failed":[]}\\n\'; exit 0 ;;',
     'esac',
@@ -1578,6 +1678,10 @@ function runAutomaticSnapshotScenario(mode, myHandle = 'Me') {
   fs.writeFileSync(path.join(fakeBin, 'pkill'), '#!/bin/sh\nexit 1\n');
   fs.writeFileSync(path.join(fakeBin, 'sleep'), '#!/bin/sh\nexit 0\n');
   for (const file of ['node', 'pkill', 'sleep']) fs.chmodSync(path.join(fakeBin, file), 0o755);
+  if (previousSnapshot) {
+    fs.mkdirSync(jobDir, { recursive: true });
+    fs.writeFileSync(path.join(jobDir, 'my-following.json'), JSON.stringify(previousSnapshot));
+  }
   const result = spawnSync('bash', [path.join(__dirname, '..', 'run.sh')], {
     env: {
       ...process.env,
@@ -1622,6 +1726,19 @@ for (const [mode, expectedStatus] of [['fail', 7], ['invalid', 2]]) {
     assert.strictEqual(observed.result.status, expectedStatus, observed.result.stderr + observed.result.stdout);
     assert.ok(fs.existsSync(observed.snapshotCalled));
     assert.ok(!fs.existsSync(observed.snapshotPath));
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(observed.trackerPath, 'utf8')), {
+      followed: [], rejected: [], stats: { profiles_checked: 0, follow_success: 0 },
+    });
+    assert.deepStrictEqual(observed.temporary, []);
+  });
+}
+
+for (const mode of ['no_render', 'mismatch', 'invalid_handle']) {
+  test(`recommended runner rejects ${mode} and preserves the previous snapshot`, () => {
+    const previous = { count: 1, handles: ['Previous'] };
+    const observed = runAutomaticSnapshotScenario(mode, 'Me', previous);
+    assert.strictEqual(observed.result.status, 2, observed.result.stderr + observed.result.stdout);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(observed.snapshotPath, 'utf8')), previous);
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(observed.trackerPath, 'utf8')), {
       followed: [], rejected: [], stats: { profiles_checked: 0, follow_success: 0 },
     });
