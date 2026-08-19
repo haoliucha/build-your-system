@@ -5,6 +5,8 @@ description: Use when the user explicitly requests a batch-follow campaign on X 
 
 # x-follow:在 X 上精准批量关注
 
+只从完整 `x` 插件运行本 Skill。Codex 使用 `$x:x-follow`，Claude Code 使用 `/x-follow`；脱离双宿主 manifest 的 standalone 副本必须在浏览器、锁和 X 请求前以 `LEGACY_STANDALONE_INSTALL` 失败。
+
 把"蓝V互关 follow campaign"这件事做对、做稳。**3 小时 100 follow / 0 风控**的实战流程,参数化,可适配任何精准关注需求。
 
 > **架构与开发文档见 [`README.md`](./README.md)**(pipeline 图、模块依赖、异常状态机、测试)。
@@ -28,11 +30,16 @@ description: Use when the user explicitly requests a batch-follow campaign on X 
 每个继承 token 的 X-facing 子进程会登记自己的 worker identity。owner 或 worker 任一仍活跃时均不可恢复或释放该锁。
 显式 `JOB_DIR` 优先于默认 run 目录。
 
-原始登录态源目录使用 `SOURCE_PROFILE_DIR`（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`，前者优先），默认
-`$HOME/.config/playwright-chrome-profile`；`PROFILE_DIR` 默认
-`$HOME/.config/playwright-chrome-profile-campaign`。运行时强制要求两者的 canonical path 互不重叠：相等、
-任一是另一方祖先/后代、`..` 归一化后重叠，或经现有 symlink 父目录解析后重叠，均会在锁、清理或
-Playwright 加载前以 exit 2 拒绝；即使 leaf 尚不存在，也从最深现有父目录做 realpath。
+运行前检查 `~/.config/x-browser/account.json`。缺失时，在对话中询问用户要使用的 Chrome 账号邮箱，不要猜测，
+然后运行 `node "$SKILL_DIR/scripts/configure-account.cjs" set --email=<chrome-account-email>`。配置按
+`X_CHROME_ACCOUNT_EMAIL` 临时覆盖 → 本地文件的优先级解析；`X_BROWSER_CONFIG_PATH` 可改配置路径。
+邮箱必须在系统 Chrome `Local State.profile.info_cache` 中恰好匹配一个 profile；不要硬编码私人邮箱或目录名。
+
+系统 Chrome user-data 默认来自 `$HOME/Library/Application Support/Google/Chrome`，可用
+`X_CHROME_USER_DATA_DIR` 覆盖；`SOURCE_PROFILE_DIR`、`X_FOLLOW_SOURCE_PROFILE_DIR` 仅作为兼容别名。
+`PROFILE_DIR` 默认 `$HOME/.config/playwright-chrome-profile-campaign`。运行时强制要求 source 与 target 的
+canonical path 互不重叠，并通过本机随机端口 CDP 只在独立 target 上运行。系统 Chrome 始终只读。
+若独立副本缺少 `auth_token`/`ct0`，在零 X 请求状态下最多选择性刷新一次；失败回滚并退出 12。
 
 **任何关注动作必须由用户明确请求。**真实默认值为 `FERS_MAX=3000`、
 `FOLLOW_RATIO_MIN=0.5`、`FILTER_CRYPTO=0`。评论默认关闭；即使用户请求
@@ -126,17 +133,16 @@ JOB_DIR="$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID"
 export X_FOLLOW_DATA_DIR X_FOLLOW_RUN_ID JOB_DIR
 mkdir -p "$JOB_DIR"
 
-# 2. 从原始登录态复制到独立 campaign 目录；后续只使用 PROFILE_DIR
-SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
+# 2. 检查本地 Chrome 账号配置；缺失时先在对话中询问用户邮箱，再保存
 PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
-export SOURCE_PROFILE_DIR PROFILE_DIR
-node "$SKILL_DIR/scripts/prepare-profile-copy.cjs"
+export PROFILE_DIR
+node "$SKILL_DIR/scripts/configure-account.cjs" check
+# 首次配置：node "$SKILL_DIR/scripts/configure-account.cjs" set --email=<chrome-account-email>
 
-# 3. 复制后直接运行 run.sh；它在同一 canonical 门禁和 network-run.lock 通过后
-#    才安全处理副本的 Singleton。手动调试也必须先经过该门禁，不能手工删除。
+# 3. run.sh 会使用系统 Chrome 只读源和独立 PROFILE_DIR；认证缺失时最多自动刷新一次
 
-# 4. 跑 smoke test(6 项指纹/登录态检查,RED 拒启)
-SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
+# 4. 跑 smoke test（CDP、登录态和指纹检查，RED 拒启）
+PROFILE_DIR="$PROFILE_DIR" \
   node "$SKILL_DIR/scripts/smoke-test.cjs"
 ```
 
@@ -150,9 +156,9 @@ SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
 - ❌ **不要**用 `harvest.cjs followers` 挖别人的 followers/following — 违反"候选必须发过互关帖"约束
 
 ```bash
-SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
+PROFILE_DIR="$PROFILE_DIR" \
   node "$SKILL_DIR/scripts/harvest.cjs" search "蓝V互关" > "$JOB_DIR/cand-search.json"
-SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
+PROFILE_DIR="$PROFILE_DIR" \
   node "$SKILL_DIR/scripts/harvest.cjs" replies "https://x.com/SomeUser/status/123" > "$JOB_DIR/cand-replies.json"
 ```
 
@@ -161,7 +167,7 @@ SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
 强烈建议先 snapshot 自己的 `/following`,把所有已关注的账号一次性进 `skip set`。本次实战这一步省了 30% 时间。
 
 ```bash
-SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
+PROFILE_DIR="$PROFILE_DIR" \
   node "$SKILL_DIR/scripts/snapshot-following.cjs" "$MY_HANDLE" > "$JOB_DIR/my-following.json"
 # 离线、原子合并到同一 JOB_DIR 的 tracker.rejected (reason: pre_existing_follow)
 node "$SKILL_DIR/scripts/merge-pre-existing.cjs" \
@@ -177,7 +183,7 @@ FILTER_CRYPTO=0 JOB_DIR="$JOB_DIR" node "$SKILL_DIR/scripts/build-queue.cjs"
 ```bash
 # 参数全部通过 env 传入；已导出的 JOB_DIR 保持 queue/tracker/log 同源
 TARGET=100 \
-SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
+PROFILE_DIR="$PROFILE_DIR" \
 MY_HANDLE=haoliucha \
 FERS_MAX=3000 FOLLOW_RATIO_MIN=0.5 FILTER_CRYPTO=0 \
 node "$SKILL_DIR/scripts/campaign.cjs"
@@ -185,9 +191,9 @@ node "$SKILL_DIR/scripts/campaign.cjs"
 
 主脚本内部:
 - 加载 `queue.json` + `tracker.json`(支持热加 queue.json,每 N follow 后 reload)
-- 对每个候选:`gotoRobust` profile(429/延迟容错)→ 等齐 UserName + button → 4 条规则验证 → click follow → verify → 写盘
+- 对每个候选：`gotoRobust` profile（延迟容错；只有真实 HTTP 429 才记限流）→ 等齐 UserName + button → 4 条规则验证 → click follow → verify → 写盘
 - 节奏:每 follow 后 25-55s 随机;每 12 follow 后 long break 3 min
-- 异常感知(`lib/anomaly.cjs`,匹配只在页面 chrome、排除推文正文):CAPTCHA / RATE_LIMIT / LOGIN_REDIRECT / ACCOUNT_RESTRICTED → exit + ALERT.txt
+- 异常感知：CAPTCHA / 真实 HTTP `RATE_LIMIT` / `LOGIN_REDIRECT` / `ACCOUNT_RESTRICTED` / `GENERIC_NAV_ERROR` → exit + `ALERT.txt`；通用“出错了”页面不冒充 429
 
 详见 `references/verify-logic.md` 和 `references/pacing-anti-detection.md`。
 
@@ -196,22 +202,22 @@ node "$SKILL_DIR/scripts/campaign.cjs"
 `followed_assumed`(点了但 DOM 没及时翻成「正在关注」)会**虚报**。跑完复核,把没成的踢回 queue 重关,直到「确认数 == target」:
 
 ```bash
-FIX_TRACKER=1 SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
+FIX_TRACKER=1 PROFILE_DIR="$PROFILE_DIR" \
   node "$SKILL_DIR/scripts/verify-follows.cjs" --assumed
 # 若 failed>0 且 followed<target,再跑一次 campaign.cjs 补关(run.sh 自动做这一步)
 ```
 
 ### Step 5: 结束与可恢复清理
 
-工作流不会自动删除独立 profile。先关闭 campaign 浏览器；如需回收该副本，由用户核对
-`PROFILE_DIR` 的 canonical path 与 `SOURCE_PROFILE_DIR` 不同后，再通过 Finder 移到废纸篓等可恢复方式处理。不要处理原始 profile。
+工作流不会自动删除独立 profile。独立 CDP Chrome 在正常退出和信号退出时关闭；如需回收副本，先核对
+`PROFILE_DIR` 与 `X_CHROME_USER_DATA_DIR`（或兼容 source 变量）的 canonical path 不同，再通过 Finder 移到废纸篓等可恢复方式处理。不要处理系统 Chrome profile。
 
 ## 开工前 user 确认 checklist
 
 启动前必须跟用户对齐:
 1. ✅ target_count(具体数字)
 2. ✅ 覆盖参数(`followers_max` / 容差 / `bio_blacklist` / etc)
-3. ✅ profile_dir 已登录正确账号
+3. ✅ Chrome 账号邮箱已配置且唯一匹配系统 profile；`x-follow` 不用 `MY_HANDLE` 代替此门禁
 4. ✅ 异常处理偏好:`STOP-and-ask`(默认) / `auto-reduce-pace` / `exit`
 5. ✅ 用户清楚此操作不可一键回滚(脚本不 unfollow,用户得手动一个个取消)
 
@@ -244,7 +250,7 @@ FIX_TRACKER=1 SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR
 
 ## 故障排查
 
-12 个常见错误 + 修复见 `references/troubleshooting.md`,包括:
+常见错误与修复见 `references/troubleshooting.md`，包括:
 - Chrome 启动失败 / profile lock
 - navigator.webdriver=true(指纹泄漏)
 - not_blue 漏判 / verify 时序问题

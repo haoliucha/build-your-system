@@ -82,10 +82,29 @@ assert.throws(() => browserLaunch.resolveHeadless({ XU_HEADLESS: 'false' }), /XU
 for (const script of ['list-snapshot.cjs', 'unfollow.cjs']) {
   const source = fs.readFileSync(path.join(canonicalSkill, 'scripts', script), 'utf8');
   assert.match(source, /browser-launch\.cjs/, `${script} must use the shared browser launch policy`);
+  assert.match(source, /cdp-browser\.cjs/, `${script} must use the shared CDP browser`);
+  assert.match(source, /withAuthenticatedContext/, `${script} must use the authenticated CDP wrapper`);
+  assert.doesNotMatch(source, /launchPersistentContext/, `${script} must not use Playwright persistent context launch`);
   assert.doesNotMatch(source, /headless:\s*false/, `${script} must not hard-code visible mode`);
 }
 
-assert.strictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'x/.claude-plugin/plugin.json'))).version, '4.1.0');
-assert.strictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'x/.codex-plugin/plugin.json'))).version, '4.1.0');
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'x/.claude-plugin/plugin.json'))).version, '4.1.2');
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'x/.codex-plugin/plugin.json'))).version, '4.1.2');
+
+for (const skill of ['x-follow', 'x-unfollow']) {
+  const run = fs.readFileSync(path.join(repo, 'x/skills', skill, 'run.sh'), 'utf8');
+  assert.match(run, /plugin-provenance\.cjs/, `${skill} must verify plugin provenance before runtime`);
+  assert.match(run, /LEGACY_STANDALONE_INSTALL/, `${skill} must reject bare standalone copies`);
+}
+assert.match(
+  fs.readFileSync(path.join(repo, 'x/skills/x-follow/scripts/lib/runtime-gate.cjs'), 'utf8'),
+  /runtimeProvenance/,
+  'every direct x-follow child must inherit the plugin provenance gate',
+);
+assert.match(
+  fs.readFileSync(path.join(repo, 'x/skills/x-unfollow/scripts/lib/rate-gate.cjs'), 'utf8'),
+  /runtimeProvenance/,
+  'every direct x-unfollow child must prove plugin provenance in addition to its run token',
+);
 
 console.log('x-unfollow safety and Codex/Claude parity checks passed');

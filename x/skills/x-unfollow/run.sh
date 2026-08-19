@@ -5,6 +5,12 @@ export NO_COLOR=1 NODE_DISABLE_COLORS=1 FORCE_COLOR=0
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS="$SKILL_DIR/scripts"
+PROVENANCE="$SKILL_DIR/../../scripts/plugin-provenance.cjs"
+if [ ! -f "$PROVENANCE" ]; then
+  echo "LEGACY_STANDALONE_INSTALL: use \$x:x-unfollow in Codex or /x:x-unfollow in Claude Code; do not run ~/.agents/skills/x-unfollow" >&2
+  exit 2
+fi
+node "$PROVENANCE" runtime --skill=x-unfollow --skill-dir="$SKILL_DIR" || exit $?
 MY_HANDLE="${MY_HANDLE:-}"
 MODE="${MODE:-report}"
 MIN_DAYS="${MIN_DAYS:-3}"
@@ -20,7 +26,6 @@ ALERT="$XU_DATA_DIR/ALERT.txt"
 export XU_DATA_DIR PROFILE_DIR SNAPSHOT_DATE="$DATE" ALERT_PATH="$ALERT" XU_HEADLESS
 
 say() { echo "[run $(date +%H:%M:%S)] $*"; }
-cleanup_browser_locks() { pkill -9 -f "user-data-dir=$PROFILE_DIR" 2>/dev/null || true; rm -f "$PROFILE_DIR"/Singleton* 2>/dev/null || true; }
 
 if [ -z "$MY_HANDLE" ]; then say "FATAL: MY_HANDLE required"; exit 2; fi
 case "$MODE" in report|unfollow|followers-report|relationships-report) ;; *) say "FATAL: MODE must be report|unfollow|followers-report|relationships-report"; exit 2 ;; esac
@@ -34,9 +39,10 @@ fi
 if [ -n "$EXPLICIT_HANDLES" ] && [ "$MODE" != "unfollow" ]; then say "FATAL: MODE=unfollow is required when EXPLICIT_HANDLES is set"; exit 2; fi
 if [ "$ALLOW_MUTUAL" = "1" ] && [ -z "$EXPLICIT_HANDLES" ]; then say "FATAL: ALLOW_MUTUAL=1 requires EXPLICIT_HANDLES"; exit 2; fi
 if [ -n "$EXPLICIT_HANDLES" ] && ! [[ "$EXPLICIT_HANDLES" =~ ^@?[A-Za-z0-9_]{1,15}(,@?[A-Za-z0-9_]{1,15})*$ ]]; then say "FATAL: invalid EXPLICIT_HANDLES"; exit 2; fi
+say "local CDP account/profile preflight (0 X requests)..."
+node "$SCRIPTS/configure-account.cjs" check || exit $?
 mkdir -p "$XU_DATA_DIR/current" "$XU_DATA_DIR/reports" "$XU_DATA_DIR/.staging"
 
-if [ ! -d "$PROFILE_DIR" ]; then say "FATAL: profile copy not found: $PROFILE_DIR"; exit 3; fi
 say "local-only smoke test (0 X requests)..."
 MY_HANDLE="$MY_HANDLE" node "$SCRIPTS/smoke-test.cjs" || exit $?
 
@@ -51,14 +57,14 @@ cleanup_staging() { [ -n "${STAGING_DIR:-}" ] && rm -rf "$STAGING_DIR"; }
 release_run_lock() {
   if [ -n "${XU_RUN_TOKEN:-}" ]; then node "$SCRIPTS/run-lock.cjs" release "$XU_RUN_TOKEN" >/dev/null 2>&1 || true; XU_RUN_TOKEN=""; fi
 }
-cleanup_and_release() { cleanup_browser_locks; cleanup_staging; release_run_lock; }
+cleanup_and_release() { cleanup_staging; release_run_lock; }
 trap cleanup_and_release EXIT
 
 halt_browser_step() {
   case "$1" in
     15) say "PAGE_DRIFT (exit 15): controlled page left the target list; old current preserved. See $ALERT"; exit 15 ;;
     17) say "scan rejected (exit 17): response/cursor/watchdog anomaly; old current preserved. See $ALERT"; exit 17 ;;
-    10|11|12|13|14|16) say "X anomaly (exit $1); old current preserved. See $ALERT"; exit "$1" ;;
+    10|11|12|13|14|16|18) say "X anomaly (exit $1); old current preserved. See $ALERT"; exit "$1" ;;
     0) ;;
     *) say "browser step failed (exit $1); old current preserved"; exit "$1" ;;
   esac
@@ -70,7 +76,6 @@ scan_list() {
   MY_HANDLE="$MY_HANDLE" node "$SCRIPTS/list-snapshot.cjs" --list="$type" --run-id="$XU_RUN_TOKEN"
   local result=$?
   halt_browser_step "$result"
-  cleanup_browser_locks
 }
 
 promote() {
@@ -135,7 +140,7 @@ if [ -n "$EXPLICIT_HANDLES" ]; then
 else
   MY_HANDLE="$MY_HANDLE" node "$SCRIPTS/unfollow.cjs" $LIMIT_ARG
 fi
-code=$?; halt_browser_step "$code"; cleanup_browser_locks
+code=$?; halt_browser_step "$code"
 
 say "one post-action following scan for local bulk verification"
 scan_list following

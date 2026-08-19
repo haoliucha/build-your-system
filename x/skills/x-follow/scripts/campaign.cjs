@@ -2,7 +2,7 @@
 // campaign.cjs — X 蓝V互关 main follow loop (hardened).
 //
 // Robustness features (see README.md "Architecture"):
-//   - gotoRobust: every navigation tolerates VPN latency + HTTP 429 (exponential backoff)
+//   - gotoRobust: bounded latency/generic-error recovery; observed HTTP 429 stops immediately
 //   - startup login gate waits for real content (not a fixed timer) and ignores EMPTY_PAGE
 //   - anomaly detection scoped to page chrome (not tweet text) -> no crypto-tweet false +ve
 //   - never clicks unless the button is exactly 'aria-label="关注 @{handle}"'
@@ -21,16 +21,21 @@
 const path = require('path');
 const fs = require('fs');
 const { EXIT_CODES, detectAnomaly, writeAlert } = require(path.join(__dirname, 'lib', 'anomaly.cjs'));
-const { gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
+const { captureXResponseEvidence, gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
 const { generateComment } = require(path.join(__dirname, 'lib', 'comment-generator.cjs'));
 const { resolveCommentPolicy } = require(path.join(__dirname, 'lib', 'comment-policy.cjs'));
 const { prepareXFacingRuntime } = require(path.join(__dirname, 'lib', 'runtime-gate.cjs'));
 const { resolveFilterPolicy } = require(path.join(__dirname, 'lib', 'runtime-state.cjs'));
+const { BrowserConfigError, withAuthenticatedContext, XAuthenticationError } = require(path.join(__dirname, 'lib', 'cdp-browser.cjs'));
 
 let RUNTIME;
 let FILTER_POLICY;
+let COMMENT_POLICY;
 try {
-  RUNTIME = prepareXFacingRuntime(process.env).state;
+  // Commenting is a separate mutation and must be rejected before any browser/account
+  // preflight when the second authorization token is absent.
+  COMMENT_POLICY = resolveCommentPolicy(process.env);
+  RUNTIME = prepareXFacingRuntime(process.env);
   FILTER_POLICY = resolveFilterPolicy(process.env);
 } catch (error) {
   console.error(`FATAL: ${error.message}`);
@@ -42,11 +47,11 @@ const CFG = {
   TARGET: parseInt(process.env.TARGET || '0', 10),
   PROFILE_DIR: process.env.PROFILE_DIR || `${process.env.HOME}/.config/playwright-chrome-profile-campaign`,
   MY_HANDLE: process.env.MY_HANDLE || '',
-  QUEUE_PATH: RUNTIME.queuePath,
-  TRACKER_PATH: RUNTIME.trackerPath,
-  LOG_PATH: RUNTIME.logPath,
-  ALERT_PATH: RUNTIME.alertPath,
-  STATUS_PATH: RUNTIME.statusPath,
+  QUEUE_PATH: RUNTIME.state.queuePath,
+  TRACKER_PATH: RUNTIME.state.trackerPath,
+  LOG_PATH: RUNTIME.state.logPath,
+  ALERT_PATH: RUNTIME.state.alertPath,
+  STATUS_PATH: RUNTIME.state.statusPath,
 
   VERIFIED_REQUIRED: process.env.VERIFIED_REQUIRED !== 'false',
   FOLLOWING_GT_FOLLOWERS: process.env.FOLLOWING_GT_FOLLOWERS !== 'false',
@@ -79,15 +84,8 @@ const CFG = {
   // COMMENT_AFTER_FOLLOW: after a successful follow, reply to the target's pinned post with
   // a varied follow引流 comment hinting at reciprocal following. Only comments on pinned posts
   // (no pinned post → skip silently). Varied templates avoid spam-signal pattern repetition.
-  COMMENT_AFTER_FOLLOW: false,
+  COMMENT_AFTER_FOLLOW: COMMENT_POLICY.enabled,
 };
-
-try {
-  CFG.COMMENT_AFTER_FOLLOW = resolveCommentPolicy(process.env).enabled;
-} catch (error) {
-  console.error(`FATAL: ${error.message}`);
-  process.exit(2);
-}
 
 if (!CFG.TARGET || CFG.TARGET < 1) {
   console.error('FATAL: TARGET env var required (e.g., TARGET=100)');
@@ -112,6 +110,15 @@ function writeStatus(obj) {
 }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const rand = (min, max) => min + Math.floor(Math.random() * (max - min));
+
+class CampaignExitError extends Error {
+  constructor(type, message, exitCode) {
+    super(message);
+    this.name = 'CampaignExitError';
+    this.type = type;
+    this.exitCode = exitCode;
+  }
+}
 
 // ============ VERIFY + FOLLOW JS (runs in browser context) ============
 // NOTE: this string runs INSIDE the page, so it cannot require lib/filters. Its decision
@@ -294,7 +301,7 @@ async function commentOnPinnedPost(page, handle, cfg) {
 }
 
 // ============ MAIN ============
-async function main() {
+async function runCampaign({ context, confirmAuthenticated, disableAuthRefresh }) {
   log(`=== CAMPAIGN START ===`);
   log(`Config: TARGET=${CFG.TARGET}, FERS_MAX=${CFG.FERS_MAX}, SETTLE=${CFG.POST_CLICK_SETTLE_MS}ms, DRY_RUN=${CFG.DRY_RUN}, COMMENT=${CFG.COMMENT_AFTER_FOLLOW}`);
   log(`SAFETY MANIFEST:`);
@@ -310,13 +317,7 @@ async function main() {
   const rejectedSet = new Set((tracker.rejected || []).map(r => r.h));
   log(`Followed: ${tracker.followed.length}/${CFG.TARGET}, Queue: ${queue.length}, FollowedSet: ${followedSet.size}, RejectedSet: ${rejectedSet.size}`);
 
-  // Require Playwright only after local policy validation has passed. This makes direct
-  // invocation fail closed before it can initialize any browser-facing dependency.
-  const { chromium } = require('playwright');
-  const ctx = await chromium.launchPersistentContext(CFG.PROFILE_DIR, {
-    channel: 'chrome', headless: false, chromiumSandbox: true, viewport: { width: 1280, height: 820 },
-    ignoreDefaultArgs: ['--enable-automation'], args: ['--disable-blink-features=AutomationControlled'],
-  });
+  const ctx = context;
   let page = ctx.pages()[0] || await ctx.newPage();
 
   // Startup login gate — gotoRobust waits for a logged-in element (not a fixed timer);
@@ -325,25 +326,32 @@ async function main() {
     needSel: 'a[data-testid="SideNav_NewTweet_Button"], [data-testid="AppTabBar_Home_Link"], [data-testid="primaryColumn"]',
     settle: 5000, retries: 4,
   });
+  if (nav.reason === 'RATE_LIMIT') {
+    writeAlert(CFG.ALERT_PATH, { type: 'RATE_LIMIT', text: `HTTP 429 ${nav.responseUrl || '/home'}`, profileDir: CFG.PROFILE_DIR, url: page.url() });
+    throw new CampaignExitError('RATE_LIMIT', 'HTTP 429 during startup navigation', EXIT_CODES.RATE_LIMIT);
+  }
+  if (nav.reason === 'LOGIN_REDIRECT') throw new XAuthenticationError(`campaign startup requires login: ${page.url()}`, nav);
   const initialAnomaly = await detectAnomaly(page);
   if (initialAnomaly && initialAnomaly.type !== 'EVAL_ERROR' && initialAnomaly.type !== 'EMPTY_PAGE') {
+    if (initialAnomaly.type === 'LOGIN_REDIRECT') throw new XAuthenticationError(initialAnomaly.text, { url: page.url() });
     log(`FATAL: anomaly on /home: ${JSON.stringify(initialAnomaly)}`);
     writeAlert(CFG.ALERT_PATH, { ...initialAnomaly, profileDir: CFG.PROFILE_DIR, url: page.url() });
-    await ctx.close();
-    process.exit(EXIT_CODES[initialAnomaly.type] || 99);
+    throw new CampaignExitError(initialAnomaly.type, initialAnomaly.text, EXIT_CODES[initialAnomaly.type] || 99);
   }
+  await confirmAuthenticated(page, { expectedPath: '/home' });
   if (!nav.ok) {
-    log(`FATAL: /home did not render logged-in content after ${nav.attempts} attempts (login expired?)`);
-    writeAlert(CFG.ALERT_PATH, { type: 'LOGIN_REDIRECT', text: 'home content missing', profileDir: CFG.PROFILE_DIR, url: page.url() });
-    await ctx.close();
-    process.exit(EXIT_CODES.LOGIN_REDIRECT);
+    const type = nav.reason === 'GENERIC_NAV_ERROR' ? 'GENERIC_NAV_ERROR' : 'LOGIN_REDIRECT';
+    if (type === 'LOGIN_REDIRECT') throw new XAuthenticationError('home content missing', { url: page.url(), nav });
+    writeAlert(CFG.ALERT_PATH, { type, text: 'generic X navigation error page after bounded retries', profileDir: CFG.PROFILE_DIR, url: page.url() });
+    throw new CampaignExitError(type, 'generic X navigation error page after bounded retries', EXIT_CODES[type]);
   }
   log(`Logged in OK: ${page.url()}`);
+  // Never restart a mutating campaign after this point; a replay could duplicate follows.
+  disableAuthRefresh();
 
   let shouldExit = false;
-  ['SIGTERM', 'SIGINT'].forEach(sig => process.on(sig, () => { log(`Got ${sig}, exiting after current iteration`); shouldExit = true; }));
 
-  let consecutiveErrors = 0, consecutiveRateLimits = 0, processedSinceReload = 0;
+  let consecutiveErrors = 0, processedSinceReload = 0;
   const VERIFY_JS = buildVerifyJs(CFG);
   const followTimestamps = [];
   const inQuietHours = () => {
@@ -382,16 +390,34 @@ async function main() {
 
     let result;
     try {
-      // gotoRobust: tolerate latency + 429 on profile loads (UserByScreenName quota)
-      await gotoRobust(page, `https://x.com/${handle}`, { needSel: 'div[data-testid="UserName"]', settle: 4000, retries: 3 });
+      const profileNav = await gotoRobust(page, `https://x.com/${handle}`, { needSel: 'div[data-testid="UserName"]', settle: 4000, retries: 3 });
+      if (profileNav.reason === 'RATE_LIMIT') {
+        writeAlert(CFG.ALERT_PATH, { type: 'RATE_LIMIT', text: `HTTP 429 ${profileNav.responseUrl || handle}`, handle, url: page.url(), profileDir: CFG.PROFILE_DIR });
+        throw new CampaignExitError('RATE_LIMIT', `HTTP 429 at @${handle}`, EXIT_CODES.RATE_LIMIT);
+      }
+      if (profileNav.reason === 'LOGIN_REDIRECT') throw new XAuthenticationError(`campaign requires login at @${handle}`, { handle, url: page.url() });
+      if (!profileNav.ok) {
+        writeAlert(CFG.ALERT_PATH, { type: 'GENERIC_NAV_ERROR', text: `${profileNav.reason} at @${handle}`, handle, url: page.url(), profileDir: CFG.PROFILE_DIR });
+        throw new CampaignExitError('GENERIC_NAV_ERROR', `profile navigation failed at @${handle}: ${profileNav.reason}`, EXIT_CODES.GENERIC_NAV_ERROR);
+      }
       await page.waitForTimeout(1500);
-      result = await page.evaluate(VERIFY_JS);
+      const observed = await captureXResponseEvidence(page, () => page.evaluate(VERIFY_JS));
+      if (observed.evidence?.reason === 'RATE_LIMIT') {
+        writeAlert(CFG.ALERT_PATH, { type: 'RATE_LIMIT', text: `HTTP 429 ${observed.evidence.responseUrl}`, handle, url: page.url(), profileDir: CFG.PROFILE_DIR });
+        throw new CampaignExitError('RATE_LIMIT', `HTTP 429 during follow action at @${handle}`, EXIT_CODES.RATE_LIMIT);
+      }
+      if (observed.evidence?.reason === 'LOGIN_REDIRECT') {
+        throw new XAuthenticationError(`follow action lost authentication at @${handle}`, { handle, url: page.url(), evidence: observed.evidence });
+      }
+      result = observed.value;
     } catch (e) {
+      if (e instanceof CampaignExitError || e instanceof XAuthenticationError) throw e;
       log(`ERROR ${handle}: ${e.message}`);
       if (++consecutiveErrors >= 5) {
         log(`FATAL: ${consecutiveErrors} consecutive errors. Pausing 5 min and exiting.`);
         writeAlert(CFG.ALERT_PATH, { type: 'CONSECUTIVE_ERRORS', text: '5+ errors', handle, url: page.url(), profileDir: CFG.PROFILE_DIR });
-        await sleep(300_000); await ctx.close(); process.exit(EXIT_CODES.CONSECUTIVE_ERRORS);
+        await sleep(300_000);
+        throw new CampaignExitError('CONSECUTIVE_ERRORS', '5+ errors', EXIT_CODES.CONSECUTIVE_ERRORS);
       }
       await sleep(15_000); continue;
     }
@@ -416,7 +442,6 @@ async function main() {
       tracker.stats.follow_success = (tracker.stats.follow_success || 0) + 1;
       followedSet.add(handle); followTimestamps.push(Date.now());
       log(`✅ FOLLOW #${tracker.followed.length}: ${handle} (${result.action})`);
-      consecutiveRateLimits = 0;
     } else if (result.decision && result.decision.startsWith('reject')) {
       tracker.rejected = tracker.rejected || [];
       tracker.rejected.push({ h: handle, r: result.decision, at: new Date().toISOString() });
@@ -429,33 +454,34 @@ async function main() {
     // Anomaly check AFTER action (esp. after a follow). EMPTY_PAGE excluded (latency artifact).
     const anomaly = await detectAnomaly(page);
     if (anomaly && anomaly.type !== 'EVAL_ERROR' && anomaly.type !== 'EMPTY_PAGE') {
+      if (anomaly.type === 'LOGIN_REDIRECT') throw new XAuthenticationError(anomaly.text, { handle, url: page.url() });
       log(`!!! ANOMALY DETECTED: ${anomaly.type} - ${anomaly.text}`);
       writeAlert(CFG.ALERT_PATH, { ...anomaly, handle, url: page.url(), profileDir: CFG.PROFILE_DIR, trackerPath: CFG.TRACKER_PATH });
-      if (anomaly.type === 'RATE_LIMIT') {
-        if (++consecutiveRateLimits >= 2) { log(`RATE_LIMIT twice, exiting`); await ctx.close(); process.exit(EXIT_CODES.RATE_LIMIT); }
-        log(`RATE_LIMIT first hit, pause 30 min and retry once`); await sleep(1800_000); continue;
-      }
-      await ctx.close(); process.exit(EXIT_CODES[anomaly.type] || 99);
+      throw new CampaignExitError(anomaly.type, anomaly.text, EXIT_CODES[anomaly.type] || 99);
     }
 
     // Comment on pinned post (引流回关): only when follow succeeded, no prior anomaly, feature enabled.
     if (isFollowAction(result.action) && CFG.COMMENT_AFTER_FOLLOW) {
       await page.waitForTimeout(1500 + Math.floor(Math.random() * 1000));
-      const cr = await commentOnPinnedPost(page, handle, CFG);
+      const observedComment = await captureXResponseEvidence(page, () => commentOnPinnedPost(page, handle, CFG));
+      if (observedComment.evidence?.reason === 'RATE_LIMIT') {
+        writeAlert(CFG.ALERT_PATH, { type: 'RATE_LIMIT', text: `HTTP 429 ${observedComment.evidence.responseUrl}`, handle, url: page.url(), context: 'after_comment', profileDir: CFG.PROFILE_DIR });
+        throw new CampaignExitError('RATE_LIMIT', `HTTP 429 during comment action at @${handle}`, EXIT_CODES.RATE_LIMIT);
+      }
+      if (observedComment.evidence?.reason === 'LOGIN_REDIRECT') {
+        throw new XAuthenticationError(`comment action lost authentication at @${handle}`, { handle, url: page.url(), evidence: observedComment.evidence });
+      }
+      const cr = observedComment.value;
       tracker.followed[tracker.followed.length - 1].comment = cr;
       saveJSON(CFG.TRACKER_PATH, tracker);
       // Re-check anomaly after comment interaction (typing/clicking can trigger rate limits).
       if (cr.status === 'posted' || cr.status === 'error') {
         const ca = await detectAnomaly(page);
         if (ca && ca.type !== 'EVAL_ERROR' && ca.type !== 'EMPTY_PAGE') {
+          if (ca.type === 'LOGIN_REDIRECT') throw new XAuthenticationError(ca.text, { handle, url: page.url() });
           log(`!!! ANOMALY AFTER COMMENT: ${ca.type} - ${ca.text}`);
           writeAlert(CFG.ALERT_PATH, { ...ca, handle, url: page.url(), context: 'after_comment', profileDir: CFG.PROFILE_DIR });
-          if (ca.type === 'RATE_LIMIT') {
-            if (++consecutiveRateLimits >= 2) { log(`RATE_LIMIT twice (comment), exiting`); await ctx.close(); process.exit(EXIT_CODES.RATE_LIMIT); }
-            log(`RATE_LIMIT after comment, pause 30 min`); await sleep(1800_000);
-          } else {
-            await ctx.close(); process.exit(EXIT_CODES[ca.type] || 99);
-          }
+          throw new CampaignExitError(ca.type, ca.text, EXIT_CODES[ca.type] || 99);
         }
       }
     }
@@ -474,8 +500,32 @@ async function main() {
   }
 
   log(`=== CAMPAIGN END === Total follows: ${tracker.followed.length}/${CFG.TARGET}`);
-  await ctx.close();
-  process.exit(0);
 }
 
-main().catch(e => { log(`FATAL: ${e.stack || e}`); process.exit(99); });
+async function main() {
+  await withAuthenticatedContext(
+    { config: RUNTIME.browser, headless: false, width: 1280, height: 820 },
+    runCampaign,
+  );
+}
+
+main().catch((error) => {
+  if (error instanceof BrowserConfigError) {
+    log(`FATAL BROWSER_CONFIG: ${error.message}`);
+    process.exitCode = 2;
+    return;
+  }
+  if (error instanceof XAuthenticationError) {
+    writeAlert(CFG.ALERT_PATH, { type: 'LOGIN_REDIRECT', text: error.message, url: error.details?.url, profileDir: CFG.PROFILE_DIR });
+    log(`FATAL LOGIN_REDIRECT: ${error.message}`);
+    process.exitCode = EXIT_CODES.LOGIN_REDIRECT;
+    return;
+  }
+  if (error instanceof CampaignExitError) {
+    log(`FATAL ${error.type}: ${error.message}`);
+    process.exitCode = error.exitCode;
+    return;
+  }
+  log(`FATAL: ${error.stack || error}`);
+  process.exitCode = 99;
+});

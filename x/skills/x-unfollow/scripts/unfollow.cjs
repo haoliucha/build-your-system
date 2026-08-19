@@ -19,9 +19,9 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { chromium } = require('playwright');
-const { persistentContextOptions } = require(path.join(__dirname, 'lib', 'browser-launch.cjs'));
-const { gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
+const { cdpSessionOptions } = require(path.join(__dirname, 'lib', 'browser-launch.cjs'));
+const { BrowserConfigError, withAuthenticatedContext, XAuthenticationError } = require(path.join(__dirname, 'lib', 'cdp-browser.cjs'));
+const { captureXResponseEvidence, gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
 const { detectAnomaly, writeAlert, EXIT_CODES } = require(path.join(__dirname, 'lib', 'anomaly.cjs'));
 const { todayInShanghai } = require(path.join(__dirname, 'lib', 'hygiene.cjs'));
 const { assertRunToken } = require(path.join(__dirname, 'lib', 'rate-gate.cjs'));
@@ -73,6 +73,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rand = (a, b) => a + Math.floor(Math.random() * (b - a));
 function ensureDir(p) { if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true }); }
 function log(msg) { const line = `[${new Date().toISOString()}] ${msg}\n`; try { fs.appendFileSync(LOG_PATH, line); } catch {} process.stdout.write(line); }
+
+class WorkflowExitError extends Error {
+  constructor(type, message, exitCode) {
+    super(message);
+    this.name = 'WorkflowExitError';
+    this.type = type;
+    this.exitCode = exitCode;
+  }
+}
 
 function loadCandidates() {
   if (HANDLES_ARG) return HANDLES_ARG.split(',').map((s) => s.trim().replace(/^@/, '')).filter(Boolean);
@@ -157,6 +166,103 @@ function buildUnfollowJs(handle, settle, dryRun, allowMutual, explicitHandles) {
   })()`;
 }
 
+async function executeUnfollow({ context, confirmAuthenticated, disableAuthRefresh }, state) {
+  const { actionReport, candidates, existingResults } = state;
+  const page = context.pages()[0] || await context.newPage();
+
+  // Startup login gate.
+  const nav = await gotoRobust(page, 'https://x.com/home', {
+    needSel: 'a[data-testid="SideNav_NewTweet_Button"], [data-testid="AppTabBar_Home_Link"], [data-testid="primaryColumn"]', settle: 5000, retries: 4,
+  });
+  if (nav.reason === 'RATE_LIMIT') {
+    writeAlert(ALERT_PATH, { type: 'RATE_LIMIT', text: `HTTP 429 ${nav.responseUrl || '/home'}`, url: page.url(), profileDir: PROFILE_DIR, dataDir: DATA_DIR });
+    throw new WorkflowExitError('RATE_LIMIT', 'HTTP 429 during startup navigation', EXIT_CODES.RATE_LIMIT);
+  }
+  if (nav.reason === 'LOGIN_REDIRECT') throw new XAuthenticationError(`startup navigation requires login: ${page.url()}`, nav);
+  const initial = await detectAnomaly(page);
+  if (initial && initial.type !== 'EVAL_ERROR' && initial.type !== 'EMPTY_PAGE') {
+    if (initial.type === 'LOGIN_REDIRECT') throw new XAuthenticationError(initial.text, { url: page.url() });
+    writeAlert(ALERT_PATH, { ...initial, url: page.url(), profileDir: PROFILE_DIR, dataDir: DATA_DIR });
+    log(`FATAL anomaly on /home: ${initial.type}`);
+    throw new WorkflowExitError(initial.type, initial.text, EXIT_CODES[initial.type] || 99);
+  }
+  await confirmAuthenticated(page, { expectedPath: '/home' });
+  if (!nav.ok) {
+    const type = nav.reason === 'GENERIC_NAV_ERROR' ? 'GENERIC_NAV_ERROR' : 'LOGIN_REDIRECT';
+    if (type === 'LOGIN_REDIRECT') throw new XAuthenticationError('home content missing', { url: page.url(), nav });
+    writeAlert(ALERT_PATH, { type, text: 'generic X navigation error page after bounded retries', url: page.url(), profileDir: PROFILE_DIR, dataDir: DATA_DIR });
+    throw new WorkflowExitError(type, 'generic X navigation error page after bounded retries', EXIT_CODES[type]);
+  }
+  log(`Logged in OK: ${page.url()}`);
+  // A mutating workflow must never restart from the beginning after the first authorization
+  // gate, because doing so could duplicate already-completed unfollows.
+  disableAuthRefresh();
+
+  const results = [];
+  let done = 0;
+  for (const handle of candidates) {
+    let r;
+    try {
+      const profileNav = await gotoRobust(page, `https://x.com/${handle}`, { needSel: 'div[data-testid="UserName"]', settle: 4000, retries: 3 });
+      if (profileNav.reason === 'RATE_LIMIT') {
+        writeAlert(ALERT_PATH, { type: 'RATE_LIMIT', text: `HTTP 429 ${profileNav.responseUrl || handle}`, handle, url: page.url(), profileDir: PROFILE_DIR, dataDir: DATA_DIR });
+        throw new WorkflowExitError('RATE_LIMIT', `HTTP 429 at @${handle}`, EXIT_CODES.RATE_LIMIT);
+      }
+      if (profileNav.reason === 'LOGIN_REDIRECT') throw new XAuthenticationError(`login required at @${handle}`, { handle, url: page.url() });
+      if (!profileNav.ok) {
+        writeAlert(ALERT_PATH, { type: 'GENERIC_NAV_ERROR', text: `${profileNav.reason} at @${handle}`, handle, url: page.url(), profileDir: PROFILE_DIR, dataDir: DATA_DIR });
+        throw new WorkflowExitError('GENERIC_NAV_ERROR', `profile navigation failed at @${handle}: ${profileNav.reason}`, EXIT_CODES.GENERIC_NAV_ERROR);
+      }
+      await page.waitForTimeout(1200);
+      const observed = await captureXResponseEvidence(
+        page,
+        () => page.evaluate(buildUnfollowJs(handle, SETTLE, DRY_RUN, ALLOW_MUTUAL, Boolean(HANDLES_ARG))),
+      );
+      if (observed.evidence?.reason === 'RATE_LIMIT') {
+        writeAlert(ALERT_PATH, { type: 'RATE_LIMIT', text: `HTTP 429 ${observed.evidence.responseUrl}`, handle, url: page.url(), profileDir: PROFILE_DIR, dataDir: DATA_DIR });
+        throw new WorkflowExitError('RATE_LIMIT', `HTTP 429 during unfollow action at @${handle}`, EXIT_CODES.RATE_LIMIT);
+      }
+      if (observed.evidence?.reason === 'LOGIN_REDIRECT') {
+        throw new XAuthenticationError(`unfollow action lost authentication at @${handle}`, { handle, url: page.url(), evidence: observed.evidence });
+      }
+      r = observed.value;
+    } catch (e) {
+      if (e instanceof WorkflowExitError || e instanceof XAuthenticationError) throw e;
+      r = { handle, action: 'error', result: e.message };
+    }
+    r.at = new Date().toISOString();
+    results.push(r);
+    log(`@${handle} -> ${r.action} (${r.result})`);
+
+    // Persist incrementally so a mid-run halt still records progress.
+    writeActionLog(actionReport, DATE, mergeResultsByHandle(existingResults, results));
+
+    // Anomaly check after action.
+    const anomaly = await detectAnomaly(page);
+    if (anomaly && anomaly.type !== 'EVAL_ERROR' && anomaly.type !== 'EMPTY_PAGE') {
+      if (anomaly.type === 'LOGIN_REDIRECT') throw new XAuthenticationError(anomaly.text, { handle, url: page.url() });
+      writeAlert(ALERT_PATH, { ...anomaly, handle, url: page.url(), profileDir: PROFILE_DIR, dataDir: DATA_DIR });
+      log(`!!! ANOMALY ${anomaly.type} after @${handle} — HALT.`);
+      throw new WorkflowExitError(anomaly.type, anomaly.text, EXIT_CODES[anomaly.type] || 99);
+    }
+
+    if (r.action === 'unfollowed') {
+      done++;
+      const w = rand(WAIT_MIN, WAIT_MAX); log(`-- sleep ${(w / 1000).toFixed(0)}s --`); await sleep(w);
+      if (done % LONG_BREAK_EVERY === 0) { log(`-- LONG BREAK ${LONG_BREAK_MS / 1000}s after ${done} --`); await sleep(LONG_BREAK_MS); }
+    } else {
+      await sleep(rand(SKIP_WAIT_MIN, SKIP_WAIT_MAX));
+    }
+  }
+
+  const counts = {};
+  for (const r of results) counts[r.action] = (counts[r.action] || 0) + 1;
+  const mergedResults = mergeResultsByHandle(existingResults, results);
+  writeActionLog(actionReport, DATE, mergedResults);
+  log(`=== UNFOLLOW END === ${JSON.stringify(counts)}`);
+  console.log(JSON.stringify({ date: DATE, results: mergedResults, thisRunResults: results, counts }, null, 2));
+}
+
 async function main() {
   assertRunToken();
   ensureDir(REPORTS_DIR);
@@ -172,68 +278,29 @@ async function main() {
   log(`SAFETY: clicks ONLY an explicit Following/正在关注 or Unfollow/取消关注 aria-label for the exact target, then requires a matching unfollow menu/dialog; skips if it now follows you; never subscribe/follow/like/comment/block/settings.`);
   if (!candidates.length) { log('No candidates to unfollow.'); console.log(JSON.stringify({ date: DATE, results: [], counts: {} }, null, 2)); return; }
 
-  const ctx = await chromium.launchPersistentContext(
-    PROFILE_DIR,
-    persistentContextOptions({ width: 1280, height: 820 }),
+  await withAuthenticatedContext(
+    cdpSessionOptions({ width: 1280, height: 820 }),
+    (api) => executeUnfollow(api, { actionReport, candidates, existingResults }),
   );
-  const page = ctx.pages()[0] || await ctx.newPage();
-
-  // Startup login gate.
-  const nav = await gotoRobust(page, 'https://x.com/home', {
-    needSel: 'a[data-testid="SideNav_NewTweet_Button"], [data-testid="AppTabBar_Home_Link"], [data-testid="primaryColumn"]', settle: 5000, retries: 4,
-  });
-  const initial = await detectAnomaly(page);
-  if (initial && initial.type !== 'EVAL_ERROR' && initial.type !== 'EMPTY_PAGE') {
-    writeAlert(ALERT_PATH, { ...initial, url: page.url(), profileDir: PROFILE_DIR, dataDir: DATA_DIR });
-    log(`FATAL anomaly on /home: ${initial.type}`); await ctx.close(); process.exit(EXIT_CODES[initial.type] || 99);
-  }
-  if (!nav.ok) {
-    writeAlert(ALERT_PATH, { type: 'LOGIN_REDIRECT', text: 'home content missing', url: page.url(), profileDir: PROFILE_DIR, dataDir: DATA_DIR });
-    log('FATAL: /home did not render logged-in content (login expired?)'); await ctx.close(); process.exit(EXIT_CODES.LOGIN_REDIRECT);
-  }
-  log(`Logged in OK: ${page.url()}`);
-
-  const results = [];
-  let done = 0;
-  for (const handle of candidates) {
-    let r;
-    try {
-      await gotoRobust(page, `https://x.com/${handle}`, { needSel: 'div[data-testid="UserName"]', settle: 4000, retries: 3 });
-      await page.waitForTimeout(1200);
-      r = await page.evaluate(buildUnfollowJs(handle, SETTLE, DRY_RUN, ALLOW_MUTUAL, Boolean(HANDLES_ARG)));
-    } catch (e) {
-      r = { handle, action: 'error', result: e.message };
-    }
-    r.at = new Date().toISOString();
-    results.push(r);
-    log(`@${handle} -> ${r.action} (${r.result})`);
-
-    // Persist incrementally so a mid-run halt still records progress.
-    writeActionLog(actionReport, DATE, mergeResultsByHandle(existingResults, results));
-
-    // Anomaly check after action.
-    const anomaly = await detectAnomaly(page);
-    if (anomaly && anomaly.type !== 'EVAL_ERROR' && anomaly.type !== 'EMPTY_PAGE') {
-      writeAlert(ALERT_PATH, { ...anomaly, handle, url: page.url(), profileDir: PROFILE_DIR, dataDir: DATA_DIR });
-      log(`!!! ANOMALY ${anomaly.type} after @${handle} — HALT.`); await ctx.close(); process.exit(EXIT_CODES[anomaly.type] || 99);
-    }
-
-    if (r.action === 'unfollowed') {
-      done++;
-      const w = rand(WAIT_MIN, WAIT_MAX); log(`-- sleep ${(w / 1000).toFixed(0)}s --`); await sleep(w);
-      if (done % LONG_BREAK_EVERY === 0) { log(`-- LONG BREAK ${LONG_BREAK_MS / 1000}s after ${done} --`); await sleep(LONG_BREAK_MS); }
-    } else {
-      await sleep(rand(SKIP_WAIT_MIN, SKIP_WAIT_MAX));
-    }
-  }
-
-  await ctx.close();
-  const counts = {};
-  for (const r of results) counts[r.action] = (counts[r.action] || 0) + 1;
-  const mergedResults = mergeResultsByHandle(existingResults, results);
-  writeActionLog(actionReport, DATE, mergedResults);
-  log(`=== UNFOLLOW END === ${JSON.stringify(counts)}`);
-  console.log(JSON.stringify({ date: DATE, results: mergedResults, thisRunResults: results, counts }, null, 2));
 }
 
-main().catch((e) => { log(`FATAL: ${e.stack || e}`); process.exit(99); });
+main().catch((error) => {
+  if (error instanceof BrowserConfigError) {
+    log(`FATAL BROWSER_CONFIG: ${error.message}`);
+    process.exitCode = 2;
+    return;
+  }
+  if (error instanceof XAuthenticationError) {
+    writeAlert(ALERT_PATH, { type: 'LOGIN_REDIRECT', text: error.message, url: error.details?.url, profileDir: PROFILE_DIR, dataDir: DATA_DIR });
+    log(`FATAL LOGIN_REDIRECT: ${error.message}`);
+    process.exitCode = EXIT_CODES.LOGIN_REDIRECT;
+    return;
+  }
+  if (error instanceof WorkflowExitError) {
+    log(`FATAL ${error.type}: ${error.message}`);
+    process.exitCode = error.exitCode;
+    return;
+  }
+  log(`FATAL: ${error.stack || error}`);
+  process.exitCode = 99;
+});

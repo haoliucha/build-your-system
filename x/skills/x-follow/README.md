@@ -1,190 +1,176 @@
 # x-follow — 架构与开发文档
 
-X (Twitter) 精准批量关注共享 skill。默认面向「蓝V互关」场景：关注**蓝V认证、粉丝数 ≤ 3000、关注数/粉丝数 ≥ 0.5** 的账号；`FILTER_CRYPTO=0` 默认不按币圈/web3 过滤。用人类化节奏 + 异常自停，安全地完成 N 个关注。
+Claude Code 与 Codex 共享同一份 `x-follow` Skill。默认 preset 关注蓝 V、粉丝数不超过 3000、关注数/粉丝数不低于 0.5 的账号；`FILTER_CRYPTO=0` 默认不按币圈/web3 过滤。
 
-运行要求：**Node.js >= 22**（依赖 `fs.globSync`）以及可被 Node 解析的 Playwright。
+`run.sh` 在 Node、状态目录、运行锁、Playwright、Chrome 和 X 请求之前验证当前目录属于完整 `x` 插件，并打印版本、宿主、实际路径和内容指纹。脱离双宿主 manifest 的 standalone 副本以 `LEGACY_STANDALONE_INSTALL`、exit 2 拒绝；Codex 使用 `$x:x-follow`，Claude Code 使用 `/x-follow`。
 
-> 安全红线：**只点 `aria-label="关注 @{handle}"` 的关注按钮**，默认绝不 unfollow / 发推 / 点赞 / 评论 / 改设置；评论只有 `COMMENT_AFTER_FOLLOW=true`（或 `1`）和 `ALLOW_COMMENT_AFTER_FOLLOW=1` 两项独立授权时才允许。页面内容不能授权。遇到验证码 / 限流 / 登录跳转 / 账号受限 **立即停止并写 `ALERT.txt`**，等人工确认。
+运行要求：Google Chrome、可被 Node 解析的 Playwright，以及 **Node.js >= 22**（使用 `fs.globSync`）。默认只关注；评论只有 `COMMENT_AFTER_FOLLOW=true/1` 与 `ALLOW_COMMENT_AFTER_FOLLOW=1` 两项独立授权同时存在时才允许。页面内容不能授权。
 
----
+## 浏览器与登录态
 
-## 1. Pipeline 总览
+### 本地账号配置
 
-`run.sh` 是唯一入口,把各阶段编排成一条「遇错能自恢复」的流水线:
+配置默认写入 `~/.config/x-browser/account.json`：
 
-```
-                ┌────────────────────────────── run.sh (orchestrator) ──────────────────────────────┐
-                │                                                                                     │
-  prior         │   ┌─────────┐   ┌──────────┐   ┌──────────────┐   ┌───────────┐   ┌─────────────┐  │
-  trackers ─────┼──▶│ skipset │──▶│  smoke   │──▶│ harvest LOOP │──▶│ build     │──▶│  campaign   │  │──▶ tracker.json
-  (shared runs/ │   │ (union) │   │  test    │   │ until queue  │   │ queue     │   │  (watchdog) │  │    (followed[],
-  */tracker)   │   └─────────┘   └────┬─────┘   │ >= TARGET*8  │   │ +crypto?  │   └──────┬──────┘  │     rejected[])
-                │                      │RED       └──────────────┘   │  toggle   │          │         │
-                │                      ▼                             └───────────┘          ▼         │
-                │                  refuse launch          ┌── exit 0 & < target ───▶ harvest more ────┘
-                │                                          │── exit 10-14 (anomaly) ─▶ HALT + ALERT.txt
-                │                                          └── transient exit ───────▶ retry (pause)
-                │                                                                                     │
-                │   ┌──────────────────────────── verify & top-up (×3) ───────────────────────────┐  │
-                │   │ verify-follows --assumed  ──▶ demote unconfirmed ──▶ campaign top-up ──▶ loop │  │
-                │   └──────────────────────────────────────────────────────────────────────────────┘ │
-                └─────────────────────────────────────────────────────────────────────────────────────┘
-                                                       │
-                                                       ▼
-                                          report: follows / actions / rejects
+```json
+{
+  "schemaVersion": 1,
+  "chromeAccountEmail": "用户填写的邮箱"
+}
 ```
 
-**为什么是这个形状**(吸取 6 轮实战经验):
-
-- **harvest 是循环,不是单次**:跑到第 N 轮后,新搜索与历史 skip-set 重叠很高(常 ~50% inSkip),单次 6 query 往往凑不够候选,所以「harvest → build → 数量够没?不够再 harvest」。
-- **campaign 退出 0 但 < target = 队列耗尽**,不是成功——回到 harvest 补候选再续跑(`tracker.json` 让已关注的被跳过,天然幂等续跑)。
-- **verify & top-up 不可省**:`followed_assumed`(点了但 DOM 没及时翻成「正在关注」)会**虚报**;实测 4 个里坏过 2 个。跑完必须复核、把没成的踢回去重关,直到「确认数 == target」。
-
----
-
-## 2. 模块依赖
-
-```
-run.sh ─┬─ scripts/smoke-test.cjs ───────┐
-        ├─ scripts/harvest.cjs ──────────┤
-        ├─ scripts/build-queue.cjs ──────┤
-        ├─ scripts/campaign.cjs ─────────┤
-        ├─ scripts/verify-follows.cjs ───┤
-        └─ scripts/snapshot-following.cjs┘
-                                          │ require
-                       ┌──────────────────┴───────────────────┐
-                       ▼            ▼            ▼             ▼
-              lib/nav-helper  lib/anomaly  lib/filters   lib/skipset
-              (gotoRobust)    (classify+   (parseCount,  (tracker
-                  │            detect+      isCrypto,     union)
-                  └── uses ──▶ writeAlert)  decide,
-                     filters.              backoffMs)
-                     backoffMs
-```
-
-- **`lib/` 全是纯逻辑或薄封装**,被 `tests/run-tests.cjs` 直接 import 做单测(无需浏览器)。
-- **`scripts/*.cjs` 各管一件事**,只通过 stdout JSON 通信,方便编排与测试。
-- 浏览器内运行的 `VERIFY_JS`(在 `campaign.cjs` 里)无法 require lib,所以它的判定顺序**必须**和 `lib/filters.decide()` 一致——单测锁住这份契约。
-
----
-
-## 3. 健壮性机制(遇错恢复)
-
-| 故障 | 现象 | 处理 | 实现位置 |
-|---|---|---|---|
-| **HTTP 429**(SearchTimeline / UserByScreenName 配额) | 页面「出错了。请尝试重新加载」 | **指数退避**(profile 20s→…→300s;search 用更深的 45s→90s base)后**重新导航**,等待即恢复;绝不 reload 硬刷(那是给 429 喂请求) | `lib/nav-helper.gotoRobust` |
-| **高延迟 VPN** | 固定 sleep 后页面还没渲染 → EMPTY_PAGE / 0 结果 / eval 报错 | 等真正的内容选择器(`waitForSelector`)而非定时器 | `gotoRobust(needSel)` |
-| **异常误报**(对方推文里出现「账户被限制 / rate limit」) | 误判 ACCOUNT_RESTRICTED / RATE_LIMIT | 匹配只在页面 chrome,排除 `article`/`tweetText`(`inChrome`) | `lib/anomaly.classifyAnomaly` |
-| **EMPTY_PAGE 误报**(/home SPA 壳 <50 字) | 启动体检 RED | 启动门控排除 EMPTY_PAGE + 等登录态元素 | `campaign.cjs` / `smoke-test.cjs` |
-| **followed_assumed 虚报** | 计数 50 实际 48 | 跑完 `verify-follows --assumed` 复核,踢回未成的重关 | `verify-follows.cjs` + `run.sh` |
-| **真异常**(验证码 / 限流 / 登录跳转 / 账号受限) | — | **立即停**,写 `ALERT.txt`,退出码 10-14,watchdog 不再重启 | `campaign.cjs` + `run.sh` |
-| **连续报错 / profile 锁** | 浏览器卡死 / exit 99 级联 | 连续 5 错即停;每次启动前 kill 残留 Chrome + 删 SingletonLock | `campaign.cjs` / `run.sh` |
-| **harvest 单会话 429 风暴** | 6 个 f=live query 背靠背在一个 session 跑 → 第 3 query 起必触 429 并级联(实测 50i 4/6 query 全废) | **会话拆分**:每 `SESSION_SIZE`(2)query 关浏览器+冷却 `SESSION_COOLDOWN_MS`(75s)再开(fresh session 重置配额);query 间隔 `QUERY_PACING_MS`(25s);连续 2 次 nav 失败即**中止本轮**并报 `rateLimited` | `harvest.cjs` |
-| **限流被误判为池枯竭** | 429 风暴轮净增 <`POOL_MIN_GAIN` → 当成 dry round,过早 POOL_EXHAUSTED 退出(50i 22/50、50j 1/50 实为限流非枯竭) | harvest 上报 `rateLimited` → run.sh 区分:限流则**冷却 `ROUND_COOLDOWN_RL_S` 重试**(≤`MAX_RL_RETRIES`),**不计入** dry round | `run.sh` + `harvest.cjs` |
-| **查询重叠 → 候选池假枯竭** | 6 个近重复词反复返回同一批人(实测 61% dup + 高 inSkip),真·新候选每轮仅个位数 | 查询池扩到 14 词,每轮**轮换** `QUERIES_PER_ROUND`(4)个不同词,几轮覆盖全部 → 触达更新鲜的账号 | `run.sh` |
-| **non-blue 候选浪费 profile 访问** | 非蓝V 占 campaign 拒绝 ~50%,每个都要开 profile 才发现 | harvest 已带 `blue` 徽章 → `DROP_NONBLUE` 在 build-queue 阶段就丢掉(零浏览器) | `build-queue.cjs` |
-| **候选池枯竭后空转** | queue 长期 0-4 仍反复 harvest+campaign(曾空转 1.5h) | 连续 `POOL_DRY_ROUNDS` 轮净增 `<POOL_MIN_GAIN`(且非限流)→ 判定枯竭,优雅停止 | `run.sh` |
-| **阈值过严挤干池** | `FERS_MAX=1100` 把蓝V误杀近半(蓝V粉丝普遍偏高);`fing<=fers` 把粉丝略多的优质互关号也拒掉 | `FERS_MAX→3000`(大号 median 14k 仍挡);`fing` 改 `FOLLOW_RATIO_MIN=0.5`(只拒单向广播号 fing<fers/2) | `campaign.cjs` / `lib/filters.cjs` |
-| **瞬时错误被永久拉黑** | 429/临时不可用记成 reject → 永久 skip 误杀合格账号 | skip-set **分级**:transient 永不 skip、soft(阈值)按 `SOFT_TTL_DAYS` 过期释放、permanent 永久 | `lib/skipset.cjs` |
-| **阈值放宽后旧拒绝不复用** | 把 `FERS_MAX` 调高后,之前被旧阈值 soft-拒的账号仍被锁在 skip-set 30 天 | **阈值感知释放**:soft 拒绝里存的粉丝数/比值若在新阈值下已通过 → 立即移出 skip-set 重评(解锁历史 inSkip) | `lib/skipset.cjs` |
-| **--no-sandbox 警告条** | Chrome 顶部「--no-sandbox / 稳定性与安全将受影响」(Playwright 默认 `chromiumSandbox` 未设) | 各 launch 点显式 `chromiumSandbox: true`(macOS 安全;顺带去掉一个自动化指纹) | 全部 launch 脚本 |
-| **tracker 无界膨胀** | 每轮把全部历史 skip 冻结成 `pre_existing` 复制进新 tracker | 新 tracker 只存本轮决策;skip-set 每次从 `SKIP_GLOB` 动态(分级)重算 | `build-queue.cjs` / `run.sh` |
-| **后台跑看不到进度** | 只能 tail 日志 | 每账号/每阶段写单文件 `status.json`(含心跳 `ts`,可测卡死) | `campaign.cjs` / `run.sh` |
-
-### 异常退出码 → watchdog 行为
-
-```
-campaign.cjs exit code
-   0            → 干净退出(达标 或 队列耗尽)   run.sh: 达标则结束, 否则 harvest 续跑
-   10 CAPTCHA   ┐
-   11 RATE_LIMIT│
-   12 LOGIN     ├─→ 真异常              run.sh: HALT, 保留 ALERT.txt, 不再操作账号
-   13 RESTRICT  │
-   14 WEBDRIVER ┘
-   15 CONSEC_ERR / 16 EMPTY / 其它 → transient   run.sh: 暂停 20s 重试(上限 MAX_CAMPAIGN_ATTEMPTS)
-```
-
----
-
-## 4. 用法
+首次运行前由宿主询问用户 Chrome 账号邮箱，再执行：
 
 ```bash
-# 一次性:从基础登录态 profile 复制一份工作副本(基础 profile 不被 MCP 占用时执行)
-SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
-PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
-export SOURCE_PROFILE_DIR PROFILE_DIR
-node scripts/prepare-profile-copy.cjs
-
-# 跑一轮（默认 target=10，蓝V互关 preset）
-NODE_PATH=~/.config/playwright-mcp-server/node_modules \
-SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
-TARGET=10 MY_HANDLE=haoliucha JOB_DIR=/tmp/xf-run1 \
-bash run.sh
+SKILL_DIR="/当前 x-follow Skill 目录的绝对路径"
+node "$SKILL_DIR/scripts/configure-account.cjs" set --email=<chrome-account-email>
 ```
 
-常用 env(详见 `run.sh` 头部 / `references/presets.md`):
+配置采用同目录临时文件原子替换，权限为 `0600`。解析优先级是 `X_CHROME_ACCOUNT_EMAIL` 临时覆盖 → 本地配置；`X_BROWSER_CONFIG_PATH` 可覆盖配置路径。日志只输出脱敏邮箱。
+
+### profile 选择与 CDP
+
+`configure-account.cjs` 和所有浏览器入口读取系统 Chrome `Local State.profile.info_cache`，按邮箱要求恰好匹配一个 profile。目录名动态解析，不硬编码私人邮箱或 `Profile N`。`x-follow` 不新增 X handle 登录门禁；`MY_HANDLE` 仍是可选的已关注预过滤参数。
+
+系统 Chrome user-data 根目录默认是 `~/Library/Application Support/Google/Chrome`。覆盖优先级为：
+
+1. `X_CHROME_USER_DATA_DIR`
+2. `SOURCE_PROFILE_DIR`（兼容别名）
+3. `X_FOLLOW_SOURCE_PROFILE_DIR`（兼容别名）
+4. 系统默认目录
+
+`PROFILE_DIR` 默认 `~/.config/playwright-chrome-profile-campaign`。运行时强制 source 与 target 的 canonical path 不相等、不互为祖先/后代；门禁在状态目录、网络锁、Playwright 和 Chrome 启动前执行。
+
+浏览器模块启动系统 Google Chrome 子进程，参数包含 `--remote-debugging-address=127.0.0.1`、随机端口、独立 `--user-data-dir` 和 `--disable-blink-features=AutomationControlled`，再由 Playwright `connectOverCDP`。`x-follow` 默认可见；系统 Chrome 始终只读，不连接、不关闭、不接管。
+
+### 一次认证刷新
+
+每次 CDP 启动后先通过浏览器 Cookie API 检查 `auth_token` 和 `ct0`。缺失时不访问 X，最多自动刷新一次：
+
+- 只复制选中 profile 的 Cookie、IndexedDB、Local/Session Storage、Preferences、Network/WebStorage 等认证数据。
+- 不复制 History、Cache 或 Extensions。
+- 在 `PROFILE_DIR.refreshing-*` staging 中准备，旧 target 临时改名为 backup，再原子替换。
+- 刷新后认证成功才删除 backup；再次失败则恢复旧目录并以 `LOGIN_REDIRECT`（exit 12）停止。
+
+两个账号 Skill 对同一 canonical `PROFILE_DIR` 共用 `${PROFILE_DIR}.cdp.lock`。活动 PID 拒绝并发；失效锁只处理记录中且命令行精确匹配该 `--user-data-dir` 的子进程。正常退出、SIGINT、SIGTERM 只关闭本次子进程。代码不使用广域 `pkill`，也不删除 `Singleton*`。
+
+## Pipeline
+
+```text
+run.sh
+  ├─ Node/账号/profile 前置门禁
+  ├─ x-follow network-run.lock
+  ├─ CDP smoke（可见、只读检查）
+  ├─ 可选：snapshot 自己的 following → tracker skip-set
+  ├─ harvest → build queue（不足则受控循环）
+  ├─ campaign（精确关注按钮 + 节奏 + 异常自停）
+  ├─ verify followed_assumed → 必要时补关
+  └─ tracker / status / 报告
+```
+
+运行状态默认位于：
+
+```text
+~/.config/x-follow-data/
+├── network-run.lock
+└── runs/
+    └── current/
+        ├── queue.json
+        ├── tracker.json
+        ├── campaign.log
+        ├── status.json
+        └── ALERT.txt
+```
+
+`X_FOLLOW_RUN_ID=current`，所以默认 `JOB_DIR=$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID`；显式 `JOB_DIR` 优先。历史 skip-set 从 `$X_FOLLOW_DATA_DIR/runs/*/tracker.json` 聚合，不读取或迁移 `~/.claude/jobs/x-follow-*`。
+
+`$X_FOLLOW_DATA_DIR/network-run.lock` 串行化 x-follow 网络流程；shell owner 与继承 token 的 X-facing worker 都登记 identity，任一仍活跃时 replacement 不得恢复或释放该锁。CDP profile 锁则进一步跨 `x-follow`/`x-unfollow` 串行化同一浏览器副本。
+
+## 异常分类
+
+| 类型 | 证据 | campaign | harvest |
+|---|---|---|---|
+| `LOGIN_REDIRECT` | 登录 URL、登录按钮、认证 Cookie 缺失，或未登录的受保护页面跳到公开页 | exit 12 | exit 12 |
+| `PAGE_DRIFT` | 已确认登录后发生非预期跳转 | 停止当前流程 | 停止当前流程 |
+| `RATE_LIMIT` | 导航响应或相关 X API/Timeline 响应的真实 HTTP 429 | 立即 exit 11，不重启 campaign | 中止本轮并把 `rateLimited:true` 交给 orchestrator 受控冷却 |
+| `GENERIC_NAV_ERROR` | “出错了 / Something went wrong”等通用错误页，但没有 HTTP 429 证据 | exit 18，写 `ALERT.txt` | 作为普通导航失败；连续失败中止本轮但不声称限流 |
+| `CAPTCHA` / `ACCOUNT_RESTRICTED` / `WEBDRIVER_DETECTED` | 对应页面或浏览器证据 | exit 10/13/14 | 停止 |
+
+`gotoRobust` 对高延迟、无内容和通用错误页使用有界重试；一旦观察到真实 HTTP 429，不再执行指数退避重放。文本模式只在页面 chrome 中匹配并排除推文、bio、用户名和列表行，避免用户内容制造异常误报。
+
+## 使用
+
+```bash
+SKILL_DIR="/当前 x-follow Skill 目录的绝对路径"
+NODE_PATH=~/.config/playwright-mcp-server/node_modules \
+  TARGET=10 MY_HANDLE=<可选-handle> \
+  bash "$SKILL_DIR/run.sh"
+```
+
+常用环境变量：
 
 | env | 默认 | 说明 |
 |---|---|---|
-| `TARGET` | 10 | 目标关注数 |
-| `MY_HANDLE` | (空) | 自己的 handle,用于 already-following 预过滤 |
-| `SOURCE_PROFILE_DIR` | `~/.config/playwright-chrome-profile` | 原始登录态源目录；兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`，前者优先 |
-| `PROFILE_DIR` | `~/.config/playwright-chrome-profile-campaign` | 工作 profile 副本 |
+| `TARGET` | 10 | 本轮明确授权的目标关注数 |
+| `MY_HANDLE` | 空 | 只用于 snapshot/已关注预过滤，不用于选择 Chrome profile |
+| `X_BROWSER_CONFIG_PATH` | `~/.config/x-browser/account.json` | 本地账号配置 |
+| `X_CHROME_ACCOUNT_EMAIL` | 空 | 仅本次运行覆盖配置邮箱 |
+| `X_CHROME_USER_DATA_DIR` | 系统 Chrome user-data 根目录 | 只读源；旧 source 变量仍兼容 |
+| `PROFILE_DIR` | `~/.config/playwright-chrome-profile-campaign` | 独立 CDP 工作副本 |
 | `X_FOLLOW_DATA_DIR` | `~/.config/x-follow-data` | Claude Code 与 Codex 共享状态根目录 |
-| `X_FOLLOW_RUN_ID` | `current` | 单个安全路径段，用于默认 run 目录 |
-| `JOB_DIR` | `$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID` | tracker/queue/日志输出目录；显式设置优先 |
-| `QUERIES` | 求互关,互相关注,回关,求关注,蓝V互关,蓝V互粉,互粉,回粉,互关注,求关注回关,涨粉互关,蓝V互粉互关,求互fo,互关必回 | harvest 搜索词**池**(每轮只取一段) |
-| `QUERIES_PER_ROUND` | 4 | 每轮从池里轮换取几个词(降低单轮 429 暴露 + 触达更广) |
-| `SESSION_SIZE` | 2 | harvest 每个浏览器会话最多跑几个 query(第 3 起必触 429,故 2) |
-| `QUERY_PACING_MS` | 25000 | 同会话内 query 间隔(+15s 抖动) |
-| `SESSION_COOLDOWN_MS` | 75000 | 会话满后关浏览器→冷却→重开(重置 X 配额) |
-| `SEARCH_BACKOFF_BASE` | 45000 | search 导航 429 退避基数(比 profile 的 20s 更深,落在限流窗口外) |
-| `ROUND_COOLDOWN_RL_S` / `MAX_RL_RETRIES` | 300 / 3 | harvest 限流时冷却秒数 / 最多重试轮数(不计入 dry) |
-| `FILTER_CRYPTO` | 0 | **默认 0 = 不过滤币圈/web3**(允许关注);设 `1` 恢复过滤(蓝V互关 经典 preset) |
-| `FERS_MAX` | 3000 | 粉丝上限(原 1100 误杀近半蓝V;大号 median 14k 仍被挡) |
-| `FOLLOW_RATIO_MIN` | 0.5 | 关注/粉丝最低比;只拒单向广播号(`fing < fers*0.5`),不再拒粉丝略多的互关号 |
-| `CAND_MULT` | 8 | harvest 到 `TARGET*CAND_MULT` 候选才开跑 |
-| `VERIFIED_REQUIRED` | true | 仅蓝V;为 true 时自动开启 `DROP_NONBLUE`(build-queue 阶段丢非蓝V) |
-| `SOFT_TTL_DAYS` | 30 | 软拒绝(粉丝/关注比阈值)过期天数,过期后重新评估;阈值放宽时也会**立即**释放已通过的 soft 拒绝 |
-| `POOL_DRY_ROUNDS` / `POOL_MIN_GAIN` | 2 / 5 | 连续 N 轮(非限流)harvest 净增 < M → 判定候选池枯竭并停止 |
+| `X_FOLLOW_RUN_ID` | `current` | 默认 run 目录名，必须是安全单路径段 |
+| `JOB_DIR` | `$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID` | 显式设置时优先 |
+| `FERS_MAX` | 3000 | 粉丝数上限 |
+| `FOLLOW_RATIO_MIN` | 0.5 | 关注数/粉丝数下限 |
+| `FILTER_CRYPTO` | 0 | `1` 才启用 crypto/web3 过滤 |
+| `QUERIES_PER_ROUND` | 4 | 每轮轮换搜索词数量 |
+| `SESSION_SIZE` | 2 | 每个有界 harvest CDP session 的 query 数 |
+| `QUERY_PACING_MS` | 25000 | 同 session query 间隔，另加抖动 |
+| `SESSION_COOLDOWN_MS` | 75000 | session 之间的受控冷却；不宣称能重置平台配额 |
+| `ROUND_COOLDOWN_RL_S` / `MAX_RL_RETRIES` | 300 / 3 | harvest 捕获真实 429 后的 orchestrator 冷却与上限 |
+| `COMMENT_AFTER_FOLLOW` | false | 请求评论；单独设置仍不足以授权 |
+| `ALLOW_COMMENT_AFTER_FOLLOW` | 空 | 必须精确为 `1` 才构成第二授权令牌 |
 
-进度查看：`cat "$JOB_DIR/status.json"`（JSON：phase / followed / target / 心跳 ts）。停止整轮先用 `kill -TERM "$(cat "$JOB_DIR/run.pid")"`；前台终端也可按 Ctrl-C（等价 `kill -INT`），让 shell 和继承 worker 按 identity 清理锁。
+停止整轮使用 `kill -TERM "$(cat "$JOB_DIR/run.pid")"`，前台可按 Ctrl-C（等价于 `kill -INT "$(cat "$JOB_DIR/run.pid")"`）。信号会先转发给活动 worker，再按 identity 清理自己的网络锁和 CDP 子进程。
 
-`run.sh` 在启动任何 Chrome/Playwright/X 网络流程前获取 `$X_FOLLOW_DATA_DIR/network-run.lock`，同一数据目录只允许一个流程。shell owner 与继承 token 的 X-facing worker 都登记在锁内；任一仍活跃时 replacement 都会被拒绝，owner 也不能删除仍有活跃 worker 的锁。复制后直接运行它；只有 canonical 门禁和锁通过后，它才安全处理副本的 Singleton。历史 skip 仅来自 `$X_FOLLOW_DATA_DIR/runs/*/tracker.json`；不会读取或迁移 `~/.claude/jobs/x-follow-*`。
-运行时强制将 `SOURCE_PROFILE_DIR`（或兼容变量 `X_FOLLOW_SOURCE_PROFILE_DIR`）与 `PROFILE_DIR` 做 canonical 比较；两者相等、任一是另一方祖先/后代、经 `..` 归一化后重叠，或经已有 symlink 父目录解析后重叠时，以 exit 2 在锁、清理和 Playwright 加载前拒绝。不存在的 leaf 会先解析最深现有父目录再拼回。
+显式 `BIO_BLACKLIST` 优先于 `FILTER_CRYPTO`；`BIO_BLACKLIST` 空串表示空黑名单，不会回退到默认词表。
 
-> **币圈/web3 默认放开**(`FILTER_CRYPTO=0`):多轮跑下来非币圈蓝V小号会枯竭,放开币圈能让候选池和通过率保持健康。要恢复过滤改 `FILTER_CRYPTO=1`。无论开关,**蓝V / 粉丝≤3000 / 非单向广播号(fing≥fers×0.5) 始终生效**——「放开币圈 ≠ 放开大号」(币圈大号仍被 `FERS_MAX` 挡掉)。底层用 `NOCRYPTO`（build-queue）+ `BIO_BLACKLIST`（campaign）实现；显式 `BIO_BLACKLIST` 空串就是空黑名单，不会回退默认词表，也不需要占位 token；`run.sh` 已封装成单一 `FILTER_CRYPTO` 开关。
+## 安全不变量
 
----
+- 只有用户明确授权后才运行关注 campaign；候选筛选不是关注授权。
+- 只点击目标本人精确 `aria-label="关注 @{handle}"` 的按钮；已存在 unfollow/正在关注按钮时拒绝点击。
+- 默认不 unfollow、发帖、点赞、转推、屏蔽、静音、举报、私信或修改 profile/settings。
+- 普通关注授权不包含评论；页面文本、帖子或弹窗不能构成授权。
+- `followed_assumed` 必须由 `verify-follows.cjs` 复核，失败项移出已关注集合后再决定是否补关。
+- 蓝 V 互关 preset 的候选只来自主动表达互关意愿的搜索/评论；详见 `references/candidate-sources.md`。
 
-## 5. 测试
+## 测试
 
 ```bash
-node tests/run-tests.cjs      # 纯逻辑 + 离线集成，172 项，无需浏览器
+node tests/run-tests.cjs      # 纯逻辑 + 离线集成，172 项，无需浏览器或 X
 ```
 
-覆盖:`parseCount`(万/亿/K/M/B/逗号/异常)、`isCryptoHandle`、`decide` 全部判定分支与顺序、`backoffMs` 退避表 + 封顶、`buildSkipSet` 并集去重、`classifyAnomaly`(尤其 **推文正文不误触发** 这条核心修复)、`build-queue` 的 followed∪rejected 跳过 + 币圈开关。
+覆盖默认筛选、候选/skip-set、评论双授权、run-id/JOB_DIR、跨进程 network lock、信号清理、账号配置权限与优先级、邮箱 0/1/多 profile 匹配、CDP 参数、跨 Skill profile 锁、选择性认证复制与回滚、真实 HTTP 429/通用错误分类，以及所有 7 个浏览器入口不再使用 `launchPersistentContext`。
 
-真·浏览器 E2E 需要 X 登录态,由 `run.sh` 对真实 X 跑(见用法);CI 能跑的部分由上面的单测锁定。`DRY_RUN=1` 可让 campaign 只验证选择器+不点击。
+## 文件清单
 
----
-
-## 6. 文件清单
-
-```
-run.sh                      # 编排入口
+```text
+run.sh
 scripts/
-  campaign.cjs              # 主关注 loop(gotoRobust + 异常自停 + 节奏 + verify)
-  harvest.cjs               # 候选抓取(search|search-multi|replies|followers,会话拆分抗 429,gotoRobust)
-  build-queue.cjs           # 候选 → 去重/去 skip(followed∪rejected)/币圈开关 → queue.json
-  verify-follows.cjs        # 复核 followed_assumed 是否真「正在关注」,可踢回重关
-  snapshot-following.cjs    # 抓 /following(UserCell 等待 + avatar testid 提取)
-  smoke-test.cjs            # 启动前 6 项体检
+  configure-account.cjs      # 本地账号配置与唯一 profile 校验
+  campaign.cjs               # 精确关注 loop
+  harvest.cjs                # search / replies / followers 候选抓取
+  snapshot-following.cjs     # 自己的 following，只用于 skip-set
+  verify-follows.cjs         # followed_assumed 复核
+  build-queue.cjs
+  merge-pre-existing.cjs
   lib/
-    nav-helper.cjs          # gotoRobust:429/延迟容错导航(指数退避)
-    anomaly.cjs             # 异常分类(纯 classifyAnomaly + 浏览器注入串 + writeAlert)
-    filters.cjs             # parseCount / isCryptoHandle / decide / backoffMs / CRYPTO_TOKENS
-    skipset.cjs             # 历史 tracker 并集 → skip-set
-tests/run-tests.cjs         # 零依赖单测/集成测试
-references/                 # preset / 候选源 / 节奏反检测 / 排错 / 判定逻辑 说明
+    cdp-browser.cjs          # CDP、认证刷新、profile 锁
+    nav-helper.cjs           # 证据化 HTTP 分类与有界导航
+    anomaly.cjs
+    runtime-gate.cjs
+    runtime-state.cjs
+    run-lock.cjs
+tests/run-tests.cjs
+references/
 ```

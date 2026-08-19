@@ -4,8 +4,8 @@
 // Usage: PROFILE_DIR=~/.config/playwright-chrome-profile-campaign MY_HANDLE=you node smoke-test.cjs
 
 const path = require('path');
-const fs = require('fs');
 const os = require('os');
+const { maskEmail, preflightBrowserConfig } = require('./lib/cdp-browser.cjs');
 
 const PROFILE_DIR = process.env.PROFILE_DIR || path.join(os.homedir(), '.config/playwright-chrome-profile-campaign');
 const MY_HANDLE = (process.env.MY_HANDLE || '').replace(/^@/, '').trim();
@@ -20,18 +20,12 @@ async function main() {
   console.log(`PROFILE_DIR: ${PROFILE_DIR}`);
   console.log(`MY_HANDLE: ${MY_HANDLE || '(not set)'}\n`);
 
-  if (!fs.existsSync(PROFILE_DIR)) {
-    fail(`Profile dir does not exist: ${PROFILE_DIR}`);
-    console.log(`\nFix: cp -R ~/.config/playwright-chrome-profile ${PROFILE_DIR} && rm -f ${PROFILE_DIR}/Singleton*`);
-    process.exit(3);
-  }
-  ok(`Profile dir exists`);
-  if (fs.existsSync(path.join(PROFILE_DIR, 'SingletonLock'))) {
-    fail(`SingletonLock present`);
-    console.log(`\nFix: rm -f ${PROFILE_DIR}/Singleton*`);
-    process.exit(3);
-  }
-  ok(`No SingletonLock`);
+  let browser;
+  try { browser = preflightBrowserConfig(process.env); }
+  catch (error) { fail(error.message); process.exit(2); }
+  ok(`Chrome account ${maskEmail(browser.accountEmail)} uniquely maps to ${browser.profileDirectory}`);
+  ok(`System Chrome source is read-only`);
+  info(`Independent CDP profile: ${browser.profileDir}${require('fs').existsSync(browser.profileDir) ? '' : ' (will be created by one-time refresh)'}`);
 
   try {
     require.resolve('playwright');
@@ -41,7 +35,7 @@ async function main() {
     process.exit(1);
   }
 
-  info('Local-only smoke test made 0 X requests; live login/DOM checks occur after the exclusive run lock is claimed.');
+  info('Local-only smoke test made 0 X requests; CDP cookie/login checks occur after the exclusive run lock is claimed.');
   console.log(`${G}=== ALL GREEN — local preflight passed ===${X}`);
 }
 

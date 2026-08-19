@@ -5,70 +5,47 @@
 //        node smoke-test.cjs
 
 const path = require('path');
-const fs = require('fs');
 const { detectAnomaly } = require(path.join(__dirname, 'lib', 'anomaly.cjs'));
 const { gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
 const { prepareXFacingRuntime } = require(path.join(__dirname, 'lib', 'runtime-gate.cjs'));
+const { BrowserConfigError, withAuthenticatedContext, XAuthenticationError } = require(path.join(__dirname, 'lib', 'cdp-browser.cjs'));
 
-try { prepareXFacingRuntime(process.env); }
+let RUNTIME;
+try { RUNTIME = prepareXFacingRuntime(process.env); }
 catch (error) { console.error(`FATAL: ${error.message}`); process.exit(2); }
-const { chromium } = require('playwright');
 
-const SOURCE_PROFILE_DIR = process.env.SOURCE_PROFILE_DIR
-  || process.env.X_FOLLOW_SOURCE_PROFILE_DIR
-  || `${process.env.HOME}/.config/playwright-chrome-profile`;
 const PROFILE_DIR = process.env.PROFILE_DIR || `${process.env.HOME}/.config/playwright-chrome-profile-campaign`;
 const MY_HANDLE = process.env.MY_HANDLE || '';
-const RUNNER = path.join(__dirname, '..', 'run.sh');
 
 const G = '\x1b[32m', R = '\x1b[31m', Y = '\x1b[33m', X = '\x1b[0m';
 const ok = (m) => console.log(`${G}✅ PASS${X} ${m}`);
 const fail = (m) => console.log(`${R}❌ FAIL${X} ${m}`);
 const info = (m) => console.log(`${Y}ℹ️  ${X} ${m}`);
 
-async function main() {
+class SmokeExitError extends Error {
+  constructor(message, exitCode) { super(message); this.exitCode = exitCode; }
+}
+
+async function smoke({ context, confirmAuthenticated }) {
   console.log(`\n=== X-FOLLOW SMOKE TEST ===`);
   console.log(`PROFILE_DIR: ${PROFILE_DIR}`);
   console.log(`MY_HANDLE: ${MY_HANDLE || '(not set)'}`);
+  console.log(`TRANSPORT: CDP (${RUNTIME.browser.profileDirectory})`);
   console.log(``);
-
-  // Pre-check: profile dir exists
-  if (!fs.existsSync(PROFILE_DIR)) {
-    fail(`Profile dir does not exist: ${PROFILE_DIR}`);
-    console.log(`\nFix: export SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR}" PROFILE_DIR="${PROFILE_DIR}"; run ${RUNNER} so it safely prepares the copy after its guards pass.`);
-    process.exit(3);
-  }
-  ok(`Profile dir exists`);
-
-  // Pre-check: no leftover SingletonLock
-  const lockPath = path.join(PROFILE_DIR, 'SingletonLock');
-  if (fs.existsSync(lockPath)) {
-    fail(`SingletonLock present: ${lockPath}`);
-    console.log(`\nFix: keep SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR}" separate, close the browser using PROFILE_DIR="${PROFILE_DIR}", then re-run ${RUNNER}; it safely handles the copy after its guards pass.`);
-    process.exit(3);
-  }
-  ok(`No SingletonLock`);
-
-  let ctx, page;
   let allPass = true;
-  try {
-    ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-      channel: 'chrome',
-      headless: false,
-      chromiumSandbox: true,  // suppress the "--no-sandbox / security will suffer" infobar
-      viewport: { width: 1280, height: 820 },
-      ignoreDefaultArgs: ['--enable-automation'],
-      args: ['--disable-blink-features=AutomationControlled'],
-    });
-    ok(`Chromium launched`);
-
-    page = ctx.pages()[0] || await ctx.newPage();
+  ok(`System Chrome account uniquely selected; source remains read-only`);
+  ok(`Chrome launched over localhost CDP`);
+  const page = context.pages()[0] || await context.newPage();
 
     // 1. Browser fingerprint check — gotoRobust waits for real content (latency/429 tolerant)
-    await gotoRobust(page, 'https://x.com/home', {
+    const homeNav = await gotoRobust(page, 'https://x.com/home', {
       needSel: 'a[data-testid="SideNav_NewTweet_Button"], [data-testid="AppTabBar_Home_Link"], [data-testid="primaryColumn"]',
       settle: 5000, retries: 3,
     });
+    if (homeNav.reason === 'RATE_LIMIT') throw new SmokeExitError('HTTP 429 during /home smoke navigation', 11);
+    if (homeNav.reason === 'LOGIN_REDIRECT') throw new XAuthenticationError(`smoke navigation requires login: ${page.url()}`, homeNav);
+    await confirmAuthenticated(page, { expectedPath: '/home' });
+    if (!homeNav.ok) { fail(`/home navigation failed: ${homeNav.reason}`); allPass = false; }
 
     const sig = await page.evaluate(() => ({
       webdriver: navigator.webdriver,
@@ -104,12 +81,7 @@ async function main() {
 
     // 2. Login state check
     const url = page.url();
-    if (url.includes('/login') || url.includes('/i/flow')) {
-      fail(`Redirected to login: ${url}`);
-      console.log(`\nFix: log into X manually in the SOURCE profile, then re-copy to campaign dir`);
-      allPass = false;
-    } else {
-      ok(`Logged in (URL: ${url})`);
+    ok(`Logged in (URL: ${url})`);
 
       // Try to confirm handle
       const profileLink = await page.evaluate(() =>
@@ -117,15 +89,10 @@ async function main() {
       );
       if (profileLink) {
         const handle = profileLink.replace('/', '');
-        ok(`Profile link: /${handle}`);
-        if (MY_HANDLE && handle !== MY_HANDLE) {
-          fail(`Handle mismatch: expected ${MY_HANDLE}, got ${handle}`);
-          allPass = false;
-        }
+        info(`Authenticated X profile link: /${handle} (informational; Chrome email selects the profile)`);
       } else {
         info(`Could not extract profile handle (non-fatal)`);
       }
-    }
 
     // 3. Anomaly detector sanity check.
     // EMPTY_PAGE is excluded: the /home SPA shell is transiently <50 chars under VPN
@@ -140,13 +107,18 @@ async function main() {
     }
 
     // 4. Search page accessible
-    await gotoRobust(page, 'https://x.com/search?q=test', { needSel: '[data-testid="primaryColumn"]', settle: 4000, retries: 3 });
+    const searchNav = await gotoRobust(page, 'https://x.com/search?q=test', { needSel: '[data-testid="primaryColumn"]', settle: 4000, retries: 3 });
+    if (searchNav.reason === 'RATE_LIMIT') throw new SmokeExitError('HTTP 429 during /search smoke navigation', 11);
+    if (searchNav.reason === 'LOGIN_REDIRECT') throw new XAuthenticationError(`search requires login: ${page.url()}`, searchNav);
     const searchUrl = page.url();
-    if (searchUrl.includes('/search')) ok(`/search accessible`);
+    if (searchNav.ok && searchUrl.includes('/search')) ok(`/search accessible`);
     else { fail(`/search not accessible (URL: ${searchUrl})`); allPass = false; }
 
     // 5. Test that follow-button selector works on a profile (DOES NOT CLICK)
-    await gotoRobust(page, 'https://x.com/elonmusk', { needSel: 'div[data-testid="UserName"]', settle: 4000, retries: 3 });
+    const profileNav = await gotoRobust(page, 'https://x.com/elonmusk', { needSel: 'div[data-testid="UserName"]', settle: 4000, retries: 3 });
+    if (profileNav.reason === 'RATE_LIMIT') throw new SmokeExitError('HTTP 429 during profile smoke navigation', 11);
+    if (profileNav.reason === 'LOGIN_REDIRECT') throw new XAuthenticationError(`profile requires login: ${page.url()}`, profileNav);
+    if (!profileNav.ok) { fail(`Profile navigation failed: ${profileNav.reason}`); allPass = false; }
     await page.waitForTimeout(1200);
     const btnState = await page.evaluate(() => {
       const fB = document.querySelector('button[data-testid$="-follow"][aria-label="关注 @elonmusk"]');
@@ -160,21 +132,28 @@ async function main() {
       allPass = false;
     }
 
-  } catch (e) {
-    fail(`Smoke test threw: ${e.message}`);
-    allPass = false;
-  } finally {
-    if (ctx) await ctx.close().catch(() => {});
-  }
-
   console.log(``);
   if (allPass) {
     console.log(`${G}=== ALL GREEN — campaign safe to launch ===${X}`);
-    process.exit(0);
+    return true;
   } else {
     console.log(`${R}=== RED — refuse to launch campaign. Fix issues above. ===${X}`);
-    process.exit(1);
+    return false;
   }
 }
 
-main().catch(e => { console.error('FATAL', e); process.exit(99); });
+async function main() {
+  const passed = await withAuthenticatedContext(
+    { config: RUNTIME.browser, headless: false, width: 1280, height: 820 },
+    smoke,
+  );
+  if (!passed) process.exitCode = 1;
+}
+
+main().catch((error) => {
+  console.error('FATAL', error.message || error);
+  if (error instanceof BrowserConfigError) process.exitCode = 2;
+  else if (error instanceof XAuthenticationError) process.exitCode = 12;
+  else if (Number.isInteger(error.exitCode)) process.exitCode = error.exitCode;
+  else process.exitCode = 99;
+});

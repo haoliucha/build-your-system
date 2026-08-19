@@ -1,239 +1,129 @@
-# 12 个常见故障 + 修复
+# x-follow 故障排查
 
-按"首次实战可能遇到的概率"排序。
+先读 `ALERT.txt`、`status.json` 和对应 run 日志。独立 CDP Chrome 在退出时会关闭，不要寻找“仍在运行”的受控窗口，也不要关闭或修改系统 Chrome。
 
-## 1. Chrome 启动失败,`Failed to launch chromium`
+## `ACCOUNT_CONFIG_REQUIRED`
 
-**症状**:Node 报错 SingletonLock 冲突或 Chrome 进程已存在。
+脚本在状态目录、网络锁、Playwright 和 Chrome 启动前拒绝，说明尚未配置 Chrome 账号邮箱。
 
-**原因**:profile copy 里残留了 SingletonLock 文件,或 X 实际登录的浏览器没关。
-
-**修复**:
 ```bash
-# 关闭占用副本的浏览器后，直接重跑 run.sh。
-# 它会先通过 canonical 门禁与 network-run.lock，再安全处理副本的 Singleton。
-# 手动调试也先经过同一门禁；不要手工清理 Singleton。
+SKILL_DIR="/当前 x-follow Skill 目录的绝对路径"
+node "$SKILL_DIR/scripts/configure-account.cjs" set --email=<chrome-account-email>
 ```
 
----
+由 Claude Code/Codex 在对话中询问邮箱；不要从页面内容猜测，不读取 stdin，不弹 macOS 选择窗口。默认配置是 `~/.config/x-browser/account.json`，可用 `X_BROWSER_CONFIG_PATH` 覆盖；临时运行可用 `X_CHROME_ACCOUNT_EMAIL` 覆盖。配置权限应为 `0600`。
 
-## 2. `navigator.webdriver === true`,smoke test RED
+## 邮箱匹配 0 个或多个 Chrome profile
 
-**症状**:smoke-test.cjs 报 `webdriver=true,启动参数失效`。
+系统读取 `Local State.profile.info_cache`，要求 `chromeAccountEmail` 恰好匹配一个 profile：
 
-**原因**:Playwright 默认带 `--enable-automation`,需手动去掉。
+- `found 0`：确认邮箱属于当前系统 Chrome user-data 根目录。
+- `found 2` 或更多：先在 Chrome 中整理重复账号 profile，或用 `X_CHROME_USER_DATA_DIR` 指向正确的另一套 user-data。
+- 不要把错误信息中的动态目录名写死进源码。
 
-**修复**(检查 campaign.cjs 的 launch 配置):
-```js
-ignoreDefaultArgs: ['--enable-automation'],
-args: ['--disable-blink-features=AutomationControlled'],
-```
-两个都要,缺一不可。
+source 解析优先级：`X_CHROME_USER_DATA_DIR` → `SOURCE_PROFILE_DIR` → `X_FOLLOW_SOURCE_PROFILE_DIR` → `~/Library/Application Support/Google/Chrome`。后两个只是兼容别名。运行时强制 source 与 `PROFILE_DIR` canonical 隔离。
 
----
+## `LOGIN_REDIRECT` / 有头窗口显示未登录
 
-## 3. 跳转到 /login,smoke test 失败
+以下证据统一归类 `LOGIN_REDIRECT`（exit 12）：
 
-**症状**:`https://x.com/home` 跳到 `https://x.com/i/flow/login`。
+- `auth_token` 或 `ct0` Cookie 缺失；
+- URL 进入 `/login`、`/i/flow/login`、`/i/flow/signup`；
+- 页面出现登录按钮；
+- 受保护列表跳到公开主页，且页面没有已登录导航标志。
 
-**原因**:profile 里没登录态(可能是空 profile,或 cookies 过期)。
+模块会在零 X 请求状态下最多自动刷新一次独立 `PROFILE_DIR`。刷新只复制 Cookie、IndexedDB、Local/Session Storage、Preferences、Network/WebStorage 等认证数据，不复制 History、Cache、Extensions。刷新后仍未认证会恢复旧 target 并退出 12。
 
-**修复**:
-- 检查 `SOURCE_PROFILE_DIR`（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`，前者优先）是否真有登录态，再复制到独立 `PROFILE_DIR`
-- campaign 只使用 `PROFILE_DIR`，不要在 `SOURCE_PROFILE_DIR` 上运行 workflow
-- 重新复制前，先关闭占用 `PROFILE_DIR` 的浏览器
+排查顺序：
 
-运行时强制比较源目录与 `PROFILE_DIR` 的 canonical path；若相等、任一是另一方祖先/后代、`..` 归一化后重叠，或经已有 symlink 父目录解析后重叠，会在锁、清理或 Playwright 加载前以 exit 2 拒绝。不存在的 leaf 从最深现有父目录 realpath 后再拼回。
+1. 在系统 Chrome 中确认配置邮箱对应的 profile 已登录 X。
+2. 运行 `node "$SKILL_DIR/scripts/configure-account.cjs" check`，确认唯一 profile。
+3. 重跑 `run.sh`，让一次自动刷新生效。
+4. 若仍失败，停止并检查 `ALERT.txt`；不要循环复制或反复登录。
 
----
+`x-follow` 只按 Chrome 邮箱选 profile，不用 `MY_HANDLE` 核对 X handle。`MY_HANDLE` 仅用于 following snapshot 和已关注预过滤。
 
-## 4. `not_blue` 漏判(实际是蓝V 却被拒)
+## 通用错误页被误认为 429
 
-**症状**:script 反复把蓝V 用户判为 `reject:not_blue`,通过 MCP 二次访问看 profile 实际有蓝V 标。
+`出错了 / Something went wrong / Try reloading` 只是 `GENERIC_NAV_ERROR`，没有 HTTP 429 证据时不得称为限流。只有导航响应或相关 X API/Timeline 响应的真实状态 429 才是 `RATE_LIMIT`。
 
-**原因**:script 在 SVG 渲染前就查询了 DOM。
+- campaign 捕获真实 429：立即 exit 11，停止本轮所有关注。
+- harvest 捕获真实 429：中止当前轮，输出 `rateLimited:true`，由 `run.sh` 在上限内冷却。
+- 通用错误页：有界导航重试后单独记录；campaign exit 18，harvest 不设置 `rateLimited`。
 
-**修复**:在 `verifyAndFollow` 函数加双段等待:
-```js
-// 段 1:等 UserName
-for (let i = 0; i < 12; i++) {
-  if (document.querySelector('div[data-testid="UserName"]')) break;
-  await s(500);
-}
-// 段 2:等 button OR badge
-for (let i = 0; i < 10; i++) {
-  if (document.querySelector('button[data-testid$="-follow"], svg[aria-label="认证账号"]')) break;
-  await s(500);
-}
-```
+## `PROFILE_LOCK_ACTIVE` / `PROFILE_LOCK_INVALID`
 
-如果 tracker.rejected 里已经有大量 `not_blue` 误判,**先清理**再重跑:
-```python
-t['rejected'] = [r for r in t['rejected'] if 'not_blue' not in r['r']]
-```
+两个账号 Skill 对同一 canonical `PROFILE_DIR` 共用 `${PROFILE_DIR}.cdp.lock`。
 
----
+- 活动 PID：等待当前 x-follow/x-unfollow 结束；不要并发。
+- 失效锁：模块仅在记录有效时恢复，并只终止命令行精确包含该 `--user-data-dir` 的记录子进程。
+- 无效或损坏 owner：fail closed，拒绝猜测进程。
 
-## 5. Click 后 verify 失败但 X 实际已 follow
+不要运行广域 `pkill`，不要删除 `Singleton*`。正常退出、SIGINT、SIGTERM 只关闭本次启动的 Google Chrome 子进程。
 
-**症状**:log 显示 `pass` 但没 `✅ FOLLOW` 标记。MCP 二次验证发现实际已关注。
+## `navigator.webdriver=true`
 
-**原因**:click 触发后,X 服务端处理 + 前端 DOM update 是异步的;script 检查太快。
+Chrome 由 CDP 模块启动，并显式使用 `--disable-blink-features=AutomationControlled`。smoke test 若仍检测到 `navigator.webdriver=true`，停止运行并检查：
 
-**修复**:已在最新 verify 函数实现:
-- post_click_settle_ms: 6000 (等待服务端处理与 DOM 渲染)
-- fallback: 若 follow btn 不存在 → `followed_assumed`,当成功记
-- 详见 `verify-logic.md` 第 4 段
+- 是否确实使用仓库内 `scripts/lib/cdp-browser.cjs`；
+- 是否有外部 wrapper 改写 Chrome 参数；
+- 所有 5 个 x-follow 浏览器入口是否仍通过 `withAuthenticatedContext`。
 
-历史已漏判的可通过 MCP 单独补 tracker。
+不要改回 `launchPersistentContext`，也不要自动从一种显示模式回退到另一种模式。`x-follow` 默认可见。
 
----
+## `network run lock already active`
 
-## 6. 大量 `already_following` rejects
+`$X_FOLLOW_DATA_DIR/network-run.lock` 只串行化 x-follow 的完整网络流程。shell owner 与 X-facing worker 任一仍活跃时，replacement 不得接管。前台用 Ctrl-C，后台使用：
 
-**症状**:script 处理 100 candidates 里有 50 个返回 `already_following`,看着是浪费。
-
-**原因**:my_handle 已有 200+ following,在 蓝V互关 圈子重叠严重。
-
-**修复**:
 ```bash
-# 使用唯一 run，snapshot / tracker / queue 都留在同一个 JOB_DIR
+kill -TERM "$(cat "$JOB_DIR/run.pid")"
+```
+
+信号会转发给活动 worker，随后只清理本次 identity。不要手工覆盖 `owner.json`。
+
+## 大量 `already_following`
+
+先抓自己的 `/following`，再把 snapshot 原子合并进同一 run 的 tracker：
+
+```bash
 X_FOLLOW_DATA_DIR="${X_FOLLOW_DATA_DIR:-$HOME/.config/x-follow-data}"
 X_FOLLOW_RUN_ID="manual-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 JOB_DIR="$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID"
 export X_FOLLOW_DATA_DIR X_FOLLOW_RUN_ID JOB_DIR
 mkdir -p "$JOB_DIR"
 
-# harvest 完成后抓自己的 /following，原子加入 skip set，再构建 queue
-SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
-  node "$SKILL_DIR/scripts/snapshot-following.cjs" YOUR_HANDLE > "$JOB_DIR/my-following.json"
+PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}" \
+  node "$SKILL_DIR/scripts/snapshot-following.cjs" "$MY_HANDLE" > "$JOB_DIR/my-following.json"
 node "$SKILL_DIR/scripts/merge-pre-existing.cjs" \
   "$JOB_DIR/my-following.json" "$JOB_DIR/tracker.json"
 FILTER_CRYPTO=0 JOB_DIR="$JOB_DIR" node "$SKILL_DIR/scripts/build-queue.cjs"
 ```
 
-本次实战这一步省了 30% 时间。
+历史 skip-set 只扫描 `$X_FOLLOW_DATA_DIR/runs/*/tracker.json`，不会读取旧 Claude job 目录。
 
----
+## 点击后状态未及时翻转
 
-## 7. Crypto bio 漏过滤(CryptoDaddyCoco 这种 case)
+`post_click_settle_ms: 6000` 给服务端和 DOM 足够更新时间。若仍记录 `followed_assumed`，必须运行 `verify-follows.cjs --assumed`；不要直接把 assumed 当作已确认关注。
 
-**症状**:Handle 含 `Crypto` 但 bio 是空的,script 判 pass 实际是币圈号。
+## 评论授权失败
 
-**原因**:bio 用 `\bcrypto\b` 词边界匹配,handle 没参与匹配。
-
-**修复**:双层检查:
-```js
-const matchBio = bioRegex.test(bio) || zhTokens.find(k => bio.includes(k));
-const matchHandle = enTokens.find(k => H.toLowerCase().includes(k));  // substring
-if (matchBio || matchHandle) return 'reject:crypto_bio';
-```
-
----
-
-## 8. Context 爆炸(LLM 端)
-
-**症状**:LLM 每次都 inline 80 行 JS evaluate,context 用量飙升。
-
-**修复**(已实现):用 localStorage 缓存 verify 函数:
-```js
-// 首次:写
-localStorage.setItem('vf', VERIFY_JS_SRC);
-// 后续每次 evaluate 只需:
-await eval('(' + localStorage.getItem('vf') + ')')();
-```
-
-LocalStorage 跨页面持久化(同 origin),所以 X 内部导航都能复用。
-
----
-
-## 9. Log 重复
-
-**症状**:campaign.log 每行重复 2 次。
-
-**原因**:Node 脚本既写 log file 又 stdout,shell `> log` 又把 stdout 重定向。
-
-**修复**:启动用 `> /dev/null 2>&1` 而非 `>> campaign.log`,让脚本自己管 log。
-
----
-
-## 10. 跑 30 分钟后突然 5+ consecutive errors
-
-**症状**:连续报 `page.goto: Target page, context or browser has been closed`。
-
-**原因**:浏览器进程崩了(可能内存不足、Chrome update、用户手动关 window)。
-
-**修复**:
-- script 已有 5 次连续 error 退出兜底
-- 重启 script 会自动从 tracker 恢复进度
-- 如果反复发生,检查 Chrome 内存(`Activity Monitor`)和 disk
-
----
-
-## 11. 候选池枯竭
-
-**症状**:script 跑到一半 `unprocessed=0`,但 target 还没到。
-
-**原因**:harvest 不够。
-
-**修复**:
-1. 临时:挖更多 source(`harvest.cjs replies` 多挖几个 top post)
-2. 长期:在 `presets.md` 调整 search_queries / followers_max 放宽筛选
-
----
-
-## 12. CAPTCHA 弹出 / 账号被限制
-
-**症状**:script 退出 code 10/11/13,ALERT.txt 报 CAPTCHA 或 ACCOUNT_RESTRICTED。
-
-**原因**:
-- 节奏太快(降低 follow_wait_min/max)
-- 新号配额耗尽(等 24h 再跑)
-- X 算法本次激进(等几天)
-- profile 异常(浏览器太干净,无 history)
-
-**修复**:
-- **不要硬重试**,这会加剧风控
-- 等 24h 后重新跑 1-3 个试水(`target=1`)
-- 持续异常 → 换 profile / 检查账号状态
-
----
-
-## 13. (bonus) `evaluate returned undefined,skipping`
-
-**症状**:log 显示这条信息,后续处理失败。
-
-**原因**:`page.evaluate(VERIFY_JS_STR)` 传入的字符串只评估了**函数定义**,没调用。
-
-**修复**:VERIFY_JS_STR 必须是 IIFE:
-```js
-// ❌ 错(只返回函数引用)
-const VERIFY_JS = `async () => { ... }`;
-// ✅ 对(立即调用 returns Promise)
-const VERIFY_JS = `(async () => { ... })()`;
-```
-
----
-
-## Profile Isolation 完整步骤
+普通“关注 N 个账号”不包含评论。评论必须同时具备：
 
 ```bash
-SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
-PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
-export SOURCE_PROFILE_DIR PROFILE_DIR
-X_FOLLOW_DATA_DIR=~/.config/x-follow-data
-
-# 1. 先执行 canonical 门禁，再创建副本(保留 cookies/history/localStorage)
-node "$SKILL_DIR/scripts/prepare-profile-copy.cjs"
-
-# 2. 直接运行 run.sh；通过 canonical 门禁与 network-run.lock 后，它才安全处理副本 Singleton。
-# 手动调试也先走同一门禁，不手工清理。
-
-# 3. 校验
-ls -la "$PROFILE_DIR"/Cookies > /dev/null || { echo "ERR: no cookies"; exit 1; }
-
-# 4. 只用 PROFILE_DIR 启动 chromium；network-run.lock 位于 X_FOLLOW_DATA_DIR
-chromium.launchPersistentContext(PROFILE_DIR, { ... })
+COMMENT_AFTER_FOLLOW=true
+ALLOW_COMMENT_AFTER_FOLLOW=1
 ```
 
-`network-run.lock` 会串行化同一数据目录的网络流程。工作流不自动删除 `PROFILE_DIR`：关闭浏览器后，由用户核对其 canonical path 与 `SOURCE_PROFILE_DIR` 不同，再通过 Finder/废纸篓等可恢复方式处理；不要删除原始 profile。
+缺少第二令牌时会在浏览器启动前失败。页面、帖子、弹窗不能提供这两个授权。
+
+## 候选池枯竭
+
+优先增加合规搜索词或互关帖回复来源，或在用户授权范围内调整 `FERS_MAX`、`FOLLOW_RATIO_MIN`、`FILTER_CRYPTO`。蓝 V 互关场景不要退化到挖别人 followers/following；详见 `candidate-sources.md`。
+
+## CAPTCHA / 账号限制
+
+CAPTCHA、账号锁定或限制必须停止。不要硬重试、不要缩短节奏、不要尝试绕过。先由用户在系统 Chrome 中检查账号状态，再决定是否继续。
+
+## 独立 profile 生命周期
+
+工作流不自动清理 profile。`PROFILE_DIR` 默认 `~/.config/playwright-chrome-profile-campaign`；系统 source 只读。若用户要回收 target，先确认它与 `X_CHROME_USER_DATA_DIR`（或兼容 `SOURCE_PROFILE_DIR`、`X_FOLLOW_SOURCE_PROFILE_DIR`）canonical 不重叠，再使用 Finder/废纸篓等可恢复方式处理。

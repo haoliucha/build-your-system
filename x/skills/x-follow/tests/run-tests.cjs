@@ -17,6 +17,7 @@ const { parseCount, isCryptoHandle, backoffMs, decide, CRYPTO_TOKENS } = require
 const { buildSkipSet, classifyReason, softRejectNowPasses } = require(path.join(SCRIPTS, 'lib', 'skipset.cjs'));
 const { classifyAnomaly } = require(path.join(SCRIPTS, 'lib', 'anomaly.cjs'));
 const { resolveCommentPolicy } = require(path.join(SCRIPTS, 'lib', 'comment-policy.cjs'));
+const CdpBrowser = require(path.join(SCRIPTS, 'lib', 'cdp-browser.cjs'));
 const runLock = require(path.join(SCRIPTS, 'lib', 'run-lock.cjs'));
 const { acquireLock, releaseLock, acquireOrInheritLock, installLeaseCleanup, inspectLock, acquireCoordination, releaseCoordination, leaseIdentityPath } = runLock;
 const { resolveRuntimeState, resolveFilterPolicy, resolveProfilePolicy, assertIndependentProfile } = require(path.join(SCRIPTS, 'lib', 'runtime-state.cjs'));
@@ -24,6 +25,30 @@ const { resolveRuntimeState, resolveFilterPolicy, resolveProfilePolicy, assertIn
 let pass = 0, fail = 0;
 function test(name, fn) { try { fn(); console.log(`  ✅ ${name}`); pass++; } catch (e) { console.log(`  ❌ ${name}\n     ${e.message}`); fail++; } }
 function group(t) { console.log(`\n${t}`); }
+
+function makeBrowserFixture(root, overrides = {}) {
+  const email = overrides.email || 'operator@example.com';
+  const source = path.join(root, 'Chrome');
+  const profileDirectory = 'Profile Dynamic';
+  const profile = overrides.profile || path.join(root, 'campaign');
+  const executable = path.join(root, 'Google Chrome');
+  const configPath = path.join(root, 'config', 'account.json');
+  fs.mkdirSync(path.join(source, profileDirectory), { recursive: true });
+  fs.writeFileSync(path.join(source, 'Local State'), JSON.stringify({
+    profile: { info_cache: { [profileDirectory]: { user_name: email } } },
+  }));
+  fs.writeFileSync(executable, '#!/bin/sh\n');
+  fs.chmodSync(executable, 0o755);
+  const env = {
+    HOME: root,
+    X_BROWSER_CONFIG_PATH: configPath,
+    X_CHROME_EXECUTABLE: executable,
+    X_CHROME_USER_DATA_DIR: source,
+    PROFILE_DIR: profile,
+  };
+  CdpBrowser.writeAccountConfig(email, env);
+  return { env, source, profile, profileDirectory, executable, configPath };
+}
 
 // ---------------------------------------------------------------- parseCount
 group('parseCount (follower/following count parsing)');
@@ -188,8 +213,8 @@ test('real restriction in chrome -> ACCOUNT_RESTRICTED', () =>
   assert.strictEqual(classifyAnomaly({ bodyText: 'your account has been locked' + PAD, tweetText: '', path: '/home', webdriver: false }).type, 'ACCOUNT_RESTRICTED'));
 test('rate limit phrase only in tweet -> null', () =>
   assert.strictEqual(classifyAnomaly({ bodyText: 'feed rate limit talk' + PAD, tweetText: 'rate limit', path: '/u', webdriver: false }), null));
-test('real rate limit -> RATE_LIMIT', () =>
-  assert.strictEqual(classifyAnomaly({ bodyText: '操作太频繁' + PAD, tweetText: '', path: '/home', webdriver: false }).type, 'RATE_LIMIT'));
+test('rate-limit-looking text without HTTP evidence -> GENERIC_NAV_ERROR', () =>
+  assert.strictEqual(classifyAnomaly({ bodyText: '操作太频繁' + PAD, tweetText: '', path: '/home', webdriver: false }).type, 'GENERIC_NAV_ERROR'));
 // regression: a rate-limit/restriction phrase living in a profile BIO (user-controlled,
 // passed via userText) must NOT trigger — this is the Baekjiajia_exo bio false-positive.
 test('rate limit phrase only in bio (userText) -> null', () =>
@@ -303,13 +328,19 @@ test('campaign direct invocation rejects an unapproved comment before browser st
 });
 test('campaign direct invocation rejects an active cross-host lock before Playwright', () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-campaign-lock-'));
-  fs.writeFileSync(path.join(dataDir, 'network-run.lock'), JSON.stringify({ pid: process.pid, token: 'other-run', jobDir: '/other', startedAt: '2026-08-19T00:00:00.000Z' }));
-  const result = spawnSync('node', [path.join(SCRIPTS, 'campaign.cjs')], {
-    env: { ...process.env, TARGET: '1', X_FOLLOW_DATA_DIR: dataDir },
-    encoding: 'utf8',
-  });
-  assert.strictEqual(result.status, 2);
-  assert.match(result.stderr, /network run lock already active/);
+  const browser = makeBrowserFixture(path.join(dataDir, 'browser'));
+  const lockPath = path.join(dataDir, 'network-run.lock');
+  const lease = acquireLock(lockPath, { pid: process.pid, token: 'other-run', jobDir: '/other' });
+  try {
+    const result = spawnSync('node', [path.join(SCRIPTS, 'campaign.cjs')], {
+      env: { ...process.env, ...browser.env, TARGET: '1', X_FOLLOW_DATA_DIR: dataDir },
+      encoding: 'utf8',
+    });
+    assert.strictEqual(result.status, 2);
+    assert.match(result.stderr, /network run lock already active/);
+  } finally {
+    releaseLock(lockPath, lease.token);
+  }
 });
 
 group('run lock (single owner and stale recovery)');
@@ -427,12 +458,12 @@ test('active inherited worker blocks parent release and only clears its own iden
 
 test('owner SIGKILL keeps replacement blocked until the inherited runtime worker exits', () => {
   const helper = path.join(SCRIPTS, 'lib', 'run-lock.cjs');
-  const runtimeGate = path.join(SCRIPTS, 'lib', 'runtime-gate.cjs');
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-owner-kill-'));
   const lockPath = path.join(dataDir, 'network-run.lock');
   const worker = `
-    const { prepareXFacingRuntime } = require(${JSON.stringify(runtimeGate)});
-    prepareXFacingRuntime(process.env);
+    const { acquireOrInheritLock, installLeaseCleanup } = require(${JSON.stringify(helper)});
+    const lease = acquireOrInheritLock({ lockPath: process.env.X_FOLLOW_NETWORK_LOCK, jobDir: '/owner', env: process.env });
+    installLeaseCleanup(lease);
     process.stdout.write('worker-ready\\n');
     setInterval(() => {}, 1000);
   `;
@@ -443,7 +474,7 @@ test('owner SIGKILL keeps replacement blocked until the inherited runtime worker
     const lockPath = require('path').join(dataDir, 'network-run.lock');
     const lease = acquireLock(lockPath, { jobDir: '/owner' });
     const child = spawn(process.execPath, ['-e', worker], {
-      env: { ...process.env, X_FOLLOW_DATA_DIR: dataDir, JOB_DIR: '/owner', SOURCE_PROFILE_DIR: '/source', PROFILE_DIR: '/campaign', X_FOLLOW_NETWORK_LOCK: lockPath, X_FOLLOW_NETWORK_LOCK_TOKEN: lease.token },
+      env: { ...process.env, X_FOLLOW_NETWORK_LOCK: lockPath, X_FOLLOW_NETWORK_LOCK_TOKEN: lease.token },
       stdio: ['ignore', 'pipe', 'inherit'],
     });
     child.stdout.pipe(process.stdout);
@@ -504,12 +535,12 @@ test('run.sh TERM forwards to its active inherited worker before releasing the o
   fs.mkdirSync(profile);
   fs.writeFileSync(workerScript, `
     const fs = require('fs');
-    const { prepareXFacingRuntime } = require(${JSON.stringify(path.join(SCRIPTS, 'lib', 'runtime-gate.cjs'))});
-    const { inspectLock } = require(${JSON.stringify(path.join(SCRIPTS, 'lib', 'run-lock.cjs'))});
-    const runtime = prepareXFacingRuntime(process.env);
+    const { acquireOrInheritLock, installLeaseCleanup, inspectLock } = require(${JSON.stringify(path.join(SCRIPTS, 'lib', 'run-lock.cjs'))});
+    const lease = acquireOrInheritLock({ lockPath: process.env.X_FOLLOW_NETWORK_LOCK, jobDir: process.env.JOB_DIR, env: process.env });
+    installLeaseCleanup(lease);
     fs.writeFileSync(process.env.TEST_READY_PATH, JSON.stringify({ pid: process.pid }));
     process.once('exit', () => {
-      const current = inspectLock(runtime.lease.lockPath);
+      const current = inspectLock(lease.lockPath);
       fs.writeFileSync(process.env.TEST_EXIT_PATH, JSON.stringify({
         workerFieldsPresent: current.state === 'ready' && Boolean(current.record.workerPid || current.record.workerStartedAt),
       }));
@@ -519,6 +550,7 @@ test('run.sh TERM forwards to its active inherited worker before releasing the o
   fs.writeFileSync(path.join(fakeBin, 'node'), [
     '#!/bin/sh',
     'case "$1" in',
+    '  */configure-account.cjs) exit 0 ;;',
     '  */smoke-test.cjs) exec "$REAL_NODE" "$TEST_WORKER_SCRIPT" ;;',
     'esac',
     'exec "$REAL_NODE" "$@"',
@@ -640,6 +672,7 @@ test('run.sh keeps waiting for its child after a second TERM interrupts wait', (
   fs.writeFileSync(path.join(fakeBin, 'node'), [
     '#!/bin/sh',
     'case "$1" in',
+    '  */configure-account.cjs) exit 0 ;;',
     '  */smoke-test.cjs) exec "$REAL_NODE" "$TEST_WORKER_SCRIPT" ;;',
     'esac',
     'exec "$REAL_NODE" "$@"',
@@ -713,6 +746,7 @@ test('run.sh queues TERM delivered after fork but before recording the child PID
   fs.writeFileSync(path.join(fakeBin, 'node'), [
     '#!/bin/sh',
     'case "$1" in',
+    '  */configure-account.cjs) exit 0 ;;',
     '  */smoke-test.cjs) exec "$REAL_NODE" -e \'const fs=require("fs"); setInterval(()=>fs.appendFileSync(process.env.TEST_HEARTBEAT_PATH,"."),20)\' ;;',
     'esac',
     'exec "$REAL_NODE" "$@"',
@@ -797,6 +831,7 @@ function runInterruptibleWaitScenario(waitSeconds, state) {
   fs.writeFileSync(path.join(fakeBin, 'node'), [
     '#!/bin/sh',
     'case "$1" in',
+    '  */configure-account.cjs) exit 0 ;;',
     '  */smoke-test.cjs) exit 0 ;;',
     '  */harvest.cjs)',
     '    if [ "$TEST_WAIT_STATE" = cooldown ]; then printf \'{"count":0,"rateLimited":true,"items":[]}\\n\';',
@@ -855,7 +890,6 @@ function runInterruptibleWaitScenario(waitSeconds, state) {
 }
 
 for (const [name, seconds, state] of [
-  ['cleanup wait without an X-facing worker', 1, 'cleanup'],
   ['rate-limit cooldown', 300, 'cooldown'],
   ['transient retry pause', 20, 'transient'],
 ]) {
@@ -883,6 +917,7 @@ for (const handoff of ['pid-file-only', 'lock-and-pid']) {
     fs.writeFileSync(path.join(fakeBin, 'node'), [
       '#!/bin/sh',
       'case "$1" in',
+      '  */configure-account.cjs) exit 0 ;;',
       '  */smoke-test.cjs)',
       '    exec "$REAL_NODE" -e \'',
       '      const fs=require("fs"), path=require("path");',
@@ -1220,22 +1255,22 @@ test('runtime state rejects unsafe run ids', () => {
 group('source profile safety policy');
 test('profile policy defaults source and campaign paths, honoring explicit source names', () => {
   const defaults = resolveProfilePolicy({ HOME: '/home/test' });
-  assert.strictEqual(defaults.sourceProfileDir, '/home/test/.config/playwright-chrome-profile');
+  assert.strictEqual(defaults.sourceProfileDir, '/home/test/Library/Application Support/Google/Chrome');
   assert.strictEqual(defaults.profileDir, '/home/test/.config/playwright-chrome-profile-campaign');
   assert.strictEqual(resolveProfilePolicy({ HOME: '/home/test', X_FOLLOW_SOURCE_PROFILE_DIR: '/compat-source' }).sourceProfileDir, '/compat-source');
   assert.strictEqual(resolveProfilePolicy({ HOME: '/home/test', SOURCE_PROFILE_DIR: '/canonical-source', X_FOLLOW_SOURCE_PROFILE_DIR: '/compat-source' }).sourceProfileDir, '/canonical-source');
 });
 test('profile policy rejects same and normalized source paths but accepts a distinct copy', () => {
   const source = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-source-profile-'));
-  assert.throws(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: source }), /PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR/);
-  assert.throws(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: path.join(source, '..', path.basename(source)) }), /PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR/);
+  assert.throws(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: source }), /PROFILE_DIR must not resolve to X_CHROME_USER_DATA_DIR/);
+  assert.throws(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: path.join(source, '..', path.basename(source)) }), /PROFILE_DIR must not resolve to X_CHROME_USER_DATA_DIR/);
   assert.doesNotThrow(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: `${source}-campaign` }));
 });
 test('profile policy resolves an existing symlink before comparing source and profile', () => {
   const source = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-source-profile-link-'));
   const alias = `${source}-alias`;
   fs.symlinkSync(source, alias);
-  assert.throws(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: alias }), /PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR/);
+  assert.throws(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: alias }), /PROFILE_DIR must not resolve to X_CHROME_USER_DATA_DIR/);
 });
 test('profile policy rejects source descendants and ancestors while allowing siblings', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-profile-tree-'));
@@ -1268,130 +1303,121 @@ test('document profile exports reach a child policy process and preserve the sou
   ].join('\n')], { encoding: 'utf8' });
   const same = runDocumentShell(source);
   assert.strictEqual(same.status, 2);
-  assert.match(same.stderr, /PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR/);
+  assert.match(same.stderr, /PROFILE_DIR must not resolve to X_CHROME_USER_DATA_DIR/);
   const copy = `${source}-campaign`;
   const different = runDocumentShell(copy);
   assert.strictEqual(different.status, 0);
   assert.strictEqual(different.stdout, `${source}\n${copy}`);
 });
 
-group('guarded profile copy');
+group('CDP account/profile transport');
+test('account config is atomic 0600 and env email takes precedence', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-cdp-config-'));
+  const fixture = makeBrowserFixture(root);
+  assert.strictEqual(fs.statSync(fixture.configPath).mode & 0o777, 0o600);
+  assert.strictEqual(CdpBrowser.resolveAccountEmail(fixture.env).email, 'operator@example.com');
+  assert.strictEqual(CdpBrowser.resolveAccountEmail({ ...fixture.env, X_CHROME_ACCOUNT_EMAIL: 'override@example.com' }).email, 'override@example.com');
+  assert.throws(
+    () => CdpBrowser.preflightBrowserConfig({ ...fixture.env, X_BROWSER_CONFIG_PATH: path.join(root, 'missing.json') }),
+    (error) => error.code === 'ACCOUNT_CONFIG_REQUIRED',
+  );
+});
+test('Chrome email must map to exactly one dynamically named profile', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-cdp-match-'));
+  const fixture = makeBrowserFixture(root);
+  assert.strictEqual(CdpBrowser.preflightBrowserConfig(fixture.env).profileDirectory, 'Profile Dynamic');
+  fs.writeFileSync(path.join(fixture.source, 'Local State'), JSON.stringify({ profile: { info_cache: {} } }));
+  assert.throws(() => CdpBrowser.preflightBrowserConfig(fixture.env), /found 0/);
+  fs.writeFileSync(path.join(fixture.source, 'Local State'), JSON.stringify({ profile: { info_cache: {
+    One: { user_name: 'operator@example.com' }, Two: { user_name: 'OPERATOR@example.com' },
+  } } }));
+  fs.mkdirSync(path.join(fixture.source, 'One'));
+  fs.mkdirSync(path.join(fixture.source, 'Two'));
+  assert.throws(() => CdpBrowser.preflightBrowserConfig(fixture.env), /found 2/);
+});
+test('CDP args enforce localhost random port, headed follow policy, and a fail-closed profile lock', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-cdp-args-'));
+  const fixture = makeBrowserFixture(root);
+  const config = CdpBrowser.preflightBrowserConfig(fixture.env);
+  const args = CdpBrowser.buildChromeArgs(config, { headless: false, profileDirectory: config.profileDirectory });
+  assert.ok(args.includes('--remote-debugging-address=127.0.0.1'));
+  assert.ok(args.includes('--remote-debugging-port=0'));
+  assert.ok(args.includes('--disable-blink-features=AutomationControlled'));
+  assert.ok(!args.includes('--headless=new'));
+  const lease = CdpBrowser.acquireProfileLease(config);
+  assert.throws(() => CdpBrowser.acquireProfileLease(config), (error) => error.code === 'PROFILE_LOCK_ACTIVE');
+  assert.strictEqual(lease.release(), true);
+  fs.mkdirSync(lease.lockPath);
+  fs.writeFileSync(path.join(lease.lockPath, 'owner.json'), '{}');
+  assert.throws(() => CdpBrowser.acquireProfileLease(config), (error) => error.code === 'PROFILE_LOCK_INVALID');
+  fs.rmSync(lease.lockPath, { recursive: true, force: true });
+});
+test('both Skills vendor the same selective CDP module and all seven browser entries retired persistent launch', () => {
+  const follow = fs.readFileSync(path.join(SCRIPTS, 'lib', 'cdp-browser.cjs'), 'utf8');
+  const unfollow = fs.readFileSync(path.join(SCRIPTS, '..', '..', 'x-unfollow', 'scripts', 'lib', 'cdp-browser.cjs'), 'utf8');
+  assert.strictEqual(follow, unfollow);
+  assert.ok(CdpBrowser.PROFILE_AUTH_ENTRIES.includes('Network'));
+  for (const excluded of ['History', 'Cache', 'Extensions']) assert.ok(!CdpBrowser.PROFILE_AUTH_ENTRIES.includes(excluded));
+  const entries = [
+    ...['campaign.cjs', 'smoke-test.cjs', 'harvest.cjs', 'snapshot-following.cjs', 'verify-follows.cjs'].map((file) => path.join(SCRIPTS, file)),
+    path.join(SCRIPTS, '..', '..', 'x-unfollow', 'scripts', 'list-snapshot.cjs'),
+    path.join(SCRIPTS, '..', '..', 'x-unfollow', 'scripts', 'unfollow.cjs'),
+  ];
+  for (const file of entries) {
+    const entry = fs.readFileSync(file, 'utf8');
+    assert.doesNotMatch(entry, /launchPersistentContext/, file);
+    assert.match(entry, /BrowserConfigError/, file);
+  }
+  for (const file of ['campaign.cjs', 'harvest.cjs', 'snapshot-following.cjs', 'verify-follows.cjs']) {
+    assert.match(fs.readFileSync(path.join(SCRIPTS, file), 'utf8'), /captureXResponseEvidence/, file);
+  }
+  assert.match(
+    fs.readFileSync(path.join(SCRIPTS, '..', '..', 'x-unfollow', 'scripts', 'unfollow.cjs'), 'utf8'),
+    /captureXResponseEvidence/,
+  );
+  assert.doesNotMatch(follow, /@gmail\.com/i);
+  assert.doesNotMatch(follow, /profile\s+9/i);
+});
+
+group('retired whole-profile copy');
 const profileCopyScript = path.join(SCRIPTS, 'prepare-profile-copy.cjs');
-function runProfileCopy(sourceProfileDir, profileDir) {
-  return spawnSync(process.execPath, [profileCopyScript], {
-    env: { ...process.env, SOURCE_PROFILE_DIR: sourceProfileDir, PROFILE_DIR: profileDir },
+test('legacy profile-copy entry fails closed without touching source or target', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-profile-copy-retired-'));
+  const source = path.join(root, 'source');
+  const target = path.join(root, 'target');
+  fs.mkdirSync(source);
+  fs.writeFileSync(path.join(source, 'sentinel'), 'unchanged');
+  const result = spawnSync(process.execPath, [profileCopyScript], {
+    env: { ...process.env, SOURCE_PROFILE_DIR: source, PROFILE_DIR: target },
     encoding: 'utf8',
   });
-}
-test('profile copy rejects equal, ancestor, descendant, and symlink-parent overlap before side effects', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-profile-copy-overlap-'));
-  const source = path.join(root, 'source');
-  fs.mkdirSync(path.join(source, 'existing'), { recursive: true });
-  const sentinel = path.join(source, 'sentinel');
-  fs.writeFileSync(sentinel, 'unchanged');
-  const equal = runProfileCopy(source, source);
-  assert.strictEqual(equal.status, 2);
-  assert.match(equal.stderr, /overlapping login profiles/);
-  assert.strictEqual(fs.readFileSync(sentinel, 'utf8'), 'unchanged');
-
-  const child = path.join(source, 'must-not-exist');
-  const ancestor = runProfileCopy(source, child);
-  assert.strictEqual(ancestor.status, 2);
-  assert.match(ancestor.stderr, /overlapping login profiles/);
-  assert.ok(!fs.existsSync(child));
-
-  const descendant = runProfileCopy(path.join(source, 'existing'), source);
-  assert.strictEqual(descendant.status, 2);
-  assert.match(descendant.stderr, /overlapping login profiles/);
-  assert.strictEqual(fs.readFileSync(sentinel, 'utf8'), 'unchanged');
-
-  const alias = path.join(root, 'source-alias');
-  fs.symlinkSync(source, alias);
-  const symlinkChild = path.join(alias, 'missing', 'leaf');
-  const symlinkParent = runProfileCopy(source, symlinkChild);
-  assert.strictEqual(symlinkParent.status, 2);
-  assert.match(symlinkParent.stderr, /overlapping login profiles/);
-  assert.ok(!fs.existsSync(path.join(source, 'missing')));
-});
-test('profile copy fails closed for a missing source or existing target', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-profile-copy-inputs-'));
-  const missingTarget = path.join(root, 'missing-target');
-  const missingSource = runProfileCopy(path.join(root, 'missing-source'), missingTarget);
-  assert.strictEqual(missingSource.status, 2);
-  assert.match(missingSource.stderr, /SOURCE_PROFILE_DIR must be an existing directory/);
-  assert.ok(!fs.existsSync(missingTarget));
-
-  const source = path.join(root, 'source');
-  const target = path.join(root, 'target');
-  fs.mkdirSync(source);
-  fs.mkdirSync(target);
-  const sentinel = path.join(target, 'sentinel');
-  fs.writeFileSync(sentinel, 'unchanged');
-  const existingTarget = runProfileCopy(source, target);
-  assert.strictEqual(existingTarget.status, 2);
-  assert.match(existingTarget.stderr, /PROFILE_DIR already exists/);
-  assert.strictEqual(fs.readFileSync(sentinel, 'utf8'), 'unchanged');
-});
-test('profile copy copies an independent existing source into a new target', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-profile-copy-success-'));
-  const source = path.join(root, 'source');
-  const target = path.join(root, 'target');
-  fs.mkdirSync(path.join(source, 'nested'), { recursive: true });
-  fs.writeFileSync(path.join(source, 'nested', 'cookie'), 'preserved');
-  const result = runProfileCopy(source, target);
-  assert.strictEqual(result.status, 0, result.stderr);
-  assert.strictEqual(fs.readFileSync(path.join(target, 'nested', 'cookie'), 'utf8'), 'preserved');
-});
-test('profile copy dereferences a symlink source into an independent real target directory', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-profile-copy-source-link-'));
-  const realSource = path.join(root, 'real-source');
-  const sourceLink = path.join(root, 'source-link');
-  const target = path.join(root, 'campaign-copy');
-  fs.mkdirSync(path.join(realSource, 'nested'), { recursive: true });
-  fs.writeFileSync(path.join(realSource, 'nested', 'cookie'), 'preserved');
-  fs.symlinkSync(realSource, sourceLink);
-  const result = runProfileCopy(sourceLink, target);
-  assert.strictEqual(result.status, 0, result.stderr);
-  assert.ok(fs.lstatSync(target).isDirectory(), 'target must be a real directory, not a symlink');
-  assert.notStrictEqual(fs.realpathSync(target), fs.realpathSync(sourceLink));
-  assert.strictEqual(fs.readFileSync(path.join(target, 'nested', 'cookie'), 'utf8'), 'preserved');
-});
-test('profile copy failure cleans only its staging directory and leaves no final target', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-profile-copy-partial-'));
-  const source = path.join(root, 'source');
-  const target = path.join(root, 'campaign-copy');
-  fs.mkdirSync(source);
-  const { prepareProfileCopy } = require(path.join(SCRIPTS, 'prepare-profile-copy.cjs'));
-  const injectedFs = {
-    ...fs,
-    cpSync(_source, staging) {
-      fs.mkdirSync(path.join(staging, 'partial'), { recursive: true });
-      throw Object.assign(new Error('injected EIO'), { code: 'EIO' });
-    },
-  };
-  assert.throws(
-    () => prepareProfileCopy({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: target }, injectedFs),
-    /injected EIO/,
-  );
+  assert.strictEqual(result.status, 2);
+  assert.match(result.stderr, /Manual whole-profile copy is retired/);
+  assert.strictEqual(fs.readFileSync(path.join(source, 'sentinel'), 'utf8'), 'unchanged');
   assert.ok(!fs.existsSync(target));
-  assert.deepStrictEqual(fs.readdirSync(root).sort(), ['source']);
 });
-test('all x-follow profile-copy guidance uses the guarded entry and never raw cp -R', () => {
+test('legacy profile-copy module contains no recursive copy implementation', () => {
+  const source = fs.readFileSync(profileCopyScript, 'utf8');
+  assert.doesNotMatch(source, /cpSync|copyFile|renameSync|rmSync/);
+  assert.throws(() => require(profileCopyScript).prepareProfileCopy(), /Manual whole-profile copy is retired/);
+});
+test('x-follow guidance uses account configuration and automatic selective CDP refresh', () => {
   const docs = [
     path.join(__dirname, '..', 'SKILL.md'),
     path.join(__dirname, '..', 'README.md'),
-    path.join(__dirname, '..', '..', '..', 'README.md'),
     path.join(__dirname, '..', 'references', 'pacing-anti-detection.md'),
     path.join(__dirname, '..', 'references', 'troubleshooting.md'),
   ];
   for (const document of docs) {
     const text = fs.readFileSync(document, 'utf8');
-    assert.match(text, /prepare-profile-copy\.cjs/, document);
+    assert.match(text, /configure-account\.cjs/, document);
+    assert.match(text, /CDP/i, document);
+    assert.doesNotMatch(text, /prepare-profile-copy\.cjs/, document);
     assert.doesNotMatch(text, /\bcp\s+-R\b/, document);
   }
   const run = fs.readFileSync(path.join(__dirname, '..', 'run.sh'), 'utf8');
-  assert.match(run, /prepare-profile-copy\.cjs/);
-  assert.doesNotMatch(run, /say "cp -R/);
+  assert.match(run, /configure-account\.cjs/);
+  assert.doesNotMatch(run, /prepare-profile-copy\.cjs|pkill\s+-f|Singleton/);
 });
 
 group('shared crypto filter policy');
@@ -1417,7 +1443,7 @@ test('build-queue direct default keeps crypto while FILTER_CRYPTO=1 filters it',
   assert.ok(!runBuildQueueEnv(fixtureDir(), { FILTER_CRYPTO: '1' }).includes('BTCwhale'));
 });
 
-group('Playwright entry lock gates');
+group('CDP browser entry gates');
 const PLAYWRIGHT_ENTRIES = [
   ['campaign.cjs', ['TARGET=1']],
   ['smoke-test.cjs', []],
@@ -1425,7 +1451,7 @@ const PLAYWRIGHT_ENTRIES = [
   ['snapshot-following.cjs', ['offline']],
   ['verify-follows.cjs', ['offline']],
 ];
-test('every Playwright entry rejects an active lock before loading playwright', () => {
+test('every browser entry rejects an active network lock before loading Playwright', () => {
   const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-fake-playwright-'));
   const fakeModule = path.join(fakeRoot, 'playwright');
   fs.mkdirSync(fakeModule);
@@ -1434,17 +1460,21 @@ test('every Playwright entry rejects an active lock before loading playwright', 
   for (const [entry, args] of PLAYWRIGHT_ENTRIES) {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-entry-lock-'));
     const lockPath = path.join(dataDir, 'network-run.lock');
-    fs.mkdirSync(lockPath);
-    fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({ pid: process.pid, token: entry, jobDir: '/other', startedAt: '2026-08-19T00:00:00.000Z' }));
-    const env = { ...process.env, NODE_PATH: fakeRoot, X_FOLLOW_DATA_DIR: dataDir };
-    if (entry === 'campaign.cjs') env.TARGET = '1';
-    const result = spawnSync('node', [path.join(SCRIPTS, entry), ...args.filter(arg => !arg.includes('='))], { env, encoding: 'utf8' });
-    assert.strictEqual(result.status, 2, entry);
-    assert.match(result.stderr, /network run lock already active/, entry);
-    assert.ok(!fs.existsSync(marker), `${entry} loaded playwright`);
+    const browser = makeBrowserFixture(path.join(dataDir, 'browser'));
+    const lease = acquireLock(lockPath, { pid: process.pid, token: entry, jobDir: '/other' });
+    try {
+      const env = { ...process.env, ...browser.env, NODE_PATH: fakeRoot, X_FOLLOW_DATA_DIR: dataDir };
+      if (entry === 'campaign.cjs') env.TARGET = '1';
+      const result = spawnSync('node', [path.join(SCRIPTS, entry), ...args.filter(arg => !arg.includes('='))], { env, encoding: 'utf8' });
+      assert.strictEqual(result.status, 2, entry);
+      assert.match(result.stderr, /network run lock already active/, entry);
+      assert.ok(!fs.existsSync(marker), `${entry} loaded playwright`);
+    } finally {
+      releaseLock(lockPath, lease.token);
+    }
   }
 });
-test('every Playwright entry rejects the source profile before loading playwright', () => {
+test('every browser entry rejects a source/target overlap before loading Playwright', () => {
   const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-fake-playwright-source-'));
   const fakeModule = path.join(fakeRoot, 'playwright');
   fs.mkdirSync(fakeModule);
@@ -1453,11 +1483,18 @@ test('every Playwright entry rejects the source profile before loading playwrigh
   for (const [entry, args] of PLAYWRIGHT_ENTRIES) {
     const source = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-entry-source-'));
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-entry-source-data-'));
-    const env = { ...process.env, NODE_PATH: fakeRoot, X_FOLLOW_DATA_DIR: dataDir, SOURCE_PROFILE_DIR: source, PROFILE_DIR: source };
+    const env = {
+      ...process.env,
+      NODE_PATH: fakeRoot,
+      X_FOLLOW_DATA_DIR: dataDir,
+      X_CHROME_ACCOUNT_EMAIL: 'operator@example.com',
+      X_CHROME_USER_DATA_DIR: source,
+      PROFILE_DIR: source,
+    };
     if (entry === 'campaign.cjs') env.TARGET = '1';
     const result = spawnSync('node', [path.join(SCRIPTS, entry), ...args.filter(arg => !arg.includes('='))], { env, encoding: 'utf8' });
     assert.strictEqual(result.status, 2, entry);
-    assert.match(result.stderr, /PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR/, entry);
+    assert.match(result.stderr, /PROFILE_DIR must be independent from X_CHROME_USER_DATA_DIR/, entry);
     assert.ok(!fs.existsSync(marker), `${entry} loaded playwright`);
     assert.ok(!fs.existsSync(path.join(dataDir, 'network-run.lock')), `${entry} acquired a lock`);
   }
@@ -1534,64 +1571,46 @@ test('unsafe X_FOLLOW_RUN_ID exits before profile or browser handling', () => {
   assert.match(result.stderr + result.stdout, /safe single path segment/);
   assert.ok(!fs.existsSync(path.join(dataDir, 'network-run.lock')));
 });
-test('source profile exits before run lock or cleanup pkill', () => {
+test('source profile overlap exits before the network lock', () => {
   const source = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-source-'));
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-source-data-'));
-  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-fake-pkill-'));
-  const pkillMarker = path.join(fakeBin, 'pkill-called');
-  const fakePkill = path.join(fakeBin, 'pkill');
-  fs.writeFileSync(fakePkill, `#!/bin/sh\ntouch ${JSON.stringify(pkillMarker)}\n`);
-  fs.chmodSync(fakePkill, 0o755);
   const result = spawnSync('bash', [path.join(__dirname, '..', 'run.sh')], {
-    env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, X_FOLLOW_DATA_DIR: dataDir, SOURCE_PROFILE_DIR: source, PROFILE_DIR: source },
+    env: { ...process.env, X_FOLLOW_DATA_DIR: dataDir, SOURCE_PROFILE_DIR: source, PROFILE_DIR: source },
     encoding: 'utf8',
   });
   assert.strictEqual(result.status, 2);
-  assert.match(result.stderr + result.stdout, /PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR/);
+  assert.match(result.stderr + result.stdout, /PROFILE_DIR must not resolve to X_CHROME_USER_DATA_DIR/);
   assert.ok(!fs.existsSync(path.join(dataDir, 'network-run.lock')));
-  assert.ok(!fs.existsSync(pkillMarker));
 });
-test('run.sh missing-profile guidance preserves resolved source context and routes through the guarded runner', () => {
+test('run.sh missing account config fails before state, network lock, Playwright, or Chrome', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-account-missing-'));
   const source = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-guidance-source-'));
-  const profile = path.join(os.tmpdir(), `xf-run-guidance-copy-${process.pid}`);
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-guidance-data-'));
+  const profile = path.join(root, 'campaign');
+  const dataDir = path.join(root, 'data-must-not-exist');
   const result = spawnSync('bash', [path.join(__dirname, '..', 'run.sh')], {
-    env: { ...process.env, X_FOLLOW_DATA_DIR: dataDir, SOURCE_PROFILE_DIR: source, PROFILE_DIR: profile },
+    env: {
+      ...process.env,
+      HOME: root,
+      X_BROWSER_CONFIG_PATH: path.join(root, 'missing-account.json'),
+      X_FOLLOW_DATA_DIR: dataDir,
+      SOURCE_PROFILE_DIR: source,
+      PROFILE_DIR: profile,
+    },
     encoding: 'utf8',
   });
   const output = result.stderr + result.stdout;
-  assert.strictEqual(result.status, 3);
-  assert.match(output, new RegExp(`SOURCE_PROFILE_DIR="${source.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
-  assert.match(output, new RegExp(`PROFILE_DIR="${profile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
-  assert.match(output, /export SOURCE_PROFILE_DIR="[^"]+" PROFILE_DIR="[^"]+"/);
-  assert.match(output, /prepare-profile-copy\.cjs/);
-  assert.doesNotMatch(output, /\bcp\s+-R\b/);
-  assert.match(output, /run\.sh/);
-  assert.doesNotMatch(output, /rm\s+-f[^\n]*Singleton/);
+  assert.strictEqual(result.status, 2);
+  assert.match(output, /X browser account is not configured/);
+  assert.match(output, /configure-account\.cjs set --email=<email>/);
+  assert.ok(!fs.existsSync(dataDir));
 });
-test('smoke profile guidance routes missing and locked copies through run.sh without manual Singleton cleanup', () => {
-  const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-fake-playwright-guidance-'));
-  const fakeModule = path.join(fakeRoot, 'playwright');
-  fs.mkdirSync(fakeModule);
-  fs.writeFileSync(path.join(fakeModule, 'index.js'), 'module.exports = { chromium: {} };');
-  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-smoke-guidance-source-'));
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-smoke-guidance-data-'));
-  const runSmoke = (profile) => spawnSync('node', [path.join(SCRIPTS, 'smoke-test.cjs')], {
-    env: { ...process.env, NODE_PATH: fakeRoot, X_FOLLOW_DATA_DIR: dataDir, SOURCE_PROFILE_DIR: source, PROFILE_DIR: profile },
-    encoding: 'utf8',
-  });
-  const missing = runSmoke(path.join(os.tmpdir(), `xf-smoke-guidance-missing-${process.pid}`));
-  const lockedProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-smoke-guidance-copy-'));
-  fs.writeFileSync(path.join(lockedProfile, 'SingletonLock'), 'locked');
-  const locked = runSmoke(lockedProfile);
-  for (const result of [missing, locked]) {
-    const output = result.stderr + result.stdout;
-    assert.strictEqual(result.status, 3);
-    assert.match(output, /SOURCE_PROFILE_DIR/);
-    assert.match(output, /run\.sh/);
-    assert.doesNotMatch(output, /rm\s+-f[^\n]*Singleton/);
-    assert.doesNotMatch(output, /cp -R ~\/\.config\/playwright-chrome-profile/);
-  }
+test('run.sh contains no broad Chrome cleanup or Singleton deletion', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'run.sh'), 'utf8');
+  assert.doesNotMatch(source, /pkill\s+-f|Singleton/);
+  assert.match(source, /local hcode=\$\?[\s\S]*HARVEST ANOMALY[\s\S]*exit "\$hcode"/);
+  assert.match(source, /vcode=\$\?[\s\S]*VERIFY ANOMALY[\s\S]*exit "\$vcode"/);
+  assert.match(source, /10\|11\|12\|13\|14\|18\).*during verify top-up/);
+  assert.match(source, /2\).*configuration gate failed.*HALT without retry/);
 });
 test("run.sh supports a JOB_DIR containing a single quote without injecting it into node -e", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-quoted-job-'));
@@ -1604,6 +1623,7 @@ test("run.sh supports a JOB_DIR containing a single quote without injecting it i
   fs.writeFileSync(path.join(fakeBin, 'node'), [
     '#!/bin/sh',
     'case "$1" in',
+    '  */configure-account.cjs) exit 0 ;;',
     '  */smoke-test.cjs) exit 0 ;;',
     '  */verify-follows.cjs) printf \'{"failed":[]}\\n\'; exit 0 ;;',
     'esac',
@@ -1668,6 +1688,7 @@ function runAutomaticSnapshotScenario(mode, myHandle = 'Me', previousSnapshot = 
   fs.writeFileSync(path.join(fakeBin, 'node'), [
     '#!/bin/sh',
     'case "$1" in',
+    '  */configure-account.cjs) exit 0 ;;',
     '  */smoke-test.cjs) exit 0 ;;',
     '  */snapshot-following.cjs)',
     '    touch "$TEST_SNAPSHOT_CALLED"',

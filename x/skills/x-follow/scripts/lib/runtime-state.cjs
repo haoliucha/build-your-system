@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const { CRYPTO_TOKENS } = require('./filters.cjs');
+const { resolveSourceUserDataDir } = require('./cdp-browser.cjs');
 
 function validateRunId(runId) {
   if (!/^[A-Za-z0-9._-]+$/.test(runId) || runId === '.' || runId === '..') {
@@ -57,12 +58,11 @@ function containsPath(parent, candidate) {
 
 function resolveProfilePolicy(env = process.env) {
   const home = env.HOME || process.env.HOME || os.homedir();
-  const sourceProfileDir = env.SOURCE_PROFILE_DIR
-    || env.X_FOLLOW_SOURCE_PROFILE_DIR
-    || path.join(home, '.config', 'playwright-chrome-profile');
+  const sourceProfileDir = resolveSourceUserDataDir({ ...env, HOME: home });
   const profileDir = env.PROFILE_DIR
     || path.join(home, '.config', 'playwright-chrome-profile-campaign');
   return {
+    sourceUserDataDir: sourceProfileDir,
     sourceProfileDir,
     profileDir,
     sourceCanonicalPath: resolveCanonicalPath(sourceProfileDir),
@@ -74,7 +74,7 @@ function assertIndependentProfile(env = process.env) {
   const policy = resolveProfilePolicy(env);
   if (containsPath(policy.sourceCanonicalPath, policy.profileCanonicalPath)
     || containsPath(policy.profileCanonicalPath, policy.sourceCanonicalPath)) {
-    throw new Error('PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR and must not be equal to, contain, or be contained by SOURCE_PROFILE_DIR; refusing overlapping login profiles');
+    throw new Error('PROFILE_DIR must not resolve to X_CHROME_USER_DATA_DIR (or compatibility SOURCE_PROFILE_DIR) and must not be equal to, contain, or be contained by the system Chrome source; refusing overlapping login profiles');
   }
   return policy;
 }

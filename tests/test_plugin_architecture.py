@@ -11,7 +11,7 @@ def manifest(path):
 
 class PluginArchitectureTests(unittest.TestCase):
     def test_current_roots_and_versions(self):
-        expected = {"assistant": "2.0.0", "insights": "0.4.0", "x": "4.1.0", "coding-anywhere": "1.4.0", "bid": "0.1.0", "media": "1.1.0"}
+        expected = {"assistant": "2.0.0", "insights": "0.4.0", "x": "4.1.2", "coding-anywhere": "1.4.0", "bid": "0.1.0", "media": "1.1.0"}
         for name, version in expected.items():
             self.assertEqual(manifest(Path(name) / ".codex-plugin" / "plugin.json")["version"], version)
         self.assertEqual(manifest(Path("media") / ".claude-plugin" / "plugin.json")["version"], "1.1.0")
@@ -33,6 +33,8 @@ class PluginArchitectureTests(unittest.TestCase):
         self.assertEqual(codex_skills, "./skills/")
         claude_skills = manifest(Path("x") / ".claude-plugin" / "plugin.json")["skills"]
         self.assertEqual(claude_skills, ["./skills/"])
+        self.assertTrue((ROOT / "x" / "scripts" / "plugin-provenance.cjs").is_file())
+        self.assertTrue((ROOT / "x" / "scripts" / "migrate-legacy-skill.sh").is_file())
 
     def test_x_follow_is_documented_as_a_shared_dual_host_skill(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

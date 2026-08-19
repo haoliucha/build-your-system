@@ -1,11 +1,9 @@
-// lib/nav-helper.cjs — latency- & rate-limit-tolerant navigation
+// lib/nav-helper.cjs — latency-tolerant navigation with evidence-based HTTP classification.
 //
-// WHY: X serves HTTP 429 (SearchTimeline / UserByScreenName quota) as a page that
-// renders "出错了。请尝试重新加载。" with a retry button. Naively reloading on error
-// FEEDS the 429 (each reload is another request). The correct response is to WAIT
-// (the rate-limit window is the recovery) with an exponentially growing interval,
-// THEN re-navigate. High-latency VPNs also make fixed `sleep` waits lose the race
-// against slow SPA rendering — so we wait for the real content selector, not a timer.
+// A generic "Something went wrong" page is not proof of HTTP 429. Only an observed
+// navigation/API response status may produce RATE_LIMIT. Generic pages retain bounded
+// latency backoff, while a real 429 returns immediately so the caller can fail closed or
+// apply its explicit harvest cooldown policy.
 //
 // gotoRobust(page, url, { needSel, settle, retries, backoffBase, backoffCap, label })
 //   needSel     CSS selector that must be present for the page to count as "loaded"
@@ -19,13 +17,71 @@ const { backoffMs } = require('./filters.cjs');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Probe: is there an error page / is the needed selector present?
+function isRelevantXResponse(response) {
+  try {
+    const url = new URL(response.url());
+    return url.hostname === 'x.com' || url.hostname.endsWith('.x.com')
+      || url.hostname === 'twitter.com' || url.hostname.endsWith('.twitter.com');
+  } catch { return false; }
+}
+
+function isRelatedXApiResponse(response) {
+  if (!isRelevantXResponse(response)) return false;
+  try {
+    const url = new URL(response.url());
+    return url.hostname === 'api.x.com'
+      || url.pathname.includes('/i/api/')
+      || url.pathname.includes('/graphql/')
+      || /timeline/i.test(url.pathname);
+  } catch { return false; }
+}
+
+function responseEvidence(response, options = {}) {
+  if (!response || !isRelevantXResponse(response)) return null;
+  // The document returned by page.goto is evidence for that navigation. Background
+  // responses count only when they are an X API/timeline request; an unrelated asset or
+  // telemetry response must never turn the whole workflow into RATE_LIMIT.
+  if (!options.navigation && !isRelatedXApiResponse(response)) return null;
+  const status = response.status();
+  if (status === 429) return { reason: 'RATE_LIMIT', httpStatus: status, responseUrl: response.url() };
+  if (status === 401) return { reason: 'LOGIN_REDIRECT', httpStatus: status, responseUrl: response.url() };
+  return null;
+}
+
+// Observe API/timeline responses produced after navigation (scrolling or a mutation).
+// page.goto responses are classified inside gotoRobust; this monitor intentionally uses
+// responseEvidence's stricter background-response rules so assets and telemetry cannot
+// manufacture RATE_LIMIT. The listener is always removed after the supplied operation.
+async function captureXResponseEvidence(page, operation) {
+  let evidence = null;
+  const observe = (response) => { evidence = evidence || responseEvidence(response); };
+  if (typeof page.on === 'function') page.on('response', observe);
+  try {
+    const value = await operation();
+    return { value, evidence };
+  } finally {
+    if (typeof page.off === 'function') page.off('response', observe);
+    else if (typeof page.removeListener === 'function') page.removeListener('response', observe);
+  }
+}
+
+function loginUrl(value) {
+  try {
+    const pathname = new URL(value).pathname;
+    return pathname.includes('/login') || pathname.includes('/i/flow/login') || pathname.includes('/i/flow/signup');
+  } catch { return false; }
+}
+
+// Probe: is there a generic error page / is the needed selector present?
 async function pageState(page, needSel) {
   return await page.evaluate((needSel) => {
     const b = (document.body && document.body.innerText) || '';
-    const hasErr = /出错了|尝试重新加载|重新加载|Something went wrong|Try reloading/i.test(b);
     const hasSel = needSel ? !!document.querySelector(needSel) : true;
-    return { hasErr, hasSel, len: b.length };
+    const errorText = /出错了|尝试重新加载|重新加载|Something went wrong|Try reloading/i.test(b);
+    const retryButton = [...document.querySelectorAll('button, [role="button"]')]
+      .some((element) => /重试|再试一次|Try again|Retry/i.test(element.innerText || element.textContent || ''));
+    const hasGenericError = errorText && (retryButton || !hasSel);
+    return { hasErr: hasGenericError, hasGenericError, hasSel, len: b.length };
   }, needSel || null);
 }
 
@@ -41,29 +97,47 @@ async function gotoRobust(page, url, opts = {}) {
   let waitedMs = 0;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let evidence = null;
+    const observe = (response) => { evidence = evidence || responseEvidence(response); };
+    if (typeof page.on === 'function') page.on('response', observe);
     try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    } catch (e) {
-      /* nav timeout under latency — treat as soft fail -> backoff */
-    }
-    await sleep(settle);
-    if (needSel) {
-      try { await page.waitForSelector(needSel, { timeout: 15000 }); } catch {}
-    }
-    const st = await pageState(page, needSel);
-    if (st.hasSel && !st.hasErr) return { ok: true, attempts: attempt, waitedMs };
-    if (attempt >= maxAttempts) break;
+      try {
+        const navigationResponse = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        evidence = evidence || responseEvidence(navigationResponse, { navigation: true });
+      } catch (e) {
+        /* nav timeout under latency — treat as soft fail -> backoff */
+      }
+      if (evidence) return { ok: false, attempts: attempt, waitedMs, ...evidence };
+      await sleep(settle);
+      if (evidence) return { ok: false, attempts: attempt, waitedMs, ...evidence };
+      if (needSel) {
+        try { await page.waitForSelector(needSel, { timeout: 15000 }); } catch {}
+      }
+      if (evidence) return { ok: false, attempts: attempt, waitedMs, ...evidence };
+      const st = await pageState(page, needSel);
+      if (loginUrl(page.url())) return { ok: false, attempts: attempt, waitedMs, reason: 'LOGIN_REDIRECT' };
+      if (st.hasSel && !st.hasGenericError) return { ok: true, attempts: attempt, waitedMs, reason: null };
+      if (attempt >= maxAttempts) break;
 
-    const wait = backoffMs(attempt, base, cap) + Math.floor(rnd() * 5000);
-    waitedMs += wait;
-    process.stderr.write(
-      `[nav] ${label}: ${st.hasErr ? '出错了/429' : 'no-content'} -> backoff ${Math.round(wait / 1000)}s (next try ${attempt + 1}/${maxAttempts})\n`
-    );
-    await sleep(wait); // the WAIT is the recovery; next loop re-navigates
+      const wait = backoffMs(attempt, base, cap) + Math.floor(rnd() * 5000);
+      waitedMs += wait;
+      process.stderr.write(
+        `[nav] ${label}: ${st.hasGenericError ? 'generic-error-page' : 'no-content'} -> backoff ${Math.round(wait / 1000)}s (next try ${attempt + 1}/${maxAttempts})\n`
+      );
+      await sleep(wait); // the WAIT is the recovery; next loop re-navigates
+    } finally {
+      if (typeof page.off === 'function') page.off('response', observe);
+      else if (typeof page.removeListener === 'function') page.removeListener('response', observe);
+    }
   }
 
   const fin = await pageState(page, needSel);
-  return { ok: fin.hasSel && !fin.hasErr, attempts: maxAttempts, waitedMs };
+  return {
+    ok: fin.hasSel && !fin.hasGenericError,
+    attempts: maxAttempts,
+    waitedMs,
+    reason: fin.hasGenericError ? 'GENERIC_NAV_ERROR' : 'NO_CONTENT',
+  };
 }
 
-module.exports = { gotoRobust, pageState, sleep };
+module.exports = { captureXResponseEvidence, gotoRobust, isRelatedXApiResponse, isRelevantXResponse, loginUrl, pageState, responseEvidence, sleep };

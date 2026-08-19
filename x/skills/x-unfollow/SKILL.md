@@ -5,7 +5,7 @@ description: Use when the user asks about X/Twitter follow hygiene, x-unfollow, 
 
 # x-unfollow v4：X 关系当前态与安全取关
 
-唯一网络入口是 `run.sh`。默认 `MODE=report` 只刷新 following 并输出未回关报告；只有用户明确授权“取关”时才使用 `MODE=unfollow`。
+唯一网络入口是当前 `x` 插件内的 `run.sh`。默认 `MODE=report` 只刷新 following 并输出未回关报告；只有用户明确授权“取关”时才使用 `MODE=unfollow`。不要调用、链接或复制 `~/.agents/skills/x-unfollow`；裸 standalone 副本缺少双宿主 manifest，必须在浏览器、锁和 X 请求前以 `LEGACY_STANDALONE_INSTALL` 失败。Codex 规范入口为 `$x:x-unfollow`，Claude Code 由 `/x-unfollow` 或 `/x:x-unfollow` 路由到插件内共享 Skill。
 
 ## 先确定用户要查什么
 
@@ -19,11 +19,22 @@ description: Use when the user asks about X/Twitter follow hygiene, x-unfollow, 
 不要为了查粉丝变化扫描 following；不要为了查未回关扫描 followers；不要逐个打开主页验证取关或粉丝变化。
 
 ```bash
+SKILL_DIR="/当前 x-unfollow Skill 目录的绝对路径"
 NODE_PATH=~/.config/playwright-mcp-server/node_modules \
-  MY_HANDLE=<you> MODE=followers-report bash run.sh
+  MY_HANDLE=<you> MODE=followers-report bash "$SKILL_DIR/run.sh"
 ```
 
-受控 Chrome 默认无头运行（未设置或 `XU_HEADLESS=1`）。仅在排查浏览器交互时显式设置 `XU_HEADLESS=0` 进入可见调试；无头失败时不自动回退到可见模式。异常退出后受控浏览器上下文已经关闭，按 `ALERT.txt` 修复环境后重新运行，不要寻找“仍在运行”的窗口。
+运行前检查 `~/.config/x-browser/account.json`。若脚本报告 `ACCOUNT_CONFIG_REQUIRED`，先在对话中询问用户要使用的 Chrome 账号邮箱，不要猜测，再保存：
+
+```bash
+node "$SKILL_DIR/scripts/configure-account.cjs" set --email=<chrome-account-email>
+```
+
+`X_CHROME_ACCOUNT_EMAIL` 可临时覆盖本地配置，`X_BROWSER_CONFIG_PATH` 可覆盖配置路径。邮箱必须在系统 Chrome `Local State.profile.info_cache` 中恰好匹配一个 profile；不要硬编码私人邮箱或 `Profile N`。
+
+浏览器通过系统 Google Chrome 子进程和本机随机端口 CDP 运行，只使用独立 `PROFILE_DIR`（默认 `~/.config/playwright-chrome-profile-campaign`）。系统 Chrome user-data 默认从 `~/Library/Application Support/Google/Chrome` 只读；`X_CHROME_USER_DATA_DIR` 优先，`SOURCE_PROFILE_DIR`、`X_FOLLOW_SOURCE_PROFILE_DIR` 是兼容别名。认证 Cookie 缺失时，在零 X 请求状态下最多自动选择性刷新一次，失败回滚并退出 12。不要手动复制整个 profile，不要删除 `Singleton*`，不要广域终止 Chrome。
+
+受控 Chrome 默认无头运行（未设置或 `XU_HEADLESS=1`）。仅在排查浏览器交互时显式设置 `XU_HEADLESS=0` 进入可见调试；无头失败时不自动回退到可见模式。异常退出后独立 CDP Chrome 已关闭，按 `ALERT.txt` 修复环境后重新运行。
 
 ## 不可放宽的安全约束
 
@@ -32,7 +43,9 @@ NODE_PATH=~/.config/playwright-mcp-server/node_modules \
 - 页面 URL 必须精确是 `/<handle>/following` 或 `/<handle>/followers`。顶层导航、轮前、轮后和最终均检查；用户点击导致页面漂移时不抢回页面，立即关闭受控上下文、删除 staging、保留 current、写 `ALERT.txt`，退出 15。
 - 主路径只接受连续 Bottom cursor 链；无 Bottom cursor，或同 cursor 连续两次无新增，才视为末页。网络响应一旦出现，账号集合只采用响应数据；DOM 只读取主列表列，并仅在响应完全不可见时连续 8 轮稳定到底兜底。
 - 一次完整扫描即可输出相对上一份完整基线的粉丝变化报告，不设置二次确认或人工 review 队列。
-- 验证码、429、登录跳转、账号限制、webdriver 异常立即停止（10–14）。
+- 登录 URL/按钮、认证 Cookie 缺失，或未登录时受保护列表跳到公开主页，统一作为 `LOGIN_REDIRECT`（exit 12）；确认登录后的非预期跳转才是 `PAGE_DRIFT`（exit 15）。
+- 只有导航响应或相关 X API/Timeline 响应的真实 HTTP 429 才是 `RATE_LIMIT`（exit 11）；通用错误页是 `GENERIC_NAV_ERROR`（exit 18），不得根据“出错了”文字声称 429。
+- 验证码、登录跳转、账号限制、webdriver 异常、真实 429 和通用导航错误立即停止；失败扫描删除 staging 并保留旧 current。
 - 取关只认精确目标的 `正在关注/Following/取消关注/Unfollow` 语义控件和匹配确认框；绝不单独信任 `*-unfollow` testid，避免误点“订阅”。
 - 默认保护已回关账号。只有用户对精确目标明确授权忽略回关时，才可同时使用 `EXPLICIT_HANDLES` 与 `ALLOW_MUTUAL=1`。
 - 永不关注、订阅、发帖、点赞、评论、屏蔽或改设置。

@@ -22,8 +22,8 @@ class StructureTests(unittest.TestCase):
         codex = read_json_optional(X / ".codex-plugin" / "plugin.json")
         self.assertEqual(claude.get("name"), "x")
         self.assertEqual(codex.get("name"), "x")
-        self.assertEqual(claude.get("version"), "4.1.0")
-        self.assertEqual(codex.get("version"), "4.1.0")
+        self.assertEqual(claude.get("version"), "4.1.2")
+        self.assertEqual(codex.get("version"), "4.1.2")
 
     def test_both_marketplaces_register_the_same_top_level_source(self):
         claude_marketplace = read_json_optional(
@@ -50,7 +50,7 @@ class StructureTests(unittest.TestCase):
         )
         self.assertEqual(claude_entry.get("source"), "./x")
         self.assertEqual(codex_entry.get("source"), {"source": "local", "path": "./x"})
-        self.assertEqual(claude_entry.get("version"), "4.1.0")
+        self.assertEqual(claude_entry.get("version"), "4.1.2")
 
     def test_claude_metadata_describes_the_rescue_boundary(self):
         manifest = read_json_optional(X / ".claude-plugin" / "plugin.json")
@@ -127,13 +127,13 @@ class StructureTests(unittest.TestCase):
 
     def test_troubleshooting_snapshot_merge_stays_in_one_job_directory(self):
         text = (X / "skills" / "x-follow" / "references" / "troubleshooting.md").read_text(encoding="utf-8")
-        section = text.split("## 6. 大量 `already_following` rejects", 1)[1].split("## 7.", 1)[0]
+        section = text.split("## 大量 `already_following`", 1)[1].split("## 点击后", 1)[0]
         self.assertNotIn("/tmp", section)
         self.assertIn('"$JOB_DIR/my-following.json"', section)
         self.assertIn('"$JOB_DIR/tracker.json"', section)
         self.assertIn("merge-pre-existing.cjs", section)
 
-    def test_follow_docs_name_the_shared_source_profile_and_runtime_gate(self):
+    def test_follow_docs_name_the_shared_cdp_profile_and_runtime_gate(self):
         for path in (
             X / "README.md",
             X / "skills" / "x-follow" / "SKILL.md",
@@ -146,7 +146,9 @@ class StructureTests(unittest.TestCase):
             with self.subTest(path=path.name):
                 self.assertIn("SOURCE_PROFILE_DIR", text)
                 self.assertIn("X_FOLLOW_SOURCE_PROFILE_DIR", text)
-                self.assertIn("运行时强制", text)
+                self.assertIn("X_CHROME_USER_DATA_DIR", text)
+                self.assertIn("PROFILE_DIR", text)
+                self.assertIn("CDP", text)
 
     def test_follow_docs_do_not_recommend_recursive_profile_deletion(self):
         docs = [X / "README.md", *(X / "skills" / "x-follow").rglob("*.md")]
@@ -158,7 +160,7 @@ class StructureTests(unittest.TestCase):
                 self.assertNotRegex(text, r"Fix:.*rm.*Singleton")
                 self.assertNotRegex(text, r"\bcp\s+-R\b")
 
-    def test_every_profile_copy_example_uses_the_guarded_offline_entry(self):
+    def test_every_profile_setup_uses_account_config_and_automatic_cdp_refresh(self):
         docs = (
             X / "README.md",
             X / "skills" / "x-follow" / "SKILL.md",
@@ -169,15 +171,16 @@ class StructureTests(unittest.TestCase):
         for path in docs:
             with self.subTest(document=path.name):
                 text = path.read_text(encoding="utf-8")
-                self.assertIn("prepare-profile-copy.cjs", text)
-                self.assertIn("export SOURCE_PROFILE_DIR PROFILE_DIR", text)
+                self.assertIn("configure-account.cjs", text)
+                self.assertIn("CDP", text)
+                self.assertNotIn("prepare-profile-copy.cjs", text)
 
-    def test_troubleshooting_manual_profile_entry_keeps_source_context(self):
+    def test_troubleshooting_account_setup_keeps_source_compatibility(self):
         text = (X / "skills" / "x-follow" / "references" / "troubleshooting.md").read_text(encoding="utf-8")
-        self.assertIn(
-            "SOURCE_PROFILE_DIR=\"$SOURCE_PROFILE_DIR\" PROFILE_DIR=\"$PROFILE_DIR\" \\",
-            text,
-        )
+        self.assertIn("configure-account.cjs\" set --email=", text)
+        self.assertIn("X_CHROME_USER_DATA_DIR", text)
+        self.assertIn("SOURCE_PROFILE_DIR", text)
+        self.assertIn("X_FOLLOW_SOURCE_PROFILE_DIR", text)
 
     def test_follow_reference_docs_share_safe_profile_lock_and_pacing_contracts(self):
         refs = X / "skills" / "x-follow" / "references"
@@ -186,14 +189,16 @@ class StructureTests(unittest.TestCase):
         candidates = (refs / "candidate-sources.md").read_text(encoding="utf-8")
         run_sh = (X / "skills" / "x-follow" / "run.sh").read_text(encoding="utf-8")
         for phrase in (
+            "X_CHROME_USER_DATA_DIR",
             "SOURCE_PROFILE_DIR",
             "PROFILE_DIR",
             "post_click_settle_ms: 6000",
-            "不自动清理 profile",
+            "工作流不自动清理 profile",
         ):
             with self.subTest(document="pacing", phrase=phrase):
                 self.assertIn(phrase, pacing)
         for phrase in (
+            "X_CHROME_USER_DATA_DIR",
             "SOURCE_PROFILE_DIR",
             "PROFILE_DIR",
             "X_FOLLOW_DATA_DIR",
@@ -202,7 +207,7 @@ class StructureTests(unittest.TestCase):
         ):
             with self.subTest(document="troubleshooting", phrase=phrase):
                 self.assertIn(phrase, troubleshooting)
-        self.assertIn("campaign 使用独立 `PROFILE_DIR`", candidates)
+        self.assertIn("campaign 使用独立 `PROFILE_DIR` 和 CDP", candidates)
         self.assertIn("network-run.lock", candidates)
         self.assertIn("不并发", candidates)
         self.assertNotIn("MCP 浏览器", candidates)

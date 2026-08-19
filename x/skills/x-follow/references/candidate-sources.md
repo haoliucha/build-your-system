@@ -81,10 +81,10 @@
 
 候选来源的合规性不构成关注或评论授权：关注仍须用户明确请求；评论默认禁用且需 `COMMENT_AFTER_FOLLOW=true/1` 与 `ALLOW_COMMENT_AFTER_FOLLOW=1` 双授权。候选、队列和 tracker 均写入共享 `X_FOLLOW_DATA_DIR` run 目录，单个 `network-run.lock` 防止并发网络流程。
 
-运行时强制要求独立 profile：`SOURCE_PROFILE_DIR`（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`，前者优先；默认原始登录态目录）与 campaign `PROFILE_DIR` 的 canonical path 必须互不重叠；相等、任一是另一方祖先/后代、`..` 归一化后重叠，或经已有 symlink 父目录解析后重叠，均在锁、清理或 Playwright 加载前以 exit 2 拒绝。不存在的 leaf 从最深现有父目录 realpath 后再拼回。
+运行时强制使用独立 CDP profile：`X_CHROME_USER_DATA_DIR` 默认指向系统 Chrome user-data 根目录，`SOURCE_PROFILE_DIR`、`X_FOLLOW_SOURCE_PROFILE_DIR` 仅为兼容别名；它与 campaign `PROFILE_DIR` 的 canonical path 必须互不重叠。系统 source 始终只读，认证缺失时最多选择性刷新 target 一次。
 
 ## 注意
 
 - 每个 harvest 调用是**独立调用**，但必须不并发；网络流程由共享 `network-run.lock` 串行化。
-- campaign 使用独立 `PROFILE_DIR`；候选、队列和 tracker 位于 `X_FOLLOW_DATA_DIR` 的共享 run 目录。
+- campaign 使用独立 `PROFILE_DIR` 和 CDP；候选、队列和 tracker 位于 `X_FOLLOW_DATA_DIR` 的共享 run 目录。
 - harvest 与 campaign 都是同一账号的网络流程，必须等待当前流程释放锁后再启动下一项；“独立调用”不表示可以同时运行。

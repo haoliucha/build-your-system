@@ -24,6 +24,11 @@ test('分页响应 / cursor / 单次粉丝变化报告测试通过', () => {
   assert.strictEqual(result.status, 0, result.stderr || result.stdout);
 });
 
+test('CDP 账号配置、profile 刷新与真实 HTTP 分类测试通过', () => {
+  const result = spawnSync(process.execPath, [path.join(__dirname, 'cdp-browser.test.cjs')], { encoding: 'utf8' });
+  assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+});
+
 test('运行锁只阻止并发，不包含时间冷却', () => {
   const policy = require(path.join(SCRIPTS, 'lib', 'rate-policy.cjs'));
   assert.strictEqual('FULL_RUN_COOLDOWN_MS' in policy, false);
@@ -67,19 +72,22 @@ test('受控浏览器默认无头，只有 XU_HEADLESS=0 显式进入可见调�
   let Browser = {};
   try { Browser = require(path.join(SCRIPTS, 'lib', 'browser-launch.cjs')); } catch {}
   assert.strictEqual(typeof Browser.resolveHeadless, 'function');
-  assert.strictEqual(typeof Browser.persistentContextOptions, 'function');
+  assert.strictEqual(typeof Browser.cdpSessionOptions, 'function');
   assert.strictEqual(Browser.resolveHeadless({}), true);
   assert.strictEqual(Browser.resolveHeadless({ XU_HEADLESS: '1' }), true);
   assert.strictEqual(Browser.resolveHeadless({ XU_HEADLESS: '0' }), false);
   assert.throws(() => Browser.resolveHeadless({ XU_HEADLESS: 'false' }), /XU_HEADLESS must be 0 or 1/);
-  assert.strictEqual(Browser.persistentContextOptions({ width: 1400, height: 1000 }, {}).headless, true);
+  assert.deepStrictEqual(Browser.cdpSessionOptions({ width: 1400, height: 1000 }, {}), { headless: true, width: 1400, height: 1000 });
 });
 
-test('扫描和取关入口统一使用共享浏览器配置，不硬编码可见模式', () => {
+test('扫描和取关入口统一使用 CDP 浏览器配置，不硬编码可见模式', () => {
   for (const file of ['list-snapshot.cjs', 'unfollow.cjs']) {
     const source = fs.readFileSync(path.join(SCRIPTS, file), 'utf8');
     assert.match(source, /browser-launch\.cjs/, file);
-    assert.match(source, /persistentContextOptions/, file);
+    assert.match(source, /cdp-browser\.cjs/, file);
+    assert.match(source, /withAuthenticatedContext/, file);
+    assert.match(source, /BrowserConfigError/, file);
+    assert.doesNotMatch(source, /launchPersistentContext/, file);
     assert.doesNotMatch(source, /headless:\s*false/, file);
   }
 });
@@ -111,7 +119,7 @@ test('异常提示假定受控上下文已关闭，不要求打开仍在运行�
   A.writeAlert(file, { type: 'CAPTCHA', text: 'challenge' });
   const alert = fs.readFileSync(file, 'utf8');
   assert.doesNotMatch(alert, /Open the Chrome window \(still running\)/);
-  assert.match(alert, /controlled browser context has closed/i);
+  assert.match(alert, /dedicated CDP Chrome child has been closed/i);
 });
 
 test('技能说明声明默认无头、显式调试覆盖和禁止自动回退', () => {

@@ -1,6 +1,6 @@
 # x — X (Twitter) 工作流
 
-`x` 是同时面向 Claude Code 与 Codex 的 X 工作流插件。当前版本为 **4.1.0**：两端共享 `x-unfollow` 关注卫生、`x-image` 图像生成与 `x-follow` 精准批量关注。
+`x` 是同时面向 Claude Code 与 Codex 的 X 工作流插件。当前版本为 **4.1.2**：两端共享 `x-unfollow` 关注卫生、`x-image` 图像生成与 `x-follow` 精准批量关注；账号 Skill 只允许从完整 `x` 插件运行。
 
 ## 宿主能力
 
@@ -34,22 +34,37 @@ Claude Code 提供 `/x-unfollow`、`/x:image` 和 `/x-follow` 命令。
 
 Claude 的 `/x:image` 还需要安装 OpenAI Codex 插件并运行 `/codex:setup`；执行 Rescue 的 Codex 环境也需要按上面的 Codex 步骤安装 `x` 插件。
 
+### 单一活动入口
+
+Codex 的规范入口是 `$x:x-unfollow`、`$x:x-follow`；Claude Code 由 `/x-unfollow`、`/x-follow` 命令路由到同一插件中的共享 Skill。迁移前的 `~/.agents/skills/x-unfollow` 是独立分发遗留物，不能与插件版同时启用，也不能通过软链接指向版本缓存。账号 Skill 的 orchestrator 和每个 X-facing 子入口都会在浏览器、Playwright、运行锁和 X 请求之前验证双宿主 manifest；主入口打印插件版本、实际 Skill 路径和内容指纹，裸 standalone 副本以 `LEGACY_STANDALONE_INSTALL`、exit 2 拒绝。
+
+维护者升级后运行：
+
+```bash
+node x/scripts/plugin-provenance.cjs doctor
+bash x/scripts/migrate-legacy-skill.sh --dry-run
+```
+
+确认迁移目标后，去掉 `--dry-run` 会把精确的旧目录移动到 `~/.agents/skills-disabled/x-unfollow-legacy-<timestamp>`，不会删除；生产模式拒绝自定义源/目标、symlink 和路径重叠。历史宿主版本缓存可以保留；doctor 跨 marketplace 和 scope 只要求每个宿主恰好一个启用的 `x` 插件，且版本和账号 Skill 内容指纹一致。
+
 ## X 账号工作流前置条件
 
-- macOS 或 Linux。
-- Node.js、Google Chrome，以及可被 Node 解析的 Playwright；`x-follow` 明确要求 **Node.js >= 22**（依赖 `fs.globSync`），现有环境通常通过 `NODE_PATH=~/.config/playwright-mcp-server/node_modules` 提供 Playwright。
-- 一个已登录 X 的 Chrome profile，默认原始目录为 `~/.config/playwright-chrome-profile`。
-- 账号工作流使用独立副本，默认路径为 `~/.config/playwright-chrome-profile-campaign`：
+- macOS、Google Chrome、Node.js，以及可被 Node 解析的 Playwright；`x-follow` 要求 **Node.js >= 22**（依赖 `fs.globSync`）。现有环境通常通过 `NODE_PATH=~/.config/playwright-mcp-server/node_modules` 提供 Playwright。
+- 系统 Chrome 中已有登录 X 的账号。工作流不会连接、关闭或修改系统 Chrome，只读取选中 profile 的认证存储。
+- 首次使用时，Claude Code 或 Codex 必须询问用户“使用哪个 Chrome 账号邮箱”，再由任一账号 Skill 保存本地配置：
 
   ```bash
-  SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
-  PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
-  export SOURCE_PROFILE_DIR PROFILE_DIR
-  X_FOLLOW_SKILL_DIR="/当前 x-follow Skill 目录的绝对路径"
-  node "$X_FOLLOW_SKILL_DIR/scripts/prepare-profile-copy.cjs"
+  X_ACCOUNT_SKILL_DIR="/当前 x-follow 或 x-unfollow Skill 目录的绝对路径"
+  node "$X_ACCOUNT_SKILL_DIR/scripts/configure-account.cjs" set --email=<chrome-account-email>
   ```
 
-原始登录态源目录由 `SOURCE_PROFILE_DIR` 指定（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`；前者优先），默认 `~/.config/playwright-chrome-profile`；`PROFILE_DIR` 默认 `~/.config/playwright-chrome-profile-campaign`。x-follow 复制后直接运行 `run.sh`；它在 canonical 门禁和锁通过后才会安全处理副本的 Singleton。x-follow 运行时强制要求两者的 canonical path 互不重叠：相等、任一是另一方祖先/后代、`..` 归一化后重叠，或经现有 symlink 父目录解析后重叠，都会在获取锁、清理或加载 Playwright 前以 exit 2 拒绝；不存在的 leaf 先从最深现有父目录 realpath。`x-unfollow` 还要求 `MY_HANDLE`，默认数据目录为 `~/.config/x-unfollow-data`，可用 `XU_DATA_DIR` 覆盖。
+配置写入 `~/.config/x-browser/account.json`，采用原子替换和 `0600` 权限；可用 `X_BROWSER_CONFIG_PATH` 改路径，或用 `X_CHROME_ACCOUNT_EMAIL` 仅覆盖本次运行。完整邮箱只存在本机配置/命令参数中，运行日志使用脱敏形式。
+
+启动前会读取系统 Chrome 的 `Local State.profile.info_cache`，要求邮箱恰好匹配一个 profile；源码不硬编码邮箱或 `Profile N`。系统 Chrome user-data 根目录默认是 `~/Library/Application Support/Google/Chrome`，可用 `X_CHROME_USER_DATA_DIR` 覆盖；旧变量 `SOURCE_PROFILE_DIR`、`X_FOLLOW_SOURCE_PROFILE_DIR` 仍是兼容别名。`PROFILE_DIR` 默认是 `~/.config/playwright-chrome-profile-campaign`，必须与系统源目录 canonical 隔离。
+
+两个账号 Skill 都由系统 Google Chrome 启动独立 `--user-data-dir`，在 `127.0.0.1` 随机端口上通过 CDP 连接。启动后先用浏览器 Cookie API 检查 `auth_token` 和 `ct0`，缺失时不访问 X，最多从选中系统 profile 自动刷新一次；刷新只复制 Cookie、IndexedDB、Local/Session Storage、Preferences、Network/WebStorage 等认证数据，不复制 History、Cache 或 Extensions，并使用 staging、临时备份和失败回滚。两端对同一 canonical `PROFILE_DIR` 共用 `${PROFILE_DIR}.cdp.lock`，只管理锁记录中的精确子进程，不使用广域 `pkill`，也不删除 `Singleton*`。
+
+`x-unfollow` 还要求 `MY_HANDLE`，默认数据目录为 `~/.config/x-unfollow-data`，可用 `XU_DATA_DIR` 覆盖。`x-follow` 仍只按 Chrome 邮箱选择 profile；`MY_HANDLE` 保持可选，仅用于已关注预过滤，不充当账号登录门禁。
 
 ## x-unfollow — 关注卫生与安全取关
 
@@ -110,10 +125,10 @@ NODE_PATH=~/.config/playwright-mcp-server/node_modules \
 - 取关后只追加一次完整 following 扫描，再用本地集合差验证目标，不逐个打开主页复查。
 - 列表页只被动监听页面自己发出的 Followers/Following 响应，不主动重放私有 GraphQL。
 - 真实分页响应之间等待 1–3 秒，每 25 个响应暂停 10 秒，单表使用 45 分钟看门狗。
-- 验证码、429、登录跳转、账号限制、webdriver 异常或页面漂移会立即停止并写入 `ALERT.txt`。
+- 验证码、登录跳转、账号限制、webdriver 异常或页面漂移会立即停止并写入 `ALERT.txt`。只有导航响应或相关 X API/Timeline 响应的真实 HTTP 429 才记为 `RATE_LIMIT`（exit 11）；通用“出错了 / Something went wrong”页面记为 `GENERIC_NAV_ERROR`（exit 18），不会再伪报 429。
 - 同一数据目录只允许一个网络流程；前一流程退出并释放锁后可立即重跑。
 
-受控 Chrome 默认无头运行；只有显式设置 `XU_HEADLESS=0` 才进入可见调试模式，无头失败时不会自动回退。
+`x-unfollow` 的独立 CDP Chrome 默认使用 `--headless=new`；只有显式设置 `XU_HEADLESS=0` 才进入可见调试模式，无头失败时不会自动回退。
 
 架构与维护者验证说明见 [`skills/x-unfollow/README.md`](skills/x-unfollow/README.md)。
 
@@ -150,7 +165,7 @@ Claude 的 `/x:image` 通过 Codex Rescue 把完整任务交给原生 Codex；�
 
 ## x-follow — 双宿主精准关注
 
-`x-follow` 是共享 Skill，Claude Code 使用 `/x-follow`，Codex 使用 `$x:x-follow` 或等价自然语言请求。两端都使用可见 Chrome 与独立 profile 副本；流程只新增关注，不执行 unfollow。
+`x-follow` 是共享 Skill，Claude Code 使用 `/x-follow`，Codex 使用 `$x:x-follow` 或等价自然语言请求。两端都默认启动可见的独立 CDP Chrome；系统 Chrome 始终只读。流程只新增关注，不执行 unfollow。
 
 ```text
 /x-follow target=100

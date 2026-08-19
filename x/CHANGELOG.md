@@ -1,5 +1,25 @@
 # Changelog
 
+## 4.1.2 (2026-08-20)
+
+### Single active plugin entry
+
+- `x-follow`、`x-unfollow` 的 orchestrator 和每个 X-facing 子入口都先验证完整 `x` 双宿主 manifest；主入口打印版本、实际 Skill 路径、宿主与内容指纹，裸 standalone 副本在账号状态、浏览器、锁和 X 请求前以 `LEGACY_STANDALONE_INSTALL`、exit 2 拒绝。
+- 新增 `plugin-provenance.cjs doctor`，跨 marketplace 与 user/local/project scope 检查 legacy 冲突、Claude/Codex 各自唯一启用插件、版本一致性及账号 Skill 内容指纹；历史未启用版本缓存无需删除。
+- 新增可恢复 legacy 迁移脚本，将精确的 `~/.agents/skills/x-unfollow` 移出 Skill 发现目录并保留在 `~/.agents/skills-disabled/`；拒绝自定义生产路径、symlink 和源/目标重叠，不使用指向版本缓存的软链接。
+- 文档统一使用插件命名空间入口，开发验收明确区分源码运行与安装后解析，避免自然语言路由命中迁移前旧副本。
+
+## 4.1.1 (2026-08-19)
+
+### CDP authentication and error classification
+
+- `x-unfollow` 与 `x-follow` 改由系统 Google Chrome 子进程加本机随机端口 CDP 启动，并继续只在独立的 campaign profile 上运行；系统 Chrome user-data 始终只读。
+- 新增本地 Chrome 账号配置，按邮箱在 `Local State.profile.info_cache` 中要求唯一匹配 profile；配置可由 `X_CHROME_ACCOUNT_EMAIL` 临时覆盖，日志只显示脱敏邮箱。
+- 独立副本缺少 `auth_token` 或 `ct0` 时，在零 X 请求状态下最多自动刷新一次；仅复制认证存储，使用 staging/备份原子替换，认证失败会回滚并以登录错误退出。
+- 两个 Skill 对同一 `PROFILE_DIR` 共用 `.cdp.lock`，只管理本次或锁记录中的精确 Chrome 子进程；删除广域 `pkill` 与无条件 `Singleton*` 清理。
+- 登录页、登录按钮、认证 Cookie 缺失及未登录的受保护列表跳转统一归类 `LOGIN_REDIRECT`；只有导航或相关 X API/Timeline 的真实 HTTP 429 才归类 `RATE_LIMIT`，通用错误页改为 `GENERIC_NAV_ERROR`。
+- 将 7 个浏览器入口全部迁移出 `launchPersistentContext`，保留 `x-unfollow` 默认无头、`XU_HEADLESS=0` 可见调试和 `x-follow` 默认可见的既有策略。
+
 ## 4.1.0 (2026-08-19)
 
 ### Shared x-follow release

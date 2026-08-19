@@ -4,8 +4,8 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { chromium } = require('playwright');
-const { persistentContextOptions } = require('./lib/browser-launch.cjs');
+const { cdpSessionOptions } = require('./lib/browser-launch.cjs');
+const { BrowserConfigError, withAuthenticatedContext, XAuthenticationError } = require('./lib/cdp-browser.cjs');
 const { gotoRobust } = require('./lib/nav-helper.cjs');
 const { detectAnomaly, writeAlert, EXIT_CODES } = require('./lib/anomaly.cjs');
 const { parseCell, parseMembershipCell, mergeObservation } = require('./lib/cell-parse.cjs');
@@ -36,6 +36,15 @@ const RESPONSE_TIMEOUT_MS = 20000;
 const EXPECTED_OPERATION = LIST_TYPE === 'followers' ? 'Followers' : 'Following';
 const say = (message) => process.stderr.write(`[list-snapshot] ${message}\n`);
 let detectedDriftUrl = null;
+
+class WorkflowExitError extends Error {
+  constructor(type, message, exitCode) {
+    super(message);
+    this.name = 'WorkflowExitError';
+    this.type = type;
+    this.exitCode = exitCode;
+  }
+}
 
 if (!HANDLE || !/^[A-Za-z0-9_]{1,15}$/.test(HANDLE)) throw new Error('MY_HANDLE required');
 if (!['following', 'followers'].includes(LIST_TYPE)) throw new Error('--list must be following or followers');
@@ -115,15 +124,11 @@ function mergeRow(seen, row) {
   if ((!previous.name || previous.name === previous.handle) && row.name) previous.name = row.name;
 }
 
-async function main() {
-  assertRunToken();
+async function scanList({ context, confirmAuthenticated }) {
+  removeStaging();
   fs.mkdirSync(STAGING_DIR, { recursive: true });
   const expectedUrl = `https://x.com${Scan.expectedListPath(HANDLE, LIST_TYPE)}`;
   say(`target=${LIST_TYPE} url=${expectedUrl} capture=passive-${EXPECTED_OPERATION} cadence=${WAIT_MIN}-${WAIT_MAX}ms pause=${SNAPSHOT_LONG_BREAK_MS / 1000}s/${SNAPSHOT_LONG_BREAK_EVERY}-responses watchdog=${WATCHDOG_MS / 60000}min`);
-  const context = await chromium.launchPersistentContext(
-    PROFILE_DIR,
-    persistentContextOptions({ width: 1400, height: 1000 }),
-  );
   const page = context.pages()[0] || await context.newPage();
   const channel = responseChannel();
   const responseTasks = new Set();
@@ -153,16 +158,16 @@ async function main() {
     if (armed && frame === page.mainFrame() && !Scan.isExpectedListUrl(frame.url(), HANDLE, LIST_TYPE)) {
       driftUrl = frame.url(); detectedDriftUrl = driftUrl;
       pageDrift(driftUrl); removeStaging();
-      void context.close().catch(() => {});
+      void page.close().catch(() => {});
     }
   });
 
   const assertTarget = async (where) => {
     const actual = page.url();
     if (driftUrl || !Scan.isExpectedListUrl(actual, HANDLE, LIST_TYPE)) {
-      pageDrift(driftUrl || actual); removeStaging(); await context.close();
+      pageDrift(driftUrl || actual); removeStaging();
       say(`PAGE_DRIFT at ${where}: expected=${expectedUrl} actual=${driftUrl || actual}`);
-      process.exit(15);
+      throw new WorkflowExitError('PAGE_DRIFT', `expected=${expectedUrl} actual=${driftUrl || actual}`, 15);
     }
   };
 
@@ -170,21 +175,26 @@ async function main() {
     const recentLog = JSON.stringify(details, null, 2);
     writeAlert(ALERT_PATH, { type, text, handle: HANDLE, url: page.url(), profileDir: PROFILE_DIR, dataDir: DATA_DIR, recentLog });
     removeStaging();
-    await context.close().catch(() => {});
-    process.exit(EXIT_CODES[type] || 17);
+    throw new WorkflowExitError(type, text, EXIT_CODES[type] || 17);
   };
 
   const haltAnomaly = async (where) => {
     const anomaly = await detectAnomaly(page);
     if (anomaly && !['EVAL_ERROR', 'EMPTY_PAGE'].includes(anomaly.type)) {
+      if (anomaly.type === 'LOGIN_REDIRECT') throw new XAuthenticationError(anomaly.text, { where, url: page.url() });
       await stopWithAlert(anomaly.type, anomaly.text, { where });
     }
   };
 
   const nav = await gotoRobust(page, expectedUrl, { needSel: '[data-testid="UserCell"], [data-testid="primaryColumn"]', settle: 3000, retries: 4 });
+  if (nav.reason === 'RATE_LIMIT') await stopWithAlert('RATE_LIMIT', `HTTP 429 ${nav.responseUrl || expectedUrl}`, nav);
+  if (nav.reason === 'LOGIN_REDIRECT') throw new XAuthenticationError(`navigation requires login: ${page.url()}`, nav);
   await haltAnomaly(`${LIST_TYPE}-nav`);
+  await confirmAuthenticated(page, { expectedPath: Scan.expectedListPath(HANDLE, LIST_TYPE) });
+  if (nav.reason === 'GENERIC_NAV_ERROR') await stopWithAlert('GENERIC_NAV_ERROR', 'generic X navigation error page after bounded retries', nav);
   if (!nav.ok || !Scan.isExpectedListUrl(page.url(), HANDLE, LIST_TYPE)) {
-    pageDrift(page.url()); removeStaging(); await context.close(); process.exit(15);
+    pageDrift(page.url()); removeStaging();
+    throw new WorkflowExitError('PAGE_DRIFT', `expected=${expectedUrl} actual=${page.url()}`, 15);
   }
   armed = true;
   await assertTarget('navigation-complete');
@@ -314,7 +324,6 @@ async function main() {
 
   await assertTarget('final');
   const finalUrl = page.url();
-  await context.close();
   const generatedAt = new Date().toISOString();
   const rows = Capture.authoritativeRows({ networkStarted, networkRows: networkSeen, domRows: domSeen })
     .map((row) => ({ ...row, observedAt: generatedAt }));
@@ -355,8 +364,32 @@ async function main() {
   process.stdout.write(`${JSON.stringify(meta, null, 2)}\n`);
 }
 
+async function main() {
+  assertRunToken();
+  await withAuthenticatedContext(
+    cdpSessionOptions({ width: 1400, height: 1000 }),
+    scanList,
+  );
+}
+
 main().catch((error) => {
   removeStaging();
-  if (detectedDriftUrl) { console.error(`PAGE_DRIFT: ${detectedDriftUrl}`); process.exit(15); }
-  console.error(error.stack || error); process.exit(99);
+  if (error instanceof BrowserConfigError) {
+    console.error(`BROWSER_CONFIG: ${error.message}`);
+    process.exitCode = 2;
+    return;
+  }
+  if (error instanceof XAuthenticationError) {
+    writeAlert(ALERT_PATH, { type: 'LOGIN_REDIRECT', text: error.message, handle: HANDLE, url: error.details?.url, profileDir: PROFILE_DIR, dataDir: DATA_DIR });
+    console.error(`LOGIN_REDIRECT: ${error.message}`);
+    process.exitCode = EXIT_CODES.LOGIN_REDIRECT;
+    return;
+  }
+  if (error instanceof WorkflowExitError) {
+    console.error(`${error.type}: ${error.message}`);
+    process.exitCode = error.exitCode;
+    return;
+  }
+  if (detectedDriftUrl) { console.error(`PAGE_DRIFT: ${detectedDriftUrl}`); process.exitCode = 15; return; }
+  console.error(error.stack || error); process.exitCode = 99;
 });

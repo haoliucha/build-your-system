@@ -10,8 +10,9 @@
 // and exclude self.
 
 const path = require('path');
-const { gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
+const { captureXResponseEvidence, gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
 const { prepareXFacingRuntime } = require(path.join(__dirname, 'lib', 'runtime-gate.cjs'));
+const { BrowserConfigError, withAuthenticatedContext, XAuthenticationError } = require(path.join(__dirname, 'lib', 'cdp-browser.cjs'));
 
 const PROFILE_DIR = process.env.PROFILE_DIR || `${process.env.HOME}/.config/playwright-chrome-profile-campaign`;
 const handle = process.argv[2];
@@ -19,9 +20,9 @@ if (!handle) {
   console.error('Usage: node snapshot-following.cjs <handle>  (e.g. haoliucha)');
   process.exit(2);
 }
-try { prepareXFacingRuntime(process.env); }
+let RUNTIME;
+try { RUNTIME = prepareXFacingRuntime(process.env); }
 catch (error) { console.error(`FATAL: ${error.message}`); process.exit(2); }
-const { chromium } = require('playwright');
 
 const EXTRACT_JS = `(async (me) => {
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -57,30 +58,48 @@ const EXTRACT_JS = `(async (me) => {
   return { count: collected.size, handles: Array.from(collected) };
 })(${JSON.stringify(handle)})`;
 
-async function main() {
-  const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-    channel: 'chrome', headless: false, chromiumSandbox: true, viewport: { width: 1280, height: 820 },
-    ignoreDefaultArgs: ['--enable-automation'], args: ['--disable-blink-features=AutomationControlled'],
-  });
-  const page = ctx.pages()[0] || await ctx.newPage();
+async function snapshot({ context, confirmAuthenticated }) {
+  const page = context.pages()[0] || await context.newPage();
   const url = `https://x.com/${handle}/following`;
   process.stderr.write(`[snapshot-following] navigating to ${url}\n`);
 
   // Wait for the list to actually render before scrolling (the original "returns 0" bug).
   const nav = await gotoRobust(page, url, { needSel: '[data-testid="UserCell"]', settle: 5000, retries: 4 });
+  if (nav.reason === 'RATE_LIMIT') throw Object.assign(new Error(`HTTP 429 ${nav.responseUrl || url}`), { exitCode: 11 });
+  if (nav.reason === 'LOGIN_REDIRECT') throw new XAuthenticationError(`following snapshot requires login: ${page.url()}`, nav);
+  await confirmAuthenticated(page, { expectedPath: `/${handle}/following` });
   if (!nav.ok) {
     process.stderr.write(`[snapshot-following] /following did not render after ${nav.attempts} attempts\n`);
     console.log(JSON.stringify({ count: 0, handles: [], error: 'no_render' }, null, 2));
-    await ctx.close();
     process.exitCode = 3;
-    return;
+    return false;
   }
   await page.waitForTimeout(1500);
 
-  const result = await page.evaluate(EXTRACT_JS);
+  const observed = await captureXResponseEvidence(page, () => page.evaluate(EXTRACT_JS));
+  if (observed.evidence?.reason === 'RATE_LIMIT') {
+    throw Object.assign(new Error(`HTTP 429 ${observed.evidence.responseUrl}`), { exitCode: 11 });
+  }
+  if (observed.evidence?.reason === 'LOGIN_REDIRECT') {
+    throw new XAuthenticationError(`following snapshot lost authentication: ${page.url()}`, observed.evidence);
+  }
+  const result = observed.value;
   process.stderr.write(`[snapshot-following] @${handle} follows ${result.count} accounts\n`);
   console.log(JSON.stringify(result, null, 2));
-  await ctx.close();
+  return true;
 }
 
-main().catch(e => { console.error('FATAL', e); process.exit(99); });
+async function main() {
+  await withAuthenticatedContext(
+    { config: RUNTIME.browser, headless: false, width: 1280, height: 820 },
+    snapshot,
+  );
+}
+
+main().catch((error) => {
+  console.error('FATAL', error.message || error);
+  if (error instanceof BrowserConfigError) process.exitCode = 2;
+  else if (error instanceof XAuthenticationError) process.exitCode = 12;
+  else if (Number.isInteger(error.exitCode)) process.exitCode = error.exitCode;
+  else process.exitCode = 99;
+});

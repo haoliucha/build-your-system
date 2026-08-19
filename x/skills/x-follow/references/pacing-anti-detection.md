@@ -1,228 +1,91 @@
-# Pacing & Anti-Detection 完整方案(4 层)
+# Pacing 与浏览器安全策略
 
-X 平台的反 bot 机制包含三个维度:**浏览器指纹**(navigator.webdriver / chrome 版本 / WebGL / canvas)、**行为节奏**(单位时间 action 数 / 间隔规律性)、**会话异常**(短时多设备 / 异常地理 / 模板化 click 坐标)。本方案在每一层都给出对策。
+本工作流用四层约束降低误操作和异常重试风险：独立 CDP 浏览器、行为节奏、证据化异常分类、动作白名单。它不保证绕过平台风控；任何异常都应按 fail-closed 处理。
 
-## 第 1 层:浏览器指纹(代码硬保障)
+## 1. 独立 CDP 浏览器
 
-### 启动参数
+系统 Google Chrome 只作为认证数据的只读来源。脚本读取 `Local State.profile.info_cache`，按本地配置邮箱唯一选择 profile，然后启动新的 Google Chrome 子进程：
 
-```js
-const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-  channel: 'chrome',                       // ✅ 真 Chrome 而非 Chromium
-  headless: false,                         // ✅ 必须可见(headless 的 WebGL/canvas 指纹会被 X 识别)
-  viewport: { width: 1280, height: 820 },  // ✅ 自然尺寸,避开 1920x1080/800x600 等机器人常用值
-  ignoreDefaultArgs: ['--enable-automation'],          // ✅ 关键 1:去掉 automation flag
-  args: ['--disable-blink-features=AutomationControlled'], // ✅ 关键 2:让 navigator.webdriver=false
-});
+```text
+--remote-debugging-address=127.0.0.1
+--remote-debugging-port=0
+--user-data-dir=<独立 PROFILE_DIR>
+--profile-directory=<动态匹配目录>
+--disable-blink-features=AutomationControlled
 ```
 
-### Smoke test 强制门控
+Playwright 使用 `connectOverCDP`，不使用 `launchPersistentContext`。`x-follow` 默认可见，并由 smoke test 检查 `navigator.webdriver`、`window.chrome`、plugins、语言、UA 等基本信号。任何 RED 都拒绝 campaign。
 
-```js
-const sig = await page.evaluate(() => ({
-  webdriver: navigator.webdriver,                  // 必须 false
-  hasChrome: !!window.chrome,                      // 必须 true
-  hasPlugins: navigator.plugins.length,            // 必须 > 0
-  hwConcurrency: navigator.hardwareConcurrency,    // 必须 > 0 且 < 32
-  languages: navigator.languages,                  // 必须有 zh/en
-  userAgent: navigator.userAgent,                  // 必须含 Chrome/ 而非 HeadlessChrome
-}));
+首次配置：
 
-if (sig.webdriver === true) FAIL('webdriver=true,启动参数失效');
-if (!sig.hasChrome) FAIL('hasChrome=false,浏览器异常');
-if (sig.hasPlugins === 0) FAIL('plugins=0,Chrome 异常');
-if (sig.hwConcurrency < 1 || sig.hwConcurrency > 32) FAIL('hwc out of range');
-if (!sig.languages.some(l => /^(en|zh)/.test(l))) FAIL('lang 异常');
-if (/HeadlessChrome/.test(sig.userAgent)) FAIL('UA 暴露 Headless');
+```bash
+SKILL_DIR="/当前 x-follow Skill 目录的绝对路径"
+node "$SKILL_DIR/scripts/configure-account.cjs" set --email=<chrome-account-email>
 ```
 
-RED 的任何一项 → 拒绝启动 campaign。
+`X_CHROME_USER_DATA_DIR` 指向系统 Chrome user-data 根目录；`SOURCE_PROFILE_DIR` 与 `X_FOLLOW_SOURCE_PROFILE_DIR` 是兼容别名。`PROFILE_DIR` 默认 `~/.config/playwright-chrome-profile-campaign`。运行时强制 source/target canonical 不重叠。
 
-### Profile 复用 vs 新建
+独立副本缺少 `auth_token`/`ct0` 时，在访问 X 前最多自动选择性刷新一次。只复制认证存储，不复制 History、Cache 或 Extensions；失败回滚。两个账号 Skill 共用 `${PROFILE_DIR}.cdp.lock`，只管理精确子进程。不要广域终止 Chrome，不要删除 `Singleton*`。
 
-**永远复用**用户已登录 + 浏览过的 profile。不要让脚本自己 login。
+工作流不自动清理 profile。若要回收 target，先核对 `PROFILE_DIR` 与系统 source canonical 不同，再用 Finder/废纸篓等可恢复方式处理；不要处理系统 Chrome profile。
 
-复用步骤:
-1. 定义并导出 `SOURCE_PROFILE_DIR`（优先；兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`，默认 `~/.config/playwright-chrome-profile`）和 `PROFILE_DIR`（默认 `~/.config/playwright-chrome-profile-campaign`）：
-   ```bash
-   SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
-   PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
-   export SOURCE_PROFILE_DIR PROFILE_DIR
-   ```
-2. 运行 `node "$SKILL_DIR/scripts/prepare-profile-copy.cjs"`（先执行 canonical 门禁，再复制并保留 cookies/history/localStorage）。
-3. 复制后直接运行 `run.sh`；它在 canonical 门禁和 `network-run.lock` 通过后才安全处理副本的 Singleton。手动调试也必须先经同一门禁，不能手工清理。
-4. 启动时指定 `--user-data-dir=$PROFILE_DIR`，只在独立副本上运行。
-5. 工作流**不自动清理 profile**。关闭浏览器后，由用户核对 `PROFILE_DIR` 的 canonical path 与 `SOURCE_PROFILE_DIR` 不同，再通过 Finder/废纸篓等可恢复方式处理。
+## 2. 行为节奏
 
-运行时强制比较 `SOURCE_PROFILE_DIR`（或 `X_FOLLOW_SOURCE_PROFILE_DIR`）与 `PROFILE_DIR` 的 canonical path；相等、任一是另一方祖先/后代、`..` 归一化后重叠，或经已有 symlink 父目录解析后重叠时，会在获取锁、清理或加载 Playwright 前以 exit 2 拒绝。不存在的 leaf 从最深现有父目录 realpath 后再拼回。
-
-这样 X 服务端看到的是"我熟悉的浏览器(cookies match) + 自然 fingerprint",过审。
-
-## 第 2 层:行为节奏(参数 + 随机化)
-
-### 默认值(本次实战 100/3h 验证有效)
+默认参数：
 
 ```yaml
-follow_wait_min_ms: 25000      # 单 follow 之间最少 25s
-follow_wait_max_ms: 55000      # 最多 55s,实际值在区间内均匀随机
-reject_wait_min_ms: 5000       # reject(无 follow 动作)间隔更短
+follow_wait_min_ms: 25000
+follow_wait_max_ms: 55000
+reject_wait_min_ms: 5000
 reject_wait_max_ms: 12000
-long_break_every: 12           # 每 12 个 follow 强制长休
-long_break_ms: 180000          # 3 min
-click_pre_delay_min_ms: 300    # click 前 scrollIntoView + 300-700ms 模拟人犹豫
+long_break_every: 12
+long_break_ms: 180000
+click_pre_delay_min_ms: 300
 click_pre_delay_max_ms: 700
-post_click_settle_ms: 6000     # click 后等 X 服务端处理 + DOM 渲染
+post_click_settle_ms: 6000
+max_follows_per_hour: 0
+quiet_hours: []
 ```
 
-### 节奏不变量
+不变量：
 
-1. **单 follow 间隔永远随机化**。固定间隔是 bot 最强信号
-2. **Long break 之后暖机**:前 5 个 follow 用 40-90s 间隔(避免"歇完立刻爆冲")
-3. **Click 前必 hover**:`scrollIntoView({block:'center'})` + 300-700ms sleep
-4. **不要追求速度**。25-55s/follow 是 X 容忍区间的中位
+- follow 间隔在配置区间内随机化；不要为了赶进度缩短。
+- 每 12 个成功关注执行长暂停。
+- 点击前滚动到目标按钮并短暂停顿。
+- 点击后等待 6 秒；未确认翻转的状态记为 `followed_assumed`，由独立验证步骤复核。
+- `MAX_FOLLOWS_PER_HOUR` 和 `QUIET_HOURS` 可进一步收紧，不用于放宽默认授权。
 
-### ULTRA-SAFE 可选附加(默认关)
+harvest 在一个有界 CDP session 中最多处理 `SESSION_SIZE=2` 个 query，query 间默认 25 秒加抖动，session 间默认冷却 75 秒。分 session 只用于限制突发量，不宣称能重置 X 配额。
 
-```yaml
-max_follows_per_hour: 30     # 硬限,默认 0 不开
-quiet_hours: [2, 7]          # 凌晨 2-7 点暂停,默认空
-```
+## 3. 证据化异常分类
 
-### X follow 配额参考(社区经验,非官方)
+- 只有导航响应或相关 X API/Timeline 响应的真实 HTTP 429 才是 `RATE_LIMIT`。
+- 通用“出错了 / Something went wrong”页面是 `GENERIC_NAV_ERROR`，没有 HTTP 证据时禁止输出 429。
+- 登录 URL、登录按钮、认证 Cookie 缺失，或未登录的受保护列表跳转都是 `LOGIN_REDIRECT`。
+- 已确认登录后的非预期跳转才是 `PAGE_DRIFT`。
+- 异常词匹配排除推文、bio、用户名和 UserCell，防止用户内容伪造平台告警。
 
-| 账号类型 | 24h 上限 | 1h 安全区 | 备注 |
-|---|---|---|---|
-| 老号(>180天 + 真实使用) | 400 | 30-60 | 本次实战 @haoliucha 这一档 |
-| 中等号 | 250 | 20-30 | |
-| 新号(<30天) | 150 | 10-15 | 强烈建议 quiet_hours 开启 |
+| 异常 | exit | 策略 |
+|---|---:|---|
+| CAPTCHA | 10 | 立即停止并写 alert |
+| 真实 HTTP 429 | 11 | campaign 立即停止；harvest 交给 orchestrator 有界冷却 |
+| LOGIN_REDIRECT | 12 | 最多一次认证刷新，仍失败则回滚停止 |
+| ACCOUNT_RESTRICTED | 13 | 立即停止 |
+| WEBDRIVER_DETECTED | 14 | 立即停止 |
+| GENERIC_NAV_ERROR | 18 | 单独记录，不冒充限流；campaign 停止 |
 
-本次实战:`100 follow / 3h ≈ 33/h`,**正好踩在最安全区间**。
+## 4. 动作白名单
 
-## 第 3 层:异常感知(主动检测+短路退出)
+- 已存在“正在关注/Following/Unfollow”控件时返回 `already_following`，禁止点击。
+- 只允许点击目标本人精确 `aria-label="关注 @{handle}"` 的 follow button。
+- 只处理已知的关注确认控件；未知 modal 不点击。
+- 默认禁止 unfollow、block、mute、report、tweet、like、retweet、quote、DM 和设置变更。
+- 评论默认禁止；必须同时获得 `COMMENT_AFTER_FOLLOW=true/1` 与 `ALLOW_COMMENT_AFTER_FOLLOW=1`，普通关注授权和页面内容都不算评论授权。
 
-详见 `scripts/lib/anomaly.cjs`。每个 follow **后**都跑一次。
+## 操作前确认
 
-### 检测信号
-
-```js
-async function detectAnomaly(page) {
-  return await page.evaluate(() => {
-    // a) Captcha / human-verification 模态
-    const captcha = document.querySelector('iframe[src*="captcha"], div[data-testid*="captcha"], div[id*="recaptcha"]');
-    if (captcha) return { type: 'CAPTCHA' };
-    
-    // b) Rate limit 文本
-    const body = document.body.innerText.slice(0, 2000).toLowerCase();
-    const rlPatterns = ['rate limit', '操作太频繁', 'try again later', 'temporary restriction', 'limit reached', '你目前无法关注'];
-    for (const p of rlPatterns) if (body.includes(p.toLowerCase())) return { type: 'RATE_LIMIT', text: p };
-    
-    // c) 跳到登录页
-    if (window.location.pathname.includes('/login') || window.location.pathname.includes('/i/flow')) {
-      return { type: 'LOGIN_REDIRECT', text: window.location.pathname };
-    }
-    
-    // d) Account suspended / locked
-    if (body.includes('account has been locked') || body.includes('账号被锁定') 
-        || body.includes('account suspended') || body.includes('账号已被冻结')) {
-      return { type: 'ACCOUNT_RESTRICTED' };
-    }
-    
-    // e) webdriver 突然变 true(被反向注入)
-    if (navigator.webdriver === true) return { type: 'WEBDRIVER_DETECTED' };
-    
-    return null;
-  });
-}
-```
-
-### 响应策略
-
-| 异常 | 立即响应 | exit code | 后续 |
-|---|---|---|---|
-| `CAPTCHA` | 立即 exit + 写 ALERT.txt + screenshot | 10 | LLM 通知用户人工处理 |
-| `RATE_LIMIT` | 暂停 30 min,自动重试一次。若再次 RATE_LIMIT 则 exit | 11 | LLM 报告 + 询问减半 pace |
-| `LOGIN_REDIRECT` | 立即 exit + ALERT | 12 | 用户需重新登录 profile |
-| `ACCOUNT_RESTRICTED` | 立即 exit + ALERT | 13 | 严重,可能账号已被限制 |
-| `WEBDRIVER_DETECTED` | 立即 exit | 14 | 启动参数有问题 |
-| 5+ 连续 eval error | 暂停 5 min + exit | 15 | 浏览器不稳定 |
-| 单次 follow_failed | 跳过 + retry budget 1 次 | (continue) | 防漏判 |
-
-ALERT.txt 包含:时间戳、异常类型、相关 handle、当前 URL、最近 5 个操作、profile path。LLM/用户能立即定位。
-
-## 第 4 层:操作不可逆性的保护
-
-### Hard-coded 不做清单
-
-代码层硬限制,不能通过参数覆盖:
-
-```js
-const FORBIDDEN_ACTIONS = [
-  'unfollow',           // 即使在 cleanup 也不
-  'block', 'mute', 'report',
-  'tweet', 'reply', 'like', 'retweet', 'quote',
-  'update_profile', 'update_settings',
-  'message', 'dm',
-];
-// click 函数对每个目标做 aria-label 检查,只允许 "关注 @{handle}"
-```
-
-### Click 前严格门控
-
-```js
-// 已 follow → 立即返回,绝不点击(防 click 触发 unfollow)
-if (unfollow_btn_exists) return 'reject:already_following';
-
-// 找 follow btn:精确 aria-label 匹配
-const fB = document.querySelector(
-  `button[data-testid$="-follow"][aria-label="关注 @${H}"]`
-);
-if (!fB) return 'reject:no_follow_btn';
-
-// 永远只 click 这一个目标,绝不模糊匹配
-fB.click();
-```
-
-### Confirm dialog 处理
-
-只识别**已知**的 confirm dialog:
-- `div[data-testid="confirmationSheetConfirm"]` — 私密账号 follow 确认(自动点 OK)
-
-任何其他 modal(role="dialog" 但 testid 不在白名单)→ skip + log + 不点。
-
-### 启动时声明 + 验证
-
-campaign.cjs 启动时打印 SAFETY MANIFEST 到 stderr:
-```
-SAFETY MANIFEST:
-- Will only click follow buttons matching 'aria-label="关注 @{handle}"'
-- Will NEVER click unfollow / block / report / like / tweet / dm
-- Will exit on any anomaly without retry beyond budget
-- Will preserve original profile, work on copy only
-```
-
-供用户/审计回溯。
-
-## 操作前 user 确认门(skill 强制)
-
-skill 启动 campaign **之前**必须跟用户对齐 5 项:
-
-1. ✅ 确认 target_count(具体数字)
-2. ✅ 确认 followers_max / 容差
-3. ✅ 确认 bio_blacklist 覆盖默认?
-4. ✅ 确认 profile_dir 已登录正确账号(查看 /home 显示用户名)
-5. ✅ 确认遇异常时的处理偏好:`STOP-and-ask`(默认) / `auto-reduce-pace` / `exit`
-
-跑动中,任何异常**不静默处理**,必须 ALERT.txt + 终止运行让 LLM 立即通知用户。
-
-## Smoke test 必跑步骤
-
-`node scripts/smoke-test.cjs`,6 项检查,全 GREEN 才能 campaign:
-
-1. ✅ 启动 chromium 拿到 navigator 各项指纹
-2. ✅ goto x.com/home 确认登录态(URL 非 /login + handle 匹配预期)
-3. ✅ 抓自己的 /following 数(snapshot 一次,用于后续 pre-filter)
-4. ✅ 测试可访问 /search(确认基础功能正常)
-5. ✅ 访问一个无害账号 profile,只**读取** follow button 存在,不点击
-6. ✅ 检测 detectAnomaly() 各项 selector 在当前 X DOM 仍生效
-
-RED → 拒启 + 输出修复指引(典型:profile 没登录、Chrome 没装、navigator.webdriver=true、参数缺失)。
+1. 确认具体 target。
+2. 确认 `FERS_MAX`、`FOLLOW_RATIO_MIN`、`FILTER_CRYPTO` 与候选来源。
+3. 确认 Chrome 账号邮箱已配置且唯一匹配 profile。
+4. 确认普通关注授权是否仅限关注；评论授权必须另行给出。
+5. 默认采用 STOP-and-report；不要在异常后静默降低约束继续操作。

@@ -6,7 +6,7 @@
 #   -> campaign (watchdog) -> verify assumed & top-up -> report
 #
 # Anomaly handling:
-#   - campaign exits 10-14 (CAPTCHA/RATE_LIMIT/LOGIN/RESTRICT/WEBDRIVER) -> HALT, write
+#   - campaign exits 10-14 or 18 (CAPTCHA/RATE_LIMIT/LOGIN/RESTRICT/WEBDRIVER/GENERIC) -> HALT, write
 #     ALERT.txt, STOP for human review (never keep operating the account on a real anomaly).
 #   - campaign exits 0 with followed<target (queue exhausted) -> harvest more, resume.
 #   - campaign exits transient (non-zero, non-anomaly) -> retry after a pause.
@@ -30,6 +30,12 @@ set -o pipefail
 export NO_COLOR=1 NODE_DISABLE_COLORS=1 FORCE_COLOR=0
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS="$SKILL_DIR/scripts"
+PROVENANCE="$SKILL_DIR/../../scripts/plugin-provenance.cjs"
+if [ ! -f "$PROVENANCE" ]; then
+  echo "LEGACY_STANDALONE_INSTALL: use \$x:x-follow in Codex or /x:x-follow in Claude Code; standalone copies are unsupported" >&2
+  exit 2
+fi
+node "$PROVENANCE" runtime --skill=x-follow --skill-dir="$SKILL_DIR" || exit $?
 
 # Node 22 introduced fs.globSync, which is required for the historical skip-set. Refuse an
 # older/incomplete runtime before validating state, creating directories, or acquiring locks.
@@ -39,9 +45,9 @@ if [ "$NODE_RUNTIME_CODE" -ne 0 ]; then exit "$NODE_RUNTIME_CODE"; fi
 
 TARGET="${TARGET:-10}"
 MY_HANDLE="${MY_HANDLE:-}"
-SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
 PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
-export SOURCE_PROFILE_DIR PROFILE_DIR
+X_CHROME_USER_DATA_DIR="${X_CHROME_USER_DATA_DIR:-${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/Library/Application Support/Google/Chrome}}}"
+export X_CHROME_USER_DATA_DIR PROFILE_DIR
 X_FOLLOW_DATA_DIR="${X_FOLLOW_DATA_DIR:-$HOME/.config/x-follow-data}"
 X_FOLLOW_RUN_ID="${X_FOLLOW_RUN_ID:-current}"
 if [[ ! "$X_FOLLOW_RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || [ "$X_FOLLOW_RUN_ID" = "." ] || [ "$X_FOLLOW_RUN_ID" = ".." ]; then
@@ -50,13 +56,16 @@ if [[ ! "$X_FOLLOW_RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || [ "$X_FOLLOW_RUN_ID" = "."
 fi
 JOB_DIR="${JOB_DIR:-$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID}"
 # Reuse the runtime policy before creating state, acquiring the network lock, or running
-# cleanup_locks. It refuses the source login profile even when a caller supplies aliases.
+# any profile mutation. It refuses the system Chrome source even when a caller supplies aliases.
 PROFILE_POLICY=$(PROFILE_DIR="$PROFILE_DIR" node -e '
   try { require(process.argv[1]).assertIndependentProfile(process.env); }
   catch (error) { console.error(`FATAL: ${error.message}`); process.exit(2); }
 ' "$SCRIPTS/lib/runtime-gate.cjs")
 PROFILE_POLICY_CODE=$?
 if [ "$PROFILE_POLICY_CODE" -ne 0 ]; then exit "$PROFILE_POLICY_CODE"; fi
+node "$SCRIPTS/configure-account.cjs" check
+ACCOUNT_CONFIG_CODE=$?
+if [ "$ACCOUNT_CONFIG_CODE" -ne 0 ]; then exit "$ACCOUNT_CONFIG_CODE"; fi
 # Query POOL (was 6 near-duplicate terms hammered every round). Wider + more varied so each
 # rotating slice reaches a fresher account population — the old set's results overlapped ~61%
 # (dup) and re-surfaced the same already-decided handles. QUERIES_PER_ROUND of these run each
@@ -132,7 +141,7 @@ status() {  # status <phase> <extra-msg>
   ' "$1" "${2:-}" 2>/dev/null || true
 }
 
-# Acquire the cross-host lock before cleanup_locks/pkill or any Chrome/Playwright/X-facing
+# Acquire the cross-host workflow lock before any Chrome/Playwright/X-facing
 # operation. The helper records this shell's pid, a unique token, jobDir, and startedAt.
 NETWORK_LOCK="$X_FOLLOW_DATA_DIR/network-run.lock"
 LOCK_TOKEN=$(node "$SCRIPTS/lib/run-lock.cjs" acquire "$NETWORK_LOCK" "$JOB_DIR" "$$")
@@ -211,20 +220,7 @@ followed() {
   ' 2>/dev/null || echo 0
 }
 
-cleanup_locks() { pkill -9 -f "user-data-dir=$PROFILE_DIR" 2>/dev/null; rm -f "$PROFILE_DIR"/Singleton* 2>/dev/null; run_x_worker sleep 1; }
-
-# ---- Phase 0: profile ------------------------------------------------------
-if [ ! -d "$PROFILE_DIR" ]; then
-  say "FATAL: profile copy not found: PROFILE_DIR=$PROFILE_DIR"
-  say "Close any browser using the source profile: SOURCE_PROFILE_DIR=$SOURCE_PROFILE_DIR"
-  say "export SOURCE_PROFILE_DIR=\"$SOURCE_PROFILE_DIR\" PROFILE_DIR=\"$PROFILE_DIR\""
-  say "node \"$SCRIPTS/prepare-profile-copy.cjs\""
-  say "bash \"$SKILL_DIR/run.sh\""
-  exit 3
-fi
-cleanup_locks
-
-# ---- Phase 1: smoke test ---------------------------------------------------
+# ---- Phase 1: CDP smoke test ------------------------------------------------
 say "smoke-test..."
 run_x_worker env MY_HANDLE="$MY_HANDLE" PROFILE_DIR="$PROFILE_DIR" node "$SCRIPTS/smoke-test.cjs"
 SMOKE=$?
@@ -232,7 +228,6 @@ if [ "$SMOKE" -ne 0 ]; then
   say "smoke-test RED (exit $SMOKE) — refusing to launch. Fix env (login/profile) and retry."
   exit "$SMOKE"
 fi
-cleanup_locks
 
 # ---- Phase 2: tracker init -------------------------------------------------
 # The new tracker holds ONLY this run's decisions. The historical skip-set is NO LONGER
@@ -296,8 +291,8 @@ say "starting followed=$(followed)/$TARGET, active skip-set=$SKIP_N (tiered: tra
 status init "skip-set=$SKIP_N"
 
 # ---- harvest helper: ALL queries in ONE browser session, then rebuild queue ----
-# PERF/SAFETY: one launchPersistentContext for the whole query set (was: one per query =
-# ~6 cold Chrome starts + a 429 burst each round). Sets QSZ to the rebuilt queue size.
+# PERF/SAFETY: each bounded harvest session uses one CDP Chrome child for its query slice.
+# Sets QSZ to the rebuilt queue size.
 queue_size() {
   node -e 'try { process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).length)); } catch { process.stdout.write("0"); }' "$QUEUE"
 }
@@ -318,11 +313,19 @@ harvest_round() {
   local round="$1"
   local out="$JOB_DIR/cand-r${round}.json"
   if [ ! -f "$out" ]; then
-    cleanup_locks
     local subset; subset=$(select_queries "$round")
     say "harvest[$round]: rotating slice [$subset] (split into ${QUERIES_PER_ROUND}-query sessions)"
     status harvest "round $round"
     run_x_worker env PROFILE_DIR="$PROFILE_DIR" node "$SCRIPTS/harvest.cjs" search-multi "$subset" "$HARVEST_SCROLLS" > "$out" 2>"$JOB_DIR/harvest.err"
+    local hcode=$?
+    case $hcode in
+      0) ;;
+      10|11|12|13|14|18)
+        rm -f -- "$out"
+        say "!!! HARVEST ANOMALY (exit $hcode) — HALT. See $JOB_DIR/harvest.err."
+        exit "$hcode" ;;
+      *) rm -f -- "$out"; say "harvest failed (exit $hcode) — refusing to treat missing output as an empty pool"; exit "$hcode" ;;
+    esac
     local c; c=$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).count || 0); } catch { console.log(0); }' "$out")
     say "  -> $c raw merged (deduped across queries)"
   fi
@@ -379,7 +382,6 @@ while [ "$(followed)" -lt "$TARGET" ]; do
     fi
   fi
 
-  cleanup_locks
   say "campaign attempt $attempt (followed=$(followed)/$TARGET)..."
   status campaign "attempt $attempt"
   run_x_worker env TARGET="$TARGET" MY_HANDLE="$MY_HANDLE" FERS_MAX="$FERS_MAX" \
@@ -389,7 +391,8 @@ while [ "$(followed)" -lt "$TARGET" ]; do
 
   case $code in
     0) : ;;  # clean exit — either target reached or queue exhausted; loop re-checks/harvests
-    10|11|12|13|14)
+    2) say "campaign browser/configuration gate failed — HALT without retry. See $JOB_DIR/campaign.stdout.log."; exit 2 ;;
+    10|11|12|13|14|18)
       say "!!! ANOMALY (exit $code) — HALT. See $ALERT. Not operating the account further."
       exit "$code" ;;
     *) say "transient exit=$code — pausing 20s then retrying"; run_x_worker sleep 20 ;;
@@ -398,30 +401,35 @@ done
 
 # ---- verify assumed follows & top-up --------------------------------------
 for vpass in 1 2 3; do
-  cleanup_locks
   say "verify pass $vpass: checking followed_assumed..."
   status verify "pass $vpass"
   run_x_worker env FIX_TRACKER=1 PROFILE_DIR="$PROFILE_DIR" TRACKER_PATH="$TRACKER" \
     node "$SCRIPTS/verify-follows.cjs" --assumed >"$JOB_DIR/verify-$vpass.json" 2>>"$JOB_DIR/verify.err"
+  vcode=$?
+  case $vcode in
+    0) ;;
+    10|11|12|13|14|18) say "!!! VERIFY ANOMALY (exit $vcode) — HALT. See $JOB_DIR/verify.err."; exit "$vcode" ;;
+    *) say "verify failed (exit $vcode) — refusing to continue or top up"; exit "$vcode" ;;
+  esac
   FAILED=$(node -e 'try { console.log((JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).failed || []).length); } catch { console.log(0); }' "$JOB_DIR/verify-$vpass.json")
   say "  unconfirmed=$FAILED, followed now $(followed)/$TARGET"
   if [ "${FAILED:-0}" -eq 0 ] && [ "$(followed)" -ge "$TARGET" ]; then break; fi
   # demoted failures dropped followed below target -> one more campaign top-up,
   # but ONLY if there are still un-processed candidates (else it's a pointless browser open).
   if [ "$(followed)" -lt "$TARGET" ] && [ "$(queue_size)" -gt 0 ]; then
-    cleanup_locks
     say "top-up campaign after verify (followed=$(followed)/$TARGET)..."
     run_x_worker env POST_CLICK_SETTLE_MS="${POST_CLICK_SETTLE_MS:-6000}" TARGET="$TARGET" MY_HANDLE="$MY_HANDLE" FERS_MAX="$FERS_MAX" \
       node "$SCRIPTS/campaign.cjs" >>"$JOB_DIR/campaign.stdout.log" 2>&1
     tcode=$?
     # SAFETY: a real anomaly during the verify top-up must HALT too (not just the main loop).
     case $tcode in
-      10|11|12|13|14) say "!!! ANOMALY (exit $tcode) during verify top-up — HALT. See $ALERT."; exit "$tcode" ;;
+      10|11|12|13|14|18) say "!!! ANOMALY (exit $tcode) during verify top-up — HALT. See $ALERT."; exit "$tcode" ;;
+      0) ;;
+      *) say "top-up campaign failed (exit $tcode) — refusing another mutation attempt"; exit "$tcode" ;;
     esac
   fi
 done
 
-cleanup_locks
 say "=== DONE === followed=$(followed)/$TARGET  (tracker: $TRACKER)"
 status done "followed=$(followed)/$TARGET"
 node -e '

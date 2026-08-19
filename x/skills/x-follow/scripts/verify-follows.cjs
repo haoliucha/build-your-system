@@ -16,15 +16,15 @@
 
 const fs = require('fs');
 const path = require('path');
-const { gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
+const { captureXResponseEvidence, gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
 const { prepareXFacingRuntime } = require(path.join(__dirname, 'lib', 'runtime-gate.cjs'));
+const { BrowserConfigError, withAuthenticatedContext, XAuthenticationError } = require(path.join(__dirname, 'lib', 'cdp-browser.cjs'));
 
 const PROFILE_DIR = process.env.PROFILE_DIR || `${process.env.HOME}/.config/playwright-chrome-profile-campaign`;
 let RUNTIME;
-try { RUNTIME = prepareXFacingRuntime(process.env).state; }
+try { RUNTIME = prepareXFacingRuntime(process.env); }
 catch (error) { console.error(`FATAL: ${error.message}`); process.exit(2); }
-const { chromium } = require('playwright');
-const TRACKER_PATH = RUNTIME.trackerPath;
+const TRACKER_PATH = RUNTIME.state.trackerPath;
 const FIX_TRACKER = process.env.FIX_TRACKER === '1';
 const argv = process.argv.slice(2);
 
@@ -46,29 +46,40 @@ if (argv[0] === '--assumed') {
 } else if (argv[0]) {
   handles = argv[0].split(',').map((s) => s.trim()).filter(Boolean);
 }
-if (!handles.length) { console.error('No handles to verify (pass list, --assumed, or --sample N)'); process.exit(2); }
+const EMPTY_AUTOMATIC_SELECTION = !handles.length && (argv[0] === '--assumed' || argv[0] === '--sample');
+if (!handles.length && !EMPTY_AUTOMATIC_SELECTION) {
+  console.error('No handles to verify (pass list, --assumed, or --sample N)');
+  process.exit(2);
+}
 
-async function main() {
-  const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
-    channel: 'chrome', headless: false, chromiumSandbox: true, viewport: { width: 1280, height: 820 },
-    ignoreDefaultArgs: ['--enable-automation'], args: ['--disable-blink-features=AutomationControlled'],
-  });
-  const page = ctx.pages()[0] || await ctx.newPage();
+async function verify({ context, confirmAuthenticated }) {
+  const page = context.pages()[0] || await context.newPage();
   const confirmed = [], failed = [];
+  let authenticationConfirmed = false;
   for (const h of handles) {
-    await gotoRobust(page, `https://x.com/${h}`, { needSel: 'div[data-testid="UserName"]', settle: 3500, retries: 3 });
-    await page.waitForTimeout(1000);
-    const st = await page.evaluate(() => ({
-      following: !!document.querySelector('button[data-testid$="-unfollow"]'),
-      notFollowing: !!document.querySelector('button[data-testid$="-follow"]'),
-      exists: !!document.querySelector('div[data-testid="UserName"]'),
-    }));
+    const nav = await gotoRobust(page, `https://x.com/${h}`, { needSel: 'div[data-testid="UserName"]', settle: 3500, retries: 3 });
+    if (nav.reason === 'RATE_LIMIT') throw Object.assign(new Error(`HTTP 429 ${nav.responseUrl || h}`), { exitCode: 11 });
+    if (nav.reason === 'LOGIN_REDIRECT') throw new XAuthenticationError(`follow verification requires login: ${page.url()}`, nav);
+    if (!authenticationConfirmed) {
+      await confirmAuthenticated(page, { expectedPath: `/${h}` });
+      authenticationConfirmed = true;
+    }
+    if (!nav.ok) throw Object.assign(new Error(`profile navigation failed at @${h}: ${nav.reason}`), { exitCode: 18 });
+    const observed = await captureXResponseEvidence(page, async () => {
+      await page.waitForTimeout(1000);
+      return page.evaluate(() => ({
+        following: !!document.querySelector('button[data-testid$="-unfollow"]'),
+        notFollowing: !!document.querySelector('button[data-testid$="-follow"]'),
+        exists: !!document.querySelector('div[data-testid="UserName"]'),
+      }));
+    });
+    if (observed.evidence?.reason === 'RATE_LIMIT') throw Object.assign(new Error(`HTTP 429 ${observed.evidence.responseUrl}`), { exitCode: 11 });
+    if (observed.evidence?.reason === 'LOGIN_REDIRECT') throw new XAuthenticationError(`follow verification lost authentication at @${h}`, observed.evidence);
+    const st = observed.value;
     if (st.following) { confirmed.push(h); process.stderr.write(`@${h}: ✅ 正在关注\n`); }
     else { failed.push(h); process.stderr.write(`@${h}: ❌ NOT following (exists=${st.exists})\n`); }
     await page.waitForTimeout(1200);
   }
-  await ctx.close();
-
   // Optionally demote failed from followed so a top-up campaign re-attempts them.
   if (FIX_TRACKER && failed.length) {
     const t = loadTracker();
@@ -84,4 +95,21 @@ async function main() {
   console.log(JSON.stringify({ confirmed, failed, checked: handles.length }, null, 2));
 }
 
-main().catch((e) => { console.error('FATAL', e.message); process.exit(99); });
+async function main() {
+  if (EMPTY_AUTOMATIC_SELECTION) {
+    console.log(JSON.stringify({ confirmed: [], failed: [], checked: 0 }, null, 2));
+    return;
+  }
+  await withAuthenticatedContext(
+    { config: RUNTIME.browser, headless: false, width: 1280, height: 820 },
+    verify,
+  );
+}
+
+main().catch((error) => {
+  console.error('FATAL', error.message || error);
+  if (error instanceof BrowserConfigError) process.exitCode = 2;
+  else if (error instanceof XAuthenticationError) process.exitCode = 12;
+  else if (Number.isInteger(error.exitCode)) process.exitCode = error.exitCode;
+  else process.exitCode = 99;
+});

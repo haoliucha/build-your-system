@@ -1,4 +1,4 @@
-// lib/anomaly.cjs — anomaly detection (CAPTCHA / RATE_LIMIT / LOGIN_REDIRECT /
+// lib/anomaly.cjs — anomaly detection (CAPTCHA / GENERIC_NAV_ERROR / LOGIN_REDIRECT /
 // ACCOUNT_RESTRICTED / WEBDRIVER_DETECTED / EMPTY_PAGE), reused by campaign / smoke-test.
 //
 // KEY FIX: rate-limit / restriction phrases are matched ONLY against the page "chrome"
@@ -6,7 +6,7 @@
 // includes not just TWEETS but also the profile BIO (UserDescription), display name
 // (UserName), search/followers list rows (UserCell), and profile header fields
 // (location / website). Otherwise an account whose bio or tweets contain "请稍后再试 /
-// 账户被限制 / account suspended" false-triggers RATE_LIMIT/ACCOUNT_RESTRICTED — and a
+// 账户被限制 / account suspended" false-triggers navigation/restriction handling — and a
 // malicious account could halt a campaign just by putting such a phrase in its bio.
 // inChrome(p) = body.includes(p) && !userText.includes(p), where userText is the union
 // of all user-controlled regions.
@@ -45,6 +45,7 @@ const EXIT_CODES = {
   WEBDRIVER_DETECTED: 14,
   CONSECUTIVE_ERRORS: 15,
   EMPTY_PAGE: 16,
+  GENERIC_NAV_ERROR: 18,
 };
 
 // PURE classifier. input: { bodyText, userText, path, webdriver, hasCaptcha }
@@ -59,14 +60,16 @@ function classifyAnomaly(input) {
     return bodyFull.includes(lp) && !userText.includes(lp);
   };
 
-  if (input.hasCaptcha) return { type: 'CAPTCHA', text: 'human verification or login challenge appeared' };
-
-  for (const p of RL_PATTERNS) if (inChrome(p)) return { type: 'RATE_LIMIT', text: p };
-
   const path = input.path || '';
-  if (path.includes('/login') || path.includes('/i/flow/login') || path.includes('/i/flow/signup')) {
-    return { type: 'LOGIN_REDIRECT', text: path };
+  if (input.hasLoginUi || path.includes('/login') || path.includes('/i/flow/login') || path.includes('/i/flow/signup')) {
+    return { type: 'LOGIN_REDIRECT', text: path || 'login UI visible' };
   }
+
+  if (input.hasCaptcha) return { type: 'CAPTCHA', text: 'human verification challenge appeared' };
+
+  // Text alone is not HTTP evidence. X uses these phrases on generic retry/error pages,
+  // so only the response observer in nav-helper may produce RATE_LIMIT.
+  for (const p of RL_PATTERNS) if (inChrome(p)) return { type: 'GENERIC_NAV_ERROR', text: p };
 
   for (const p of LOCK_PATTERNS) if (inChrome(p)) return { type: 'ACCOUNT_RESTRICTED', text: p };
 
@@ -83,21 +86,21 @@ const ANOMALY_DETECTOR_JS = `(() => {
   const RL = ${JSON.stringify(RL_PATTERNS)};
   const LOCK = ${JSON.stringify(LOCK_PATTERNS)};
   const captcha = document.querySelector(
-    'iframe[src*="captcha"], iframe[src*="arkose"], div[data-testid*="captcha"], div[id*="recaptcha"], div[data-testid*="OCFLogin"], div[data-testid*="LoginForm_Login_Button"]'
+    'iframe[src*="captcha"], iframe[src*="arkose"], div[data-testid*="captcha"], div[id*="recaptcha"], div[data-testid*="OCFLogin"]'
   );
-  if (captcha) return { type: 'CAPTCHA', text: 'human verification or login challenge appeared' };
+  const path = window.location.pathname;
+  const loginUi = document.querySelector('a[href="/login"], a[href*="/i/flow/login"], [data-testid="loginButton"], [data-testid="LoginForm_Login_Button"]');
+  if (loginUi || path.includes('/login') || path.includes('/i/flow/login') || path.includes('/i/flow/signup')) {
+    return { type: 'LOGIN_REDIRECT', text: path || 'login UI visible' };
+  }
+  if (captcha) return { type: 'CAPTCHA', text: 'human verification challenge appeared' };
 
   const bodyFull = ((document.body && document.body.innerText) || '').toLowerCase();
   let userText = '';
   try { userText = [...document.querySelectorAll('[data-testid="tweetText"], article[role="article"], [data-testid="UserDescription"], [data-testid="UserName"], [data-testid="UserCell"], [data-testid="UserProfileHeader_Items"]')].map(e => (e.innerText || '')).join(' ').toLowerCase(); } catch (e) {}
   const inChrome = (p) => { const lp = p.toLowerCase(); return bodyFull.includes(lp) && !userText.includes(lp); };
 
-  for (const p of RL) { if (inChrome(p)) return { type: 'RATE_LIMIT', text: p }; }
-
-  const path = window.location.pathname;
-  if (path.includes('/login') || path.includes('/i/flow/login') || path.includes('/i/flow/signup')) {
-    return { type: 'LOGIN_REDIRECT', text: path };
-  }
+  for (const p of RL) { if (inChrome(p)) return { type: 'GENERIC_NAV_ERROR', text: p }; }
 
   for (const p of LOCK) { if (inChrome(p)) return { type: 'ACCOUNT_RESTRICTED', text: p }; }
 
@@ -128,12 +131,13 @@ function writeAlert(alertPath, info) {
     `Exit Code: ${EXIT_CODES[info.type] || 99}`,
     ``,
     `=== ACTION REQUIRED ===`,
-    `1. Open the Chrome window (still running) and inspect manually`,
+    `1. Inspect this alert and the run log; the dedicated CDP Chrome child has been closed`,
     `2. If CAPTCHA: solve it and decide whether to resume`,
-    `3. If RATE_LIMIT: wait 24h before next campaign, or reduce target/pace`,
-    `4. If LOGIN_REDIRECT: re-login profile dir, then re-launch campaign`,
+    `3. If RATE_LIMIT: an HTTP 429 was observed; wait before the next campaign`,
+    `4. If LOGIN_REDIRECT: verify the configured Chrome account; one selective refresh is automatic`,
     `5. If ACCOUNT_RESTRICTED: STOP. Account may be flagged. Wait days, do not retry.`,
-    `6. If WEBDRIVER_DETECTED: check campaign.cjs launch args, re-run smoke-test`,
+    `6. If GENERIC_NAV_ERROR: X showed a generic retry page without HTTP 429 evidence`,
+    `7. If WEBDRIVER_DETECTED: check the CDP launch args, then re-run smoke-test`,
     ``,
     `=== RECENT CONTEXT ===`,
     `Profile dir: ${info.profileDir || 'N/A'}`,

@@ -7,14 +7,8 @@ function resolveHeadless(env = process.env) {
   throw new Error('XU_HEADLESS must be 0 or 1');
 }
 
-function persistentContextOptions({ width, height }, env = process.env) {
-  return {
-    channel: 'chrome',
-    headless: resolveHeadless(env),
-    viewport: { width, height },
-    ignoreDefaultArgs: ['--enable-automation'],
-    args: ['--disable-blink-features=AutomationControlled'],
-  };
+function cdpSessionOptions({ width, height }, env = process.env) {
+  return { headless: resolveHeadless(env), width, height };
 }
 
-module.exports = { resolveHeadless, persistentContextOptions };
+module.exports = { cdpSessionOptions, resolveHeadless };
