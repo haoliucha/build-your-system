@@ -31,6 +31,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { assertNodeRuntime } = require(path.join(__dirname, 'lib', 'node-runtime.cjs'));
 const { isCryptoHandle } = require(path.join(__dirname, 'lib', 'filters.cjs'));
 const { buildSkipSet, buildSkipSetFromPaths } = require(path.join(__dirname, 'lib', 'skipset.cjs'));
 const { resolveRuntimeState, resolveFilterPolicy } = require(path.join(__dirname, 'lib', 'runtime-state.cjs'));
@@ -38,13 +39,12 @@ const { resolveRuntimeState, resolveFilterPolicy } = require(path.join(__dirname
 // Expand a shell-style glob (only `*` in the basename direction) WITHOUT a shell, so a
 // crafted SKIP_GLOB can never inject a command. Node 22's fs.globSync handles `*`/`**`.
 function expandGlob(pattern) {
-  try { return Array.from(fs.globSync(pattern)); }
-  catch { return []; }
+  return Array.from(fs.globSync(pattern));
 }
 
 let RUNTIME;
 let FILTER_POLICY;
-try { RUNTIME = resolveRuntimeState(process.env); FILTER_POLICY = resolveFilterPolicy(process.env); }
+try { assertNodeRuntime(); RUNTIME = resolveRuntimeState(process.env); FILTER_POLICY = resolveFilterPolicy(process.env); }
 catch (error) { process.stderr.write(`FATAL: ${error.message}\n`); process.exit(2); }
 const JOB = RUNTIME.jobDir;
 const NOCRYPTO = FILTER_POLICY.noCrypto;
@@ -62,7 +62,9 @@ const tracker = read('tracker.json') || { followed: [], rejected: [] };
 const skipStats = {};
 const skipOpts = { softTtlDays: SOFT_TTL_DAYS, fersMax: FERS_MAX, followRatioMin: FOLLOW_RATIO_MIN, stats: skipStats };
 let skipHandles = buildSkipSet([tracker], skipOpts); // this run's own decisions
-const paths = expandGlob(SKIP_GLOB);
+let paths;
+try { paths = expandGlob(SKIP_GLOB); }
+catch (error) { process.stderr.write(`FATAL: failed to expand SKIP_GLOB: ${error.message}\n`); process.exit(2); }
 const fromGlob = buildSkipSetFromPaths(paths, skipOpts);
 skipHandles = skipHandles.concat(fromGlob);
 process.stderr.write(`[build-queue] skip-glob trackers=${paths.length} released=${JSON.stringify(skipStats)}\n`);

@@ -43,7 +43,7 @@ args: ['--disable-blink-features=AutomationControlled'],
 - campaign 只使用 `PROFILE_DIR`，不要在 `SOURCE_PROFILE_DIR` 上运行 workflow
 - 重新复制前，先关闭占用 `PROFILE_DIR` 的浏览器
 
-运行时强制比较源目录与 `PROFILE_DIR` 的 canonical path；若相同、`..` 归一化后相同或已有 symlink 指向同一目录，会在锁、清理或 Playwright 加载前以 exit 2 拒绝。
+运行时强制比较源目录与 `PROFILE_DIR` 的 canonical path；若相等、任一是另一方祖先/后代、`..` 归一化后重叠，或经已有 symlink 父目录解析后重叠，会在锁、清理或 Playwright 加载前以 exit 2 拒绝。不存在的 leaf 从最深现有父目录 realpath 后再拼回。
 
 ---
 

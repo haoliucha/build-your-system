@@ -23,12 +23,15 @@ description: Use when the user explicitly requests a batch-follow campaign on X 
 运行状态默认位于 `$HOME/.config/x-follow-data`：`X_FOLLOW_RUN_ID=current`，因此
 `JOB_DIR=$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID`，历史 skip 默认读取
 `$X_FOLLOW_DATA_DIR/runs/*/tracker.json`。运行 ID 只能是单个安全路径段；不会读取、迁移或删除旧的 Claude job 目录。
-同一数据目录使用唯一的 `$X_FOLLOW_DATA_DIR/network-run.lock` 串行化网络流程；显式 `JOB_DIR` 优先于默认 run 目录。
+同一数据目录使用唯一的 `$X_FOLLOW_DATA_DIR/network-run.lock` 串行化网络流程；`run.sh` 是 owner，
+每个继承 token 的 X-facing 子进程会登记自己的 worker identity。owner 或 worker 任一仍活跃时均不可恢复或释放该锁。
+显式 `JOB_DIR` 优先于默认 run 目录。
 
 原始登录态源目录使用 `SOURCE_PROFILE_DIR`（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`，前者优先），默认
 `$HOME/.config/playwright-chrome-profile`；`PROFILE_DIR` 默认
-`$HOME/.config/playwright-chrome-profile-campaign`。运行时强制要求两者的 canonical path 不同：相同路径、
-`..` 归一化后相同或现有 symlink 指向同一目录，均会在锁、清理或 Playwright 加载前以 exit 2 拒绝。
+`$HOME/.config/playwright-chrome-profile-campaign`。运行时强制要求两者的 canonical path 互不重叠：相等、
+任一是另一方祖先/后代、`..` 归一化后重叠，或经现有 symlink 父目录解析后重叠，均会在锁、清理或
+Playwright 加载前以 exit 2 拒绝；即使 leaf 尚不存在，也从最深现有父目录做 realpath。
 
 **任何关注动作必须由用户明确请求。**真实默认值为 `FERS_MAX=3000`、
 `FOLLOW_RATIO_MIN=0.5`、`FILTER_CRYPTO=0`。评论默认关闭；即使用户请求
@@ -115,16 +118,23 @@ quiet_hours: []                   # [2,7] = 凌晨 2-7 点暂停
 详见 `references/troubleshooting.md` 的 "Profile Isolation" 段。
 
 ```bash
-# 1. 从原始登录态复制到独立 campaign 目录；后续只使用 PROFILE_DIR
+# 1. 每次手动流程先创建唯一 run；后续所有脚本只读写这一 JOB_DIR
+X_FOLLOW_DATA_DIR="${X_FOLLOW_DATA_DIR:-$HOME/.config/x-follow-data}"
+X_FOLLOW_RUN_ID="manual-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+JOB_DIR="$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID"
+export X_FOLLOW_DATA_DIR X_FOLLOW_RUN_ID JOB_DIR
+mkdir -p "$JOB_DIR"
+
+# 2. 从原始登录态复制到独立 campaign 目录；后续只使用 PROFILE_DIR
 SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
 PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
 export SOURCE_PROFILE_DIR PROFILE_DIR
 cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"
 
-# 2. 复制后直接运行 run.sh；它在同一 canonical 门禁和 network-run.lock 通过后
+# 3. 复制后直接运行 run.sh；它在同一 canonical 门禁和 network-run.lock 通过后
 #    才安全处理副本的 Singleton。手动调试也必须先经过该门禁，不能手工删除。
 
-# 3. 跑 smoke test(6 项指纹/登录态检查,RED 拒启)
+# 4. 跑 smoke test(6 项指纹/登录态检查,RED 拒启)
 SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
   node "$SKILL_DIR/scripts/smoke-test.cjs"
 ```
@@ -140,11 +150,11 @@ SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
 
 ```bash
 SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
-  node "$SKILL_DIR/scripts/harvest.cjs" search "蓝V互关" > /tmp/cand-1.json
+  node "$SKILL_DIR/scripts/harvest.cjs" search "蓝V互关" > "$JOB_DIR/cand-search.json"
 SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
-  node "$SKILL_DIR/scripts/harvest.cjs" replies "https://x.com/SomeUser/status/123" > /tmp/cand-2.json
+  node "$SKILL_DIR/scripts/harvest.cjs" replies "https://x.com/SomeUser/status/123" > "$JOB_DIR/cand-replies.json"
 # 合并/去重/去 skip(followed∪rejected)/按默认不过滤币圈 → queue.json:
-JOB_DIR=/tmp FILTER_CRYPTO=0 node "$SKILL_DIR/scripts/build-queue.cjs"
+FILTER_CRYPTO=0 node "$SKILL_DIR/scripts/build-queue.cjs"
 ```
 
 ### Step 3: Pre-filter(已关注 + 可选 crypto 启发式)
@@ -153,7 +163,7 @@ JOB_DIR=/tmp FILTER_CRYPTO=0 node "$SKILL_DIR/scripts/build-queue.cjs"
 
 ```bash
 SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
-  node "$SKILL_DIR/scripts/snapshot-following.cjs" "$MY_HANDLE" > /tmp/my-following.json
+  node "$SKILL_DIR/scripts/snapshot-following.cjs" "$MY_HANDLE" > "$JOB_DIR/my-following.json"
 # 合并到 tracker.rejected (reason: pre_existing_follow)
 ```
 
@@ -162,7 +172,7 @@ SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
 ### Step 4: Verify + Follow loop(主脚本)
 
 ```bash
-# 参数全部通过 env 传入
+# 参数全部通过 env 传入；已导出的 JOB_DIR 保持 queue/tracker/log 同源
 TARGET=100 \
 SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
 MY_HANDLE=haoliucha \

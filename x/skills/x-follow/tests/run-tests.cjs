@@ -17,7 +17,8 @@ const { parseCount, isCryptoHandle, backoffMs, decide, CRYPTO_TOKENS } = require
 const { buildSkipSet, classifyReason, softRejectNowPasses } = require(path.join(SCRIPTS, 'lib', 'skipset.cjs'));
 const { classifyAnomaly } = require(path.join(SCRIPTS, 'lib', 'anomaly.cjs'));
 const { resolveCommentPolicy } = require(path.join(SCRIPTS, 'lib', 'comment-policy.cjs'));
-const { acquireLock, releaseLock, acquireOrInheritLock, installLeaseCleanup, inspectLock, acquireCoordination, releaseCoordination, leaseIdentityPath } = require(path.join(SCRIPTS, 'lib', 'run-lock.cjs'));
+const runLock = require(path.join(SCRIPTS, 'lib', 'run-lock.cjs'));
+const { acquireLock, releaseLock, acquireOrInheritLock, installLeaseCleanup, inspectLock, acquireCoordination, releaseCoordination, leaseIdentityPath } = runLock;
 const { resolveRuntimeState, resolveFilterPolicy, resolveProfilePolicy, assertIndependentProfile } = require(path.join(SCRIPTS, 'lib', 'runtime-state.cjs'));
 
 let pass = 0, fail = 0;
@@ -393,6 +394,82 @@ test('inherited child token never releases its parent lock', () => {
   assert.strictEqual(releaseLock(lockPath, parent.token), true);
 });
 
+test('active inherited worker blocks parent release and only clears its own identity', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-worker-identity-'));
+  const lockPath = path.join(d, 'network-run.lock');
+  const parent = acquireLock(lockPath, { pid: process.pid, token: 'parent-worker', jobDir: '/parent' });
+  const workerStartedAt = '2026-08-19T01:02:03.000Z';
+  assert.strictEqual(runLock.registerInheritedWorker(lockPath, parent.token, process.pid, workerStartedAt), true);
+  assert.strictEqual(releaseLock(lockPath, parent.token), false);
+  assert.strictEqual(runLock.releaseInheritedWorker(lockPath, parent.token, process.pid, '2026-08-19T01:02:04.000Z'), false);
+  assert.strictEqual(inspectLock(lockPath).record.workerStartedAt, workerStartedAt);
+  assert.strictEqual(runLock.releaseInheritedWorker(lockPath, parent.token, process.pid, workerStartedAt), true);
+  assert.strictEqual(releaseLock(lockPath, parent.token), true);
+});
+
+test('owner SIGKILL keeps replacement blocked until the inherited runtime worker exits', () => {
+  const helper = path.join(SCRIPTS, 'lib', 'run-lock.cjs');
+  const runtimeGate = path.join(SCRIPTS, 'lib', 'runtime-gate.cjs');
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-owner-kill-'));
+  const lockPath = path.join(dataDir, 'network-run.lock');
+  const worker = `
+    const { prepareXFacingRuntime } = require(${JSON.stringify(runtimeGate)});
+    prepareXFacingRuntime(process.env);
+    process.stdout.write('worker-ready\\n');
+    setInterval(() => {}, 1000);
+  `;
+  const owner = `
+    const { spawn } = require('child_process');
+    const { acquireLock } = require(${JSON.stringify(helper)});
+    const dataDir = process.argv[1], worker = process.argv[2];
+    const lockPath = require('path').join(dataDir, 'network-run.lock');
+    const lease = acquireLock(lockPath, { jobDir: '/owner' });
+    const child = spawn(process.execPath, ['-e', worker], {
+      env: { ...process.env, X_FOLLOW_DATA_DIR: dataDir, JOB_DIR: '/owner', SOURCE_PROFILE_DIR: '/source', PROFILE_DIR: '/campaign', X_FOLLOW_NETWORK_LOCK: lockPath, X_FOLLOW_NETWORK_LOCK_TOKEN: lease.token },
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    child.stdout.pipe(process.stdout);
+    process.stdout.write(JSON.stringify({ ownerPid: process.pid, workerPid: child.pid }) + '\\n');
+    setInterval(() => {}, 1000);
+  `;
+  const coordinator = `
+    const { spawn } = require('child_process');
+    const { acquireLock, releaseLock } = require(${JSON.stringify(helper)});
+    const dataDir = process.argv[1], ownerScript = process.argv[2], workerScript = process.argv[3];
+    const lockPath = require('path').join(dataDir, 'network-run.lock');
+    const parent = spawn(process.execPath, ['-e', ownerScript, dataDir, workerScript], { stdio: ['ignore', 'pipe', 'inherit'] });
+    let info, ready = false, buffer = '';
+    const finish = async () => {
+      if (!info || !ready) return;
+      parent.kill('SIGKILL');
+      await new Promise(resolve => parent.once('exit', resolve));
+      let whileWorker = 'blocked', accidental;
+      try { accidental = acquireLock(lockPath, { jobDir: '/replacement' }); whileWorker = 'acquired'; }
+      catch (error) { if (!/already active/.test(error.message)) throw error; }
+      if (accidental) releaseLock(lockPath, accidental.token);
+      process.kill(info.workerPid, 'SIGTERM');
+      for (let i = 0; i < 100; i++) {
+        try { process.kill(info.workerPid, 0); await new Promise(resolve => setTimeout(resolve, 10)); }
+        catch { break; }
+      }
+      const recovered = acquireLock(lockPath, { jobDir: '/replacement' });
+      releaseLock(lockPath, recovered.token);
+      process.stdout.write(JSON.stringify({ whileWorker, recovered: !!recovered }));
+    };
+    parent.stdout.on('data', chunk => {
+      buffer += chunk;
+      const lines = buffer.split('\\n'); buffer = lines.pop();
+      for (const line of lines) {
+        if (line === 'worker-ready') ready = true;
+        else if (line.startsWith('{')) info = JSON.parse(line);
+      }
+      finish().catch(error => { console.error(error); process.exit(1); });
+    });
+  `;
+  const result = JSON.parse(execFileSync('node', ['-e', coordinator, dataDir, owner, worker], { encoding: 'utf8', timeout: 10000 }));
+  assert.deepStrictEqual(result, { whileWorker: 'blocked', recovered: true });
+});
+
 test('owner schema rejects empty, incomplete, and wrong-type JSON without stale recovery', () => {
   const badRecords = [
     {},
@@ -685,6 +762,26 @@ test('profile policy resolves an existing symlink before comparing source and pr
   fs.symlinkSync(source, alias);
   assert.throws(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: alias }), /PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR/);
 });
+test('profile policy rejects source descendants and ancestors while allowing siblings', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-profile-tree-'));
+  const source = path.join(root, 'source');
+  const sibling = path.join(root, 'campaign');
+  fs.mkdirSync(path.join(source, 'existing'), { recursive: true });
+  assert.throws(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: path.join(source, 'child') }), /must not be equal to, contain, or be contained by/);
+  assert.throws(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: path.join(source, 'existing'), PROFILE_DIR: source }), /must not be equal to, contain, or be contained by/);
+  assert.doesNotThrow(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: sibling }));
+});
+test('profile policy resolves the deepest existing symlink parent for a missing leaf', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-profile-symlink-parent-'));
+  const source = path.join(root, 'source');
+  const alias = path.join(root, 'source-alias');
+  fs.mkdirSync(source);
+  fs.symlinkSync(source, alias);
+  assert.throws(
+    () => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: path.join(alias, 'missing', 'leaf') }),
+    /must not be equal to, contain, or be contained by/,
+  );
+});
 test('document profile exports reach a child policy process and preserve the source gate', () => {
   const source = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-doc-source-'));
   const policyModule = path.join(SCRIPTS, 'lib', 'runtime-gate.cjs');
@@ -796,6 +893,42 @@ test('explicit skip glob overrides default data-dir glob', () => {
   assert.deepStrictEqual(runBuildQueueEnv(job, { NOCRYPTO: '0', X_FOLLOW_DATA_DIR: dataDir, SKIP_GLOB: path.join(external, 'tracker.json') }).sort(), ['fers1100', 'historical']);
 });
 
+group('Node 22 runtime fail-closed gates');
+test('runtime policy rejects Node below 22 and a missing fs.globSync capability', () => {
+  const { assertNodeRuntime } = require(path.join(SCRIPTS, 'lib', 'node-runtime.cjs'));
+  assert.throws(() => assertNodeRuntime('21.9.0', { globSync() {} }), /Node\.js >= 22/);
+  assert.throws(() => assertNodeRuntime('22.0.0', {}), /fs\.globSync/);
+  assert.doesNotThrow(() => assertNodeRuntime('22.0.0', { globSync() {} }));
+});
+test('build-queue exits FATAL instead of treating a missing fs.globSync as an empty match', () => {
+  const d = fixtureDir();
+  const preloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-no-glob-build-'));
+  const preload = path.join(preloadDir, 'disable-glob.cjs');
+  fs.writeFileSync(preload, "require('fs').globSync = undefined;\n");
+  const result = spawnSync('node', [path.join(SCRIPTS, 'build-queue.cjs')], {
+    env: { ...process.env, NODE_OPTIONS: `--require=${preload}`, JOB_DIR: d }, encoding: 'utf8',
+  });
+  assert.strictEqual(result.status, 2);
+  assert.match(result.stderr, /FATAL:.*fs\.globSync/);
+});
+test('run.sh rejects a missing fs.globSync before creating state or lock', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-no-glob-run-'));
+  const dataDir = path.join(root, 'state-must-not-exist');
+  const preload = path.join(root, 'disable-glob.cjs');
+  fs.writeFileSync(preload, "require('fs').globSync = undefined;\n");
+  const result = spawnSync('bash', [path.join(__dirname, '..', 'run.sh')], {
+    env: { ...process.env, NODE_OPTIONS: `--require=${preload}`, X_FOLLOW_DATA_DIR: dataDir, PROFILE_DIR: path.join(root, 'missing-profile') },
+    encoding: 'utf8',
+  });
+  assert.strictEqual(result.status, 2);
+  assert.match(result.stderr + result.stdout, /FATAL:.*fs\.globSync/);
+  assert.ok(!fs.existsSync(dataDir));
+});
+test('README explicitly requires Node.js 22 or newer', () => {
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+  assert.match(readme, /Node\.js\s*(?:>=|≥)\s*22/);
+});
+
 group('run.sh offline configuration gates');
 test('unsafe X_FOLLOW_RUN_ID exits before profile or browser handling', () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-state-'));
@@ -863,6 +996,75 @@ test('smoke profile guidance routes missing and locked copies through run.sh wit
     assert.match(output, /run\.sh/);
     assert.doesNotMatch(output, /rm\s+-f[^\n]*Singleton/);
     assert.doesNotMatch(output, /cp -R ~\/\.config\/playwright-chrome-profile/);
+  }
+});
+test("run.sh supports a JOB_DIR containing a single quote without injecting it into node -e", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-quoted-job-'));
+  const fakeBin = path.join(root, 'bin');
+  const dataDir = path.join(root, 'data');
+  const jobDir = path.join(root, "quoted'job");
+  const profile = path.join(root, 'campaign-profile');
+  fs.mkdirSync(fakeBin);
+  fs.mkdirSync(profile);
+  fs.writeFileSync(path.join(fakeBin, 'node'), [
+    '#!/bin/sh',
+    'case "$1" in',
+    '  */smoke-test.cjs) exit 0 ;;',
+    '  */verify-follows.cjs) printf \'{"failed":[]}\\n\'; exit 0 ;;',
+    'esac',
+    `exec ${JSON.stringify(process.execPath)} "$@"`,
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(fakeBin, 'pkill'), '#!/bin/sh\nexit 1\n');
+  fs.chmodSync(path.join(fakeBin, 'node'), 0o755);
+  fs.chmodSync(path.join(fakeBin, 'pkill'), 0o755);
+  const result = spawnSync('bash', [path.join(__dirname, '..', 'run.sh')], {
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH}`,
+      TARGET: '0',
+      X_FOLLOW_DATA_DIR: dataDir,
+      JOB_DIR: jobDir,
+      SOURCE_PROFILE_DIR: path.join(root, 'source-profile'),
+      PROFILE_DIR: profile,
+    },
+    encoding: 'utf8', timeout: 10000,
+  });
+  assert.strictEqual(result.status, 0, result.stderr + result.stdout);
+  assert.ok(fs.existsSync(path.join(jobDir, 'tracker.json')));
+  assert.ok(fs.existsSync(path.join(jobDir, 'status.json')));
+  assert.match(result.stdout, /=== DONE ===/);
+});
+test('run.sh node -e snippets do not interpolate shell paths or query data into JavaScript source', () => {
+  const run = fs.readFileSync(path.join(__dirname, '..', 'run.sh'), 'utf8');
+  for (const oldInterpolation of [
+    "writeFileSync('$STATUS'", "readFileSync('$TRACKER'", "require('$QUEUE')", "const all='$QUERIES'",
+    "globSync('$SKIP_GLOB')", "require('$out')", "require('$JOB_DIR/verify-$vpass.json')",
+  ]) assert.ok(!run.includes(oldInterpolation), oldInterpolation);
+});
+test('README stop and empty BIO_BLACKLIST guidance matches safe runtime behavior', () => {
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+  assert.doesNotMatch(readme, /kill\s+-9/);
+  assert.match(readme, /kill\s+-TERM/);
+  assert.match(readme, /kill\s+-INT/);
+  assert.doesNotMatch(readme, /空串会回退默认词表故用占位 token/);
+  assert.match(readme, /BIO_BLACKLIST.*空串.*空黑名单/);
+});
+
+group('Skill manual workflow static contract');
+test('manual five-step workflow exports one unique run and keeps every artifact in its JOB_DIR', () => {
+  const skill = fs.readFileSync(path.join(__dirname, '..', 'SKILL.md'), 'utf8');
+  const workflow = skill.slice(skill.indexOf('## 5 步工作流'), skill.indexOf('## 开工前 user 确认 checklist'));
+  const exportAt = workflow.indexOf('export X_FOLLOW_DATA_DIR X_FOLLOW_RUN_ID JOB_DIR');
+  assert.ok(exportAt >= 0, 'manual workflow must export data/run/job variables first');
+  assert.match(workflow, /X_FOLLOW_RUN_ID=.*manual-.*date.*\$\$/);
+  assert.match(workflow, /JOB_DIR="\$X_FOLLOW_DATA_DIR\/runs\/\$X_FOLLOW_RUN_ID"/);
+  assert.doesNotMatch(workflow, /\/tmp(?:\/|\b)/);
+  for (const artifact of ['cand-search.json', 'cand-replies.json', 'my-following.json']) {
+    assert.ok(workflow.includes(`$JOB_DIR/${artifact}`), artifact);
+  }
+  for (const command of ['harvest.cjs', 'build-queue.cjs', 'snapshot-following.cjs', 'campaign.cjs', 'verify-follows.cjs']) {
+    assert.ok(workflow.indexOf(command) > exportAt, `${command} must run after the shared JOB_DIR export`);
   }
 });
 

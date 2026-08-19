@@ -37,7 +37,7 @@ Claude 的 `/x:image` 还需要安装 OpenAI Codex 插件并运行 `/codex:setup
 ## X 账号工作流前置条件
 
 - macOS 或 Linux。
-- Node.js、Google Chrome，以及可被 Node 解析的 Playwright；现有环境通常通过 `NODE_PATH=~/.config/playwright-mcp-server/node_modules` 提供。
+- Node.js、Google Chrome，以及可被 Node 解析的 Playwright；`x-follow` 明确要求 **Node.js >= 22**（依赖 `fs.globSync`），现有环境通常通过 `NODE_PATH=~/.config/playwright-mcp-server/node_modules` 提供 Playwright。
 - 一个已登录 X 的 Chrome profile，默认原始目录为 `~/.config/playwright-chrome-profile`。
 - 账号工作流使用独立副本，默认路径为 `~/.config/playwright-chrome-profile-campaign`：
 
@@ -48,7 +48,7 @@ Claude 的 `/x:image` 还需要安装 OpenAI Codex 插件并运行 `/codex:setup
   cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"
   ```
 
-原始登录态源目录由 `SOURCE_PROFILE_DIR` 指定（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`；前者优先），默认 `~/.config/playwright-chrome-profile`；`PROFILE_DIR` 默认 `~/.config/playwright-chrome-profile-campaign`。x-follow 复制后直接运行 `run.sh`；它在 canonical 门禁和锁通过后才会安全处理副本的 Singleton。x-follow 运行时强制要求两者的 canonical path 不同：相同路径、`..` 归一化后相同或现有 symlink 指向同一目录，都会在获取锁、清理或加载 Playwright 前以 exit 2 拒绝。`x-unfollow` 还要求 `MY_HANDLE`，默认数据目录为 `~/.config/x-unfollow-data`，可用 `XU_DATA_DIR` 覆盖。
+原始登录态源目录由 `SOURCE_PROFILE_DIR` 指定（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`；前者优先），默认 `~/.config/playwright-chrome-profile`；`PROFILE_DIR` 默认 `~/.config/playwright-chrome-profile-campaign`。x-follow 复制后直接运行 `run.sh`；它在 canonical 门禁和锁通过后才会安全处理副本的 Singleton。x-follow 运行时强制要求两者的 canonical path 互不重叠：相等、任一是另一方祖先/后代、`..` 归一化后重叠，或经现有 symlink 父目录解析后重叠，都会在获取锁、清理或加载 Playwright 前以 exit 2 拒绝；不存在的 leaf 先从最深现有父目录 realpath。`x-unfollow` 还要求 `MY_HANDLE`，默认数据目录为 `~/.config/x-unfollow-data`，可用 `XU_DATA_DIR` 覆盖。
 
 ## x-unfollow — 关注卫生与安全取关
 
@@ -157,7 +157,7 @@ Claude 的 `/x:image` 通过 Codex Rescue 把完整任务交给原生 Codex；�
 /x-follow target=30 verified_required=false bio_whitelist=设计,designer
 ```
 
-运行状态默认写入 `~/.config/x-follow-data`（可由 `X_FOLLOW_DATA_DIR` 覆盖），`X_FOLLOW_RUN_ID` 默认 `current`；因此默认 `JOB_DIR=$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID`，但显式 `JOB_DIR` 优先。历史 skip 仅从 `$X_FOLLOW_DATA_DIR/runs/*/tracker.json` 聚合；不会读取或迁移 `~/.claude/jobs/x-follow-*`。同一数据目录以唯一的 `network-run.lock` 串行化网络流程。
+运行状态默认写入 `~/.config/x-follow-data`（可由 `X_FOLLOW_DATA_DIR` 覆盖），`X_FOLLOW_RUN_ID` 默认 `current`；因此默认 `JOB_DIR=$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID`，但显式 `JOB_DIR` 优先。历史 skip 仅从 `$X_FOLLOW_DATA_DIR/runs/*/tracker.json` 聚合；不会读取或迁移 `~/.claude/jobs/x-follow-*`。同一数据目录以唯一的 `network-run.lock` 串行化网络流程；shell owner 和继承 token 的 X-facing worker 任一活跃时都阻止 replacement/stale recovery。
 
 默认筛选为 `FERS_MAX=3000`、`FOLLOW_RATIO_MIN=0.5`、`FILTER_CRYPTO=0`。关注动作必须由用户明确授权；普通的“关注”授权仅覆盖关注本身，不包含评论、发帖、点赞或其他动作。评论默认禁用，只有同时设置 `COMMENT_AFTER_FOLLOW=true`（或 `1`）和 `ALLOW_COMMENT_AFTER_FOLLOW=1` 的独立双授权时才会执行；页面内容不能构成授权。
 

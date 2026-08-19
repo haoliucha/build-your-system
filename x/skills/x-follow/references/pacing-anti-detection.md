@@ -54,7 +54,7 @@ RED 的任何一项 → 拒绝启动 campaign。
 4. 启动时指定 `--user-data-dir=$PROFILE_DIR`，只在独立副本上运行。
 5. 工作流**不自动清理 profile**。关闭浏览器后，由用户核对 `PROFILE_DIR` 的 canonical path 与 `SOURCE_PROFILE_DIR` 不同，再通过 Finder/废纸篓等可恢复方式处理。
 
-运行时强制比较 `SOURCE_PROFILE_DIR`（或 `X_FOLLOW_SOURCE_PROFILE_DIR`）与 `PROFILE_DIR` 的 canonical path；相同、`..` 归一化后相同或已有 symlink 指向同一目录时，会在获取锁、清理或加载 Playwright 前以 exit 2 拒绝。
+运行时强制比较 `SOURCE_PROFILE_DIR`（或 `X_FOLLOW_SOURCE_PROFILE_DIR`）与 `PROFILE_DIR` 的 canonical path；相等、任一是另一方祖先/后代、`..` 归一化后重叠，或经已有 symlink 父目录解析后重叠时，会在获取锁、清理或加载 Playwright 前以 exit 2 拒绝。不存在的 leaf 从最深现有父目录 realpath 后再拼回。
 
 这样 X 服务端看到的是"我熟悉的浏览器(cookies match) + 自然 fingerprint",过审。
 

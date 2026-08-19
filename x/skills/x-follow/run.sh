@@ -31,6 +31,12 @@ export NO_COLOR=1 NODE_DISABLE_COLORS=1 FORCE_COLOR=0
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS="$SKILL_DIR/scripts"
 
+# Node 22 introduced fs.globSync, which is required for the historical skip-set. Refuse an
+# older/incomplete runtime before validating state, creating directories, or acquiring locks.
+node "$SCRIPTS/lib/node-runtime.cjs"
+NODE_RUNTIME_CODE=$?
+if [ "$NODE_RUNTIME_CODE" -ne 0 ]; then exit "$NODE_RUNTIME_CODE"; fi
+
 TARGET="${TARGET:-10}"
 MY_HANDLE="${MY_HANDLE:-}"
 SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
@@ -117,7 +123,13 @@ say() { echo "[run $(date +%H:%M:%S)] $*"; }
 # Single-line progress the human (and Claude) can read any time without tailing logs.
 # campaign.cjs writes the same file per-account; run.sh writes it at phase boundaries.
 status() {  # status <phase> <extra-msg>
-  node -e "require('fs').writeFileSync('$STATUS', JSON.stringify({phase:process.argv[1], msg:process.argv[2], followed:(()=>{try{return JSON.parse(require('fs').readFileSync('$TRACKER')).followed.length}catch(e){return 0}})(), target:$TARGET, ts:new Date().toISOString()},null,2))" "$1" "${2:-}" 2>/dev/null || true
+  STATUS_PATH="$STATUS" TRACKER_PATH="$TRACKER" STATUS_TARGET="$TARGET" node -e '
+    const fs = require("fs");
+    const [phase, msg] = process.argv.slice(1);
+    let followed = 0;
+    try { followed = JSON.parse(fs.readFileSync(process.env.TRACKER_PATH, "utf8")).followed.length; } catch {}
+    fs.writeFileSync(process.env.STATUS_PATH, JSON.stringify({ phase, msg, followed, target: Number(process.env.STATUS_TARGET), ts: new Date().toISOString() }, null, 2));
+  ' "$1" "${2:-}" 2>/dev/null || true
 }
 
 # Acquire the cross-host lock before cleanup_locks/pkill or any Chrome/Playwright/X-facing
@@ -137,7 +149,12 @@ release_run_lock() {
 trap release_run_lock EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-followed() { node -e "try{process.stdout.write(String(JSON.parse(require('fs').readFileSync('$TRACKER')).followed.length))}catch(e){process.stdout.write('0')}" 2>/dev/null || echo 0; }
+followed() {
+  TRACKER_PATH="$TRACKER" node -e '
+    try { process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.env.TRACKER_PATH, "utf8")).followed.length)); }
+    catch { process.stdout.write("0"); }
+  ' 2>/dev/null || echo 0
+}
 
 cleanup_locks() { pkill -9 -f "user-data-dir=$PROFILE_DIR" 2>/dev/null; rm -f "$PROFILE_DIR"/Singleton* 2>/dev/null; sleep 1; }
 
@@ -168,34 +185,36 @@ cleanup_locks
 # tiered-release needs). Instead build-queue derives the live, tiered skip-set from
 # SKIP_GLOB on every queue build, automatically reclaiming误杀的瞬时错误 + 过期阈值拒绝.
 if [ ! -f "$TRACKER" ]; then
-  node -e "require('fs').writeFileSync('$TRACKER',JSON.stringify({followed:[],rejected:[],stats:{profiles_checked:0,follow_success:0}}))"
+  node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({followed:[],rejected:[],stats:{profiles_checked:0,follow_success:0}}))' "$TRACKER"
 fi
-SKIP_N=$(node -e "
-  const {buildSkipSetFromPaths}=require('$SCRIPTS/lib/skipset.cjs');
-  const fs=require('fs');
-  const paths=Array.from(fs.globSync('$SKIP_GLOB'));
+SKIP_N=$(SKIP_GLOB="$SKIP_GLOB" SOFT_TTL_DAYS="$SOFT_TTL_DAYS" FERS_MAX="$FERS_MAX" FOLLOW_RATIO_MIN="$FOLLOW_RATIO_MIN" node -e '
+  const {buildSkipSetFromPaths}=require(process.argv[1]);
+  const fs=require("fs");
+  const paths=Array.from(fs.globSync(process.env.SKIP_GLOB));
   const stats={};
-  const skip=buildSkipSetFromPaths(paths,{softTtlDays:$SOFT_TTL_DAYS,fersMax:$FERS_MAX,followRatioMin:$FOLLOW_RATIO_MIN,stats});
-  process.stderr.write('[skipset] trackers='+paths.length+' active-skip='+skip.length+' released='+JSON.stringify(stats)+'\n');
+  const skip=buildSkipSetFromPaths(paths,{softTtlDays:Number(process.env.SOFT_TTL_DAYS),fersMax:Number(process.env.FERS_MAX),followRatioMin:Number(process.env.FOLLOW_RATIO_MIN),stats});
+  process.stderr.write("[skipset] trackers="+paths.length+" active-skip="+skip.length+" released="+JSON.stringify(stats)+"\n");
   process.stdout.write(String(skip.length));
-" 2>>"$JOB_DIR/run.log")
+' "$SCRIPTS/lib/skipset.cjs" 2>>"$JOB_DIR/run.log")
 say "starting followed=$(followed)/$TARGET, active skip-set=$SKIP_N (tiered: transient+expired released)"
 status init "skip-set=$SKIP_N"
 
 # ---- harvest helper: ALL queries in ONE browser session, then rebuild queue ----
 # PERF/SAFETY: one launchPersistentContext for the whole query set (was: one per query =
 # ~6 cold Chrome starts + a 429 burst each round). Sets QSZ to the rebuilt queue size.
-queue_size() { node -e "try{process.stdout.write(String(require('$QUEUE').length))}catch(e){process.stdout.write('0')}"; }
+queue_size() {
+  node -e 'try { process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).length)); } catch { process.stdout.write("0"); }' "$QUEUE"
+}
 # Rotating query slice: QUERIES_PER_ROUND terms from the pool, offset by round, wrapping —
 # so consecutive rounds search DIFFERENT terms (fresh accounts) instead of re-running all 6.
 select_queries() {
-  node -e "
-    const all='$QUERIES'.split(',').map(s=>s.trim()).filter(Boolean);
-    const per=$QUERIES_PER_ROUND, r=parseInt('$1',10)||1;
+  QUERIES="$QUERIES" QUERIES_PER_ROUND="$QUERIES_PER_ROUND" node -e '
+    const all=process.env.QUERIES.split(",").map(s=>s.trim()).filter(Boolean);
+    const per=Number(process.env.QUERIES_PER_ROUND), r=parseInt(process.argv[1],10)||1;
     const start=((r-1)*per)%all.length, out=[];
     for(let k=0;k<per&&k<all.length;k++) out.push(all[(start+k)%all.length]);
-    process.stdout.write(out.join(','));
-  " "$1"
+    process.stdout.write(out.join(","));
+  ' "$1"
 }
 QSZ=0
 RL=0
@@ -208,12 +227,12 @@ harvest_round() {
     say "harvest[$round]: rotating slice [$subset] (split into ${QUERIES_PER_ROUND}-query sessions)"
     status harvest "round $round"
     PROFILE_DIR="$PROFILE_DIR" node "$SCRIPTS/harvest.cjs" search-multi "$subset" "$HARVEST_SCROLLS" > "$out" 2>"$JOB_DIR/harvest.err"
-    local c; c=$(node -e "try{console.log(require('$out').count||0)}catch(e){console.log(0)}")
+    local c; c=$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).count || 0); } catch { console.log(0); }' "$out")
     say "  -> $c raw merged (deduped across queries)"
   fi
   # Was this round throttled? harvest emits rateLimited so the loop can cool down instead of
   # mis-reading a 429 round as pool exhaustion.
-  RL=$(node -e "try{console.log(require('$out').rateLimited?1:0)}catch(e){console.log(0)}")
+  RL=$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).rateLimited ? 1 : 0); } catch { console.log(0); }' "$out")
   NOCRYPTO="$NOCRYPTO" JOB_DIR="$JOB_DIR" node "$SCRIPTS/build-queue.cjs" >/dev/null 2>"$JOB_DIR/build-queue.err"
   QSZ=$(queue_size)
   say "  queue=$QSZ / need $NEED (rate-limited=$RL)"
@@ -288,7 +307,7 @@ for vpass in 1 2 3; do
   status verify "pass $vpass"
   FIX_TRACKER=1 PROFILE_DIR="$PROFILE_DIR" TRACKER_PATH="$TRACKER" \
     node "$SCRIPTS/verify-follows.cjs" --assumed >"$JOB_DIR/verify-$vpass.json" 2>>"$JOB_DIR/verify.err"
-  FAILED=$(node -e "try{console.log((require('$JOB_DIR/verify-$vpass.json').failed||[]).length)}catch(e){console.log(0)}")
+  FAILED=$(node -e 'try { console.log((JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).failed || []).length); } catch { console.log(0); }' "$JOB_DIR/verify-$vpass.json")
   say "  unconfirmed=$FAILED, followed now $(followed)/$TARGET"
   if [ "${FAILED:-0}" -eq 0 ] && [ "$(followed)" -ge "$TARGET" ]; then break; fi
   # demoted failures dropped followed below target -> one more campaign top-up,
@@ -309,13 +328,13 @@ done
 cleanup_locks
 say "=== DONE === followed=$(followed)/$TARGET  (tracker: $TRACKER)"
 status done "followed=$(followed)/$TARGET"
-node -e "
-  const t=JSON.parse(require('fs').readFileSync('$TRACKER'));
+node -e '
+  const t=JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
   const a={}; t.followed.forEach(x=>a[x.action]=(a[x.action]||0)+1);
   const nr=(t.rejected||[]);
-  const rc={}; nr.forEach(r=>{const k=r.r.split('(')[0];rc[k]=(rc[k]||0)+1});
-  console.log('  follows:', t.followed.length, 'actions:', JSON.stringify(a));
-  console.log('  new rejects:', nr.length, JSON.stringify(rc));
-"
+  const rc={}; nr.forEach(r=>{const k=r.r.split("(")[0];rc[k]=(rc[k]||0)+1});
+  console.log("  follows:", t.followed.length, "actions:", JSON.stringify(a));
+  console.log("  new rejects:", nr.length, JSON.stringify(rc));
+' "$TRACKER"
 [ -f "$ALERT" ] && { say "NOTE: ALERT.txt present — review it."; }
 exit 0

@@ -34,14 +34,25 @@ function resolveRuntimeState(env = process.env) {
 
 function resolveCanonicalPath(dir) {
   const resolved = path.resolve(String(dir));
-  try {
-    return fs.realpathSync.native ? fs.realpathSync.native(resolved) : fs.realpathSync(resolved);
-  } catch (error) {
-    // A missing profile remains the responsibility of the existing profile-exists gate.
-    // Before it exists, path.resolve still catches equal values and `..` normalization.
-    if (error.code === 'ENOENT') return resolved;
-    throw error;
+  const missing = [];
+  let existing = resolved;
+  while (true) {
+    try {
+      const canonical = fs.realpathSync.native ? fs.realpathSync.native(existing) : fs.realpathSync(existing);
+      return path.join(canonical, ...missing);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      const parent = path.dirname(existing);
+      if (parent === existing) return resolved;
+      missing.unshift(path.basename(existing));
+      existing = parent;
+    }
   }
+}
+
+function containsPath(parent, candidate) {
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
 function resolveProfilePolicy(env = process.env) {
@@ -61,8 +72,9 @@ function resolveProfilePolicy(env = process.env) {
 
 function assertIndependentProfile(env = process.env) {
   const policy = resolveProfilePolicy(env);
-  if (policy.sourceCanonicalPath === policy.profileCanonicalPath) {
-    throw new Error('PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR; refusing to run on the source login profile');
+  if (containsPath(policy.sourceCanonicalPath, policy.profileCanonicalPath)
+    || containsPath(policy.profileCanonicalPath, policy.sourceCanonicalPath)) {
+    throw new Error('PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR and must not be equal to, contain, or be contained by SOURCE_PROFILE_DIR; refusing overlapping login profiles');
   }
   return policy;
 }

@@ -15,11 +15,22 @@ function isPidActive(pid) {
 }
 
 function isOwnerRecord(record) {
+  const hasWorkerPid = record && Object.prototype.hasOwnProperty.call(record, 'workerPid');
+  const hasWorkerStartedAt = record && Object.prototype.hasOwnProperty.call(record, 'workerStartedAt');
   return !!record
     && Number.isInteger(record.pid) && record.pid > 0
     && typeof record.token === 'string' && TOKEN_RE.test(record.token)
     && typeof record.jobDir === 'string'
-    && typeof record.startedAt === 'string' && Number.isFinite(Date.parse(record.startedAt));
+    && typeof record.startedAt === 'string' && Number.isFinite(Date.parse(record.startedAt))
+    && hasWorkerPid === hasWorkerStartedAt
+    && (!hasWorkerPid || (Number.isInteger(record.workerPid) && record.workerPid > 0
+      && typeof record.workerStartedAt === 'string' && Number.isFinite(Date.parse(record.workerStartedAt))));
+}
+
+function activeLeasePid(record) {
+  if (isPidActive(record.pid)) return record.pid;
+  if (record.workerPid && isPidActive(record.workerPid)) return record.workerPid;
+  return 0;
 }
 
 function inspectLock(lockPath) {
@@ -71,6 +82,16 @@ function writeOwner(directory, record) {
       try { fs.unlinkSync(ownPath); } catch {}
     }
     throw error;
+  }
+}
+
+function updateOwner(directory, record) {
+  const temp = path.join(directory, `${OWNER_FILE}.${record.token}.${crypto.randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(temp, JSON.stringify(record) + '\n', { mode: 0o600 });
+    fs.renameSync(temp, path.join(directory, OWNER_FILE));
+  } finally {
+    try { fs.unlinkSync(temp); } catch {}
   }
 }
 
@@ -238,7 +259,8 @@ function acquireMainUnderCoordination(lockPath, record, expected = null) {
     return { ...record, recovered: null };
   }
   if (current.state !== 'ready') throw new Error('network run lock is initializing or malformed; refusing unsafe recovery');
-  if (isPidActive(current.record.pid)) throw new Error(`network run lock already active (pid=${current.record.pid}, jobDir=${current.record.jobDir || 'unknown'})`);
+  const activePid = activeLeasePid(current.record);
+  if (activePid) throw new Error(`network run lock already active (pid=${activePid}, jobDir=${current.record.jobDir || 'unknown'})`);
   if (expected && (current.record.token !== expected.token || current.record.pid !== expected.pid)) {
     throw new Error('network run lock changed during stale recovery');
   }
@@ -275,7 +297,8 @@ function acquireLock(lockPath, details = {}, retry = 0) {
     return acquireLock(lockPath, details, retry + 1);
   }
   if (observed.state !== 'ready') throw new Error('network run lock is initializing or malformed; refusing unsafe recovery');
-  if (isPidActive(observed.record.pid)) throw new Error(`network run lock already active (pid=${observed.record.pid}, jobDir=${observed.record.jobDir || 'unknown'})`);
+  const activePid = activeLeasePid(observed.record);
+  if (activePid) throw new Error(`network run lock already active (pid=${activePid}, jobDir=${observed.record.jobDir || 'unknown'})`);
   const coordination = acquireCoordination(lockPath, { jobDir: record.jobDir, waitForAvailability: true });
   try {
     return acquireMainUnderCoordination(lockPath, record, observed.record);
@@ -287,8 +310,39 @@ function releaseLock(lockPath, token, pid = process.pid) {
   try {
     const current = inspectLock(lockPath);
     if (current.state !== 'ready' || current.record.token !== token || current.record.pid !== pid) return false;
+    if (current.record.workerPid && isPidActive(current.record.workerPid)) return false;
     const isolated = isolateDirectory(lockPath, 'released');
     cleanupIsolated(isolated);
+    return true;
+  } finally { releaseCoordinationFinally(coordination); }
+}
+
+function registerInheritedWorker(lockPath, token, workerPid = process.pid, workerStartedAt = new Date().toISOString()) {
+  const coordination = acquireCoordination(lockPath, { jobDir: '' });
+  try {
+    const current = inspectLock(lockPath);
+    if (current.state !== 'ready' || current.record.token !== token || !isPidActive(current.record.pid)) return false;
+    if (current.record.workerPid) {
+      if (current.record.workerPid === workerPid && current.record.workerStartedAt === workerStartedAt) return true;
+      if (isPidActive(current.record.workerPid)) {
+        throw new Error(`network run lock already has an active inherited worker (pid=${current.record.workerPid})`);
+      }
+    }
+    updateOwner(lockPath, { ...current.record, workerPid, workerStartedAt });
+    return true;
+  } finally { releaseCoordinationFinally(coordination); }
+}
+
+function releaseInheritedWorker(lockPath, token, workerPid, workerStartedAt) {
+  const coordination = acquireCoordination(lockPath, { jobDir: '' });
+  try {
+    const current = inspectLock(lockPath);
+    if (current.state !== 'ready'
+      || current.record.token !== token
+      || current.record.workerPid !== workerPid
+      || current.record.workerStartedAt !== workerStartedAt) return false;
+    const { workerPid: ignoredPid, workerStartedAt: ignoredStartedAt, ...owner } = current.record;
+    updateOwner(lockPath, owner);
     return true;
   } finally { releaseCoordinationFinally(coordination); }
 }
@@ -299,7 +353,11 @@ function acquireOrInheritLock({ lockPath, jobDir, env = process.env }) {
   if (inheritedPath === lockPath && inheritedToken) {
     const inherited = readLock(lockPath);
     if (inherited && inherited.token === inheritedToken && isPidActive(inherited.pid)) {
-      return { lockPath, token: inheritedToken, pid: inherited.pid, inherited: true };
+      const workerStartedAt = new Date().toISOString();
+      if (!registerInheritedWorker(lockPath, inheritedToken, process.pid, workerStartedAt)) {
+        throw new Error('network run lock owner exited before inherited worker registration');
+      }
+      return { lockPath, token: inheritedToken, pid: inherited.pid, inherited: true, workerPid: process.pid, workerStartedAt };
     }
   }
   const lock = acquireLock(lockPath, { jobDir });
@@ -307,8 +365,9 @@ function acquireOrInheritLock({ lockPath, jobDir, env = process.env }) {
 }
 
 function installLeaseCleanup(lease) {
-  if (lease.inherited) return;
-  const cleanup = () => releaseLock(lease.lockPath, lease.token, lease.pid);
+  const cleanup = lease.inherited
+    ? () => releaseInheritedWorker(lease.lockPath, lease.token, lease.workerPid, lease.workerStartedAt)
+    : () => releaseLock(lease.lockPath, lease.token, lease.pid);
   process.once('exit', cleanup);
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.once(signal, () => { cleanup(); process.exit(signal === 'SIGINT' ? 130 : 143); });
@@ -327,4 +386,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { acquireLock, releaseLock, readLock, inspectLock, isPidActive, acquireCoordination, releaseCoordination, acquireOrInheritLock, installLeaseCleanup, leaseIdentityPath };
+module.exports = { acquireLock, releaseLock, readLock, inspectLock, isPidActive, acquireCoordination, releaseCoordination, acquireOrInheritLock, installLeaseCleanup, leaseIdentityPath, registerInheritedWorker, releaseInheritedWorker };

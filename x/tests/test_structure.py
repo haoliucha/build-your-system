@@ -102,11 +102,17 @@ class StructureTests(unittest.TestCase):
             "bio_blacklist: []",
             "FILTER_CRYPTO=1 才用 crypto 列表",
             "profile_dir: ~/.config/playwright-chrome-profile-campaign",
-            "JOB_DIR=/tmp FILTER_CRYPTO=0 node",
+            "export X_FOLLOW_DATA_DIR X_FOLLOW_RUN_ID JOB_DIR",
+            'JOB_DIR="$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID"',
+            '"$JOB_DIR/cand-search.json"',
+            '"$JOB_DIR/my-following.json"',
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, skill)
-        self.assertNotIn("JOB_DIR=/tmp NOCRYPTO=1 node", skill)
+        workflow = skill.split("## 5 步工作流", 1)[1].split(
+            "## 开工前 user 确认 checklist", 1
+        )[0]
+        self.assertNotIn("/tmp", workflow)
 
     def test_follow_docs_name_the_shared_source_profile_and_runtime_gate(self):
         for path in (
