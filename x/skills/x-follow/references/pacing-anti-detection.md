@@ -43,11 +43,13 @@ RED 的任何一项 → 拒绝启动 campaign。
 **永远复用**用户已登录 + 浏览过的 profile。不要让脚本自己 login。
 
 复用步骤:
-1. `SOURCE_PROFILE_DIR=~/.config/playwright-chrome-profile`，`PROFILE_DIR=~/.config/playwright-chrome-profile-campaign`。
+1. `SOURCE_PROFILE_DIR` 优先（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`），默认 `~/.config/playwright-chrome-profile`；`PROFILE_DIR` 默认 `~/.config/playwright-chrome-profile-campaign`。
 2. `cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"` (复制,保留 cookies/history/localStorage)
 3. `rm -f "$PROFILE_DIR"/{SingletonLock,SingletonCookie,SingletonSocket}` (必须,否则 Chrome 拒启)
 4. 启动时指定 `--user-data-dir=$PROFILE_DIR`，只在独立副本上运行。
 5. 工作流**不自动清理 profile**。关闭浏览器后，由用户核对 `PROFILE_DIR` 的 canonical path 与 `SOURCE_PROFILE_DIR` 不同，再通过 Finder/废纸篓等可恢复方式处理。
+
+运行时强制比较 `SOURCE_PROFILE_DIR`（或 `X_FOLLOW_SOURCE_PROFILE_DIR`）与 `PROFILE_DIR` 的 canonical path；相同、`..` 归一化后相同或已有 symlink 指向同一目录时，会在获取锁、清理或加载 Playwright 前以 exit 2 拒绝。
 
 这样 X 服务端看到的是"我熟悉的浏览器(cookies match) + 自然 fingerprint",过审。
 

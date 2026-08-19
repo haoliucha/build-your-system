@@ -39,9 +39,11 @@ args: ['--disable-blink-features=AutomationControlled'],
 **原因**:profile 里没登录态(可能是空 profile,或 cookies 过期)。
 
 **修复**:
-- 检查 `SOURCE_PROFILE_DIR` 是否真有登录态，再复制到独立 `PROFILE_DIR`
+- 检查 `SOURCE_PROFILE_DIR`（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`，前者优先）是否真有登录态，再复制到独立 `PROFILE_DIR`
 - campaign 只使用 `PROFILE_DIR`，不要在 `SOURCE_PROFILE_DIR` 上运行 workflow
 - 重新复制前，先关闭占用 `PROFILE_DIR` 的浏览器
+
+运行时强制比较源目录与 `PROFILE_DIR` 的 canonical path；若相同、`..` 归一化后相同或已有 symlink 指向同一目录，会在锁、清理或 Playwright 加载前以 exit 2 拒绝。
 
 ---
 
@@ -215,7 +217,7 @@ const VERIFY_JS = `(async () => { ... })()`;
 ## Profile Isolation 完整步骤
 
 ```bash
-SOURCE_PROFILE_DIR=~/.config/playwright-chrome-profile
+SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
 PROFILE_DIR=~/.config/playwright-chrome-profile-campaign
 X_FOLLOW_DATA_DIR=~/.config/x-follow-data
 

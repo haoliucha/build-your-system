@@ -3,6 +3,7 @@
 
 const os = require('os');
 const path = require('path');
+const fs = require('fs');
 const { CRYPTO_TOKENS } = require('./filters.cjs');
 
 function validateRunId(runId) {
@@ -31,6 +32,41 @@ function resolveRuntimeState(env = process.env) {
   };
 }
 
+function resolveCanonicalPath(dir) {
+  const resolved = path.resolve(String(dir));
+  try {
+    return fs.realpathSync.native ? fs.realpathSync.native(resolved) : fs.realpathSync(resolved);
+  } catch (error) {
+    // A missing profile remains the responsibility of the existing profile-exists gate.
+    // Before it exists, path.resolve still catches equal values and `..` normalization.
+    if (error.code === 'ENOENT') return resolved;
+    throw error;
+  }
+}
+
+function resolveProfilePolicy(env = process.env) {
+  const home = env.HOME || process.env.HOME || os.homedir();
+  const sourceProfileDir = env.SOURCE_PROFILE_DIR
+    || env.X_FOLLOW_SOURCE_PROFILE_DIR
+    || path.join(home, '.config', 'playwright-chrome-profile');
+  const profileDir = env.PROFILE_DIR
+    || path.join(home, '.config', 'playwright-chrome-profile-campaign');
+  return {
+    sourceProfileDir,
+    profileDir,
+    sourceCanonicalPath: resolveCanonicalPath(sourceProfileDir),
+    profileCanonicalPath: resolveCanonicalPath(profileDir),
+  };
+}
+
+function assertIndependentProfile(env = process.env) {
+  const policy = resolveProfilePolicy(env);
+  if (policy.sourceCanonicalPath === policy.profileCanonicalPath) {
+    throw new Error('PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR; refusing to run on the source login profile');
+  }
+  return policy;
+}
+
 function parseBinaryFlag(value, name, defaultValue) {
   if (value === undefined || value === '') return defaultValue;
   if (value === '0') return false;
@@ -49,4 +85,10 @@ function resolveFilterPolicy(env = process.env) {
   return { filterCrypto, noCrypto, bioBlacklist };
 }
 
-module.exports = { resolveRuntimeState, validateRunId, resolveFilterPolicy };
+module.exports = {
+  resolveRuntimeState,
+  validateRunId,
+  resolveFilterPolicy,
+  resolveProfilePolicy,
+  assertIndependentProfile,
+};

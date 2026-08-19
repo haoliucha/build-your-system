@@ -18,7 +18,7 @@ const { buildSkipSet, classifyReason, softRejectNowPasses } = require(path.join(
 const { classifyAnomaly } = require(path.join(SCRIPTS, 'lib', 'anomaly.cjs'));
 const { resolveCommentPolicy } = require(path.join(SCRIPTS, 'lib', 'comment-policy.cjs'));
 const { acquireLock, releaseLock, acquireOrInheritLock, installLeaseCleanup, inspectLock, acquireCoordination, releaseCoordination, leaseIdentityPath } = require(path.join(SCRIPTS, 'lib', 'run-lock.cjs'));
-const { resolveRuntimeState, resolveFilterPolicy } = require(path.join(SCRIPTS, 'lib', 'runtime-state.cjs'));
+const { resolveRuntimeState, resolveFilterPolicy, resolveProfilePolicy, assertIndependentProfile } = require(path.join(SCRIPTS, 'lib', 'runtime-state.cjs'));
 
 let pass = 0, fail = 0;
 function test(name, fn) { try { fn(); console.log(`  ✅ ${name}`); pass++; } catch (e) { console.log(`  ❌ ${name}\n     ${e.message}`); fail++; } }
@@ -665,6 +665,27 @@ test('runtime state rejects unsafe run ids', () => {
   for (const runId of ['.', '..', '../bad', 'bad/name', 'bad name']) assert.throws(() => resolveRuntimeState({ HOME: '/home/test', X_FOLLOW_RUN_ID: runId }), /safe single path segment/);
 });
 
+group('source profile safety policy');
+test('profile policy defaults source and campaign paths, honoring explicit source names', () => {
+  const defaults = resolveProfilePolicy({ HOME: '/home/test' });
+  assert.strictEqual(defaults.sourceProfileDir, '/home/test/.config/playwright-chrome-profile');
+  assert.strictEqual(defaults.profileDir, '/home/test/.config/playwright-chrome-profile-campaign');
+  assert.strictEqual(resolveProfilePolicy({ HOME: '/home/test', X_FOLLOW_SOURCE_PROFILE_DIR: '/compat-source' }).sourceProfileDir, '/compat-source');
+  assert.strictEqual(resolveProfilePolicy({ HOME: '/home/test', SOURCE_PROFILE_DIR: '/canonical-source', X_FOLLOW_SOURCE_PROFILE_DIR: '/compat-source' }).sourceProfileDir, '/canonical-source');
+});
+test('profile policy rejects same and normalized source paths but accepts a distinct copy', () => {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-source-profile-'));
+  assert.throws(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: source }), /PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR/);
+  assert.throws(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: path.join(source, '..', path.basename(source)) }), /PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR/);
+  assert.doesNotThrow(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: `${source}-campaign` }));
+});
+test('profile policy resolves an existing symlink before comparing source and profile', () => {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-source-profile-link-'));
+  const alias = `${source}-alias`;
+  fs.symlinkSync(source, alias);
+  assert.throws(() => assertIndependentProfile({ SOURCE_PROFILE_DIR: source, PROFILE_DIR: alias }), /PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR/);
+});
+
 group('shared crypto filter policy');
 test('FILTER_CRYPTO defaults off for direct callers', () => {
   assert.deepStrictEqual(resolveFilterPolicy({}), { filterCrypto: false, noCrypto: false, bioBlacklist: [] });
@@ -715,6 +736,24 @@ test('every Playwright entry rejects an active lock before loading playwright', 
     assert.ok(!fs.existsSync(marker), `${entry} loaded playwright`);
   }
 });
+test('every Playwright entry rejects the source profile before loading playwright', () => {
+  const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-fake-playwright-source-'));
+  const fakeModule = path.join(fakeRoot, 'playwright');
+  fs.mkdirSync(fakeModule);
+  const marker = path.join(fakeRoot, 'playwright-loaded');
+  fs.writeFileSync(path.join(fakeModule, 'index.js'), `require('fs').writeFileSync(${JSON.stringify(marker)}, 'loaded'); throw new Error('fake playwright loaded');`);
+  for (const [entry, args] of PLAYWRIGHT_ENTRIES) {
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-entry-source-'));
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-entry-source-data-'));
+    const env = { ...process.env, NODE_PATH: fakeRoot, X_FOLLOW_DATA_DIR: dataDir, SOURCE_PROFILE_DIR: source, PROFILE_DIR: source };
+    if (entry === 'campaign.cjs') env.TARGET = '1';
+    const result = spawnSync('node', [path.join(SCRIPTS, entry), ...args.filter(arg => !arg.includes('='))], { env, encoding: 'utf8' });
+    assert.strictEqual(result.status, 2, entry);
+    assert.match(result.stderr, /PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR/, entry);
+    assert.ok(!fs.existsSync(marker), `${entry} loaded playwright`);
+    assert.ok(!fs.existsSync(path.join(dataDir, 'network-run.lock')), `${entry} acquired a lock`);
+  }
+});
 
 group('build-queue historical skip glob');
 function historicalFixture() {
@@ -750,6 +789,23 @@ test('unsafe X_FOLLOW_RUN_ID exits before profile or browser handling', () => {
   assert.strictEqual(result.status, 2);
   assert.match(result.stderr + result.stdout, /safe single path segment/);
   assert.ok(!fs.existsSync(path.join(dataDir, 'network-run.lock')));
+});
+test('source profile exits before run lock or cleanup pkill', () => {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-source-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-source-data-'));
+  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-fake-pkill-'));
+  const pkillMarker = path.join(fakeBin, 'pkill-called');
+  const fakePkill = path.join(fakeBin, 'pkill');
+  fs.writeFileSync(fakePkill, `#!/bin/sh\ntouch ${JSON.stringify(pkillMarker)}\n`);
+  fs.chmodSync(fakePkill, 0o755);
+  const result = spawnSync('bash', [path.join(__dirname, '..', 'run.sh')], {
+    env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, X_FOLLOW_DATA_DIR: dataDir, SOURCE_PROFILE_DIR: source, PROFILE_DIR: source },
+    encoding: 'utf8',
+  });
+  assert.strictEqual(result.status, 2);
+  assert.match(result.stderr + result.stdout, /PROFILE_DIR must not resolve to SOURCE_PROFILE_DIR/);
+  assert.ok(!fs.existsSync(path.join(dataDir, 'network-run.lock')));
+  assert.ok(!fs.existsSync(pkillMarker));
 });
 
 // ------------------------------------------------------------------- summary

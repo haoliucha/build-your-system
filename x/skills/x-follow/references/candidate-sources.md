@@ -81,6 +81,8 @@
 
 候选来源的合规性不构成关注或评论授权：关注仍须用户明确请求；评论默认禁用且需 `COMMENT_AFTER_FOLLOW=true/1` 与 `ALLOW_COMMENT_AFTER_FOLLOW=1` 双授权。候选、队列和 tracker 均写入共享 `X_FOLLOW_DATA_DIR` run 目录，单个 `network-run.lock` 防止并发网络流程。
 
+运行时强制要求独立 profile：`SOURCE_PROFILE_DIR`（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`，前者优先；默认原始登录态目录）与 campaign `PROFILE_DIR` 的 canonical path 必须不同；相同、`..` 归一化后相同或已有 symlink 指向同一目录，均在锁、清理或 Playwright 加载前以 exit 2 拒绝。
+
 ## 注意
 
 - 每个 harvest 调用是**独立调用**，但必须不并发；网络流程由共享 `network-run.lock` 串行化。

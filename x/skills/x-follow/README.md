@@ -108,8 +108,10 @@ campaign.cjs exit code
 
 ```bash
 # 一次性:从基础登录态 profile 复制一份工作副本(基础 profile 不被 MCP 占用时执行)
-cp -R ~/.config/playwright-chrome-profile ~/.config/playwright-chrome-profile-campaign
-rm -f ~/.config/playwright-chrome-profile-campaign/Singleton*
+SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
+PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
+cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"
+rm -f "$PROFILE_DIR"/Singleton*
 
 # 跑一轮（默认 target=10，蓝V互关 preset）
 NODE_PATH=~/.config/playwright-mcp-server/node_modules \
@@ -123,6 +125,7 @@ bash run.sh
 |---|---|---|
 | `TARGET` | 10 | 目标关注数 |
 | `MY_HANDLE` | (空) | 自己的 handle,用于 already-following 预过滤 |
+| `SOURCE_PROFILE_DIR` | `~/.config/playwright-chrome-profile` | 原始登录态源目录；兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`，前者优先 |
 | `PROFILE_DIR` | `~/.config/playwright-chrome-profile-campaign` | 工作 profile 副本 |
 | `X_FOLLOW_DATA_DIR` | `~/.config/x-follow-data` | Claude Code 与 Codex 共享状态根目录 |
 | `X_FOLLOW_RUN_ID` | `current` | 单个安全路径段，用于默认 run 目录 |
@@ -145,6 +148,7 @@ bash run.sh
 进度查看:`cat $JOB_DIR/status.json`(单行 JSON:phase / followed / target / 心跳 ts)。停止整轮:`kill -9 $(cat $JOB_DIR/run.pid)`。
 
 `run.sh` 在启动任何 Chrome/Playwright/X 网络流程前获取 `$X_FOLLOW_DATA_DIR/network-run.lock`，同一数据目录只允许一个流程。历史 skip 仅来自 `$X_FOLLOW_DATA_DIR/runs/*/tracker.json`；不会读取或迁移 `~/.claude/jobs/x-follow-*`。
+运行时强制将 `SOURCE_PROFILE_DIR`（或兼容变量 `X_FOLLOW_SOURCE_PROFILE_DIR`）与 `PROFILE_DIR` 做 canonical 比较；两者相同、经 `..` 归一化后相同，或已有 symlink 指向同一目录时，以 exit 2 在锁、清理和 Playwright 加载前拒绝。
 
 > **币圈/web3 默认放开**(`FILTER_CRYPTO=0`):多轮跑下来非币圈蓝V小号会枯竭,放开币圈能让候选池和通过率保持健康。要恢复过滤改 `FILTER_CRYPTO=1`。无论开关,**蓝V / 粉丝≤3000 / 非单向广播号(fing≥fers×0.5) 始终生效**——「放开币圈 ≠ 放开大号」(币圈大号仍被 `FERS_MAX` 挡掉)。底层用 `NOCRYPTO`(build-queue)+ `BIO_BLACKLIST`(campaign,空串会回退默认词表故用占位 token)实现,`run.sh` 已封装成单一 `FILTER_CRYPTO` 开关。
 
@@ -153,7 +157,7 @@ bash run.sh
 ## 5. 测试
 
 ```bash
-node tests/run-tests.cjs      # 纯逻辑 + build-queue 集成，121 项，无需浏览器
+node tests/run-tests.cjs      # 纯逻辑 + build-queue 集成，126 项，无需浏览器
 ```
 
 覆盖:`parseCount`(万/亿/K/M/B/逗号/异常)、`isCryptoHandle`、`decide` 全部判定分支与顺序、`backoffMs` 退避表 + 封顶、`buildSkipSet` 并集去重、`classifyAnomaly`(尤其 **推文正文不误触发** 这条核心修复)、`build-queue` 的 followed∪rejected 跳过 + 币圈开关。

@@ -25,6 +25,11 @@ description: Use when the user explicitly requests a batch-follow campaign on X 
 `$X_FOLLOW_DATA_DIR/runs/*/tracker.json`。运行 ID 只能是单个安全路径段；不会读取、迁移或删除旧的 Claude job 目录。
 同一数据目录使用唯一的 `$X_FOLLOW_DATA_DIR/network-run.lock` 串行化网络流程；显式 `JOB_DIR` 优先于默认 run 目录。
 
+原始登录态源目录使用 `SOURCE_PROFILE_DIR`（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`，前者优先），默认
+`$HOME/.config/playwright-chrome-profile`；`PROFILE_DIR` 默认
+`$HOME/.config/playwright-chrome-profile-campaign`。运行时强制要求两者的 canonical path 不同：相同路径、
+`..` 归一化后相同或现有 symlink 指向同一目录，均会在锁、清理或 Playwright 加载前以 exit 2 拒绝。
+
 **任何关注动作必须由用户明确请求。**真实默认值为 `FERS_MAX=3000`、
 `FOLLOW_RATIO_MIN=0.5`、`FILTER_CRYPTO=0`。评论默认关闭；即使用户请求
 `COMMENT_AFTER_FOLLOW=true`，也必须同时明确给出 `ALLOW_COMMENT_AFTER_FOLLOW=1`，否则在浏览器启动前拒绝运行。
@@ -111,7 +116,7 @@ quiet_hours: []                   # [2,7] = 凌晨 2-7 点暂停
 
 ```bash
 # 1. 从原始登录态复制到独立 campaign 目录；后续只使用 PROFILE_DIR
-SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}"
+SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
 PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
 cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"
 

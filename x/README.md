@@ -46,7 +46,7 @@ Claude 的 `/x:image` 还需要安装 OpenAI Codex 插件并运行 `/codex:setup
   rm -f ~/.config/playwright-chrome-profile-campaign/Singleton*
   ```
 
-运行时可用 `PROFILE_DIR` 覆盖 profile 副本路径。`x-unfollow` 还要求 `MY_HANDLE`，默认数据目录为 `~/.config/x-unfollow-data`，可用 `XU_DATA_DIR` 覆盖。
+原始登录态源目录由 `SOURCE_PROFILE_DIR` 指定（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`；前者优先），默认 `~/.config/playwright-chrome-profile`；`PROFILE_DIR` 默认 `~/.config/playwright-chrome-profile-campaign`。x-follow 运行时强制要求两者的 canonical path 不同：相同路径、`..` 归一化后相同或现有 symlink 指向同一目录，都会在获取锁、清理或加载 Playwright 前以 exit 2 拒绝。`x-unfollow` 还要求 `MY_HANDLE`，默认数据目录为 `~/.config/x-unfollow-data`，可用 `XU_DATA_DIR` 覆盖。
 
 ## x-unfollow — 关注卫生与安全取关
 

@@ -108,6 +108,21 @@ class StructureTests(unittest.TestCase):
                 self.assertIn(phrase, skill)
         self.assertNotIn("JOB_DIR=/tmp NOCRYPTO=1 node", skill)
 
+    def test_follow_docs_name_the_shared_source_profile_and_runtime_gate(self):
+        for path in (
+            X / "README.md",
+            X / "skills" / "x-follow" / "SKILL.md",
+            X / "skills" / "x-follow" / "README.md",
+            X / "skills" / "x-follow" / "references" / "pacing-anti-detection.md",
+            X / "skills" / "x-follow" / "references" / "troubleshooting.md",
+            X / "skills" / "x-follow" / "references" / "candidate-sources.md",
+        ):
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.name):
+                self.assertIn("SOURCE_PROFILE_DIR", text)
+                self.assertIn("X_FOLLOW_SOURCE_PROFILE_DIR", text)
+                self.assertIn("运行时强制", text)
+
     def test_follow_docs_do_not_recommend_recursive_profile_deletion(self):
         docs = {
             "skill": X / "skills" / "x-follow" / "SKILL.md",

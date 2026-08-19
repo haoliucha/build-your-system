@@ -41,6 +41,14 @@ if [[ ! "$X_FOLLOW_RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || [ "$X_FOLLOW_RUN_ID" = "."
   exit 2
 fi
 JOB_DIR="${JOB_DIR:-$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID}"
+# Reuse the runtime policy before creating state, acquiring the network lock, or running
+# cleanup_locks. It refuses the source login profile even when a caller supplies aliases.
+PROFILE_POLICY=$(PROFILE_DIR="$PROFILE_DIR" node -e '
+  try { require(process.argv[1]).assertIndependentProfile(process.env); }
+  catch (error) { console.error(`FATAL: ${error.message}`); process.exit(2); }
+' "$SCRIPTS/lib/runtime-gate.cjs")
+PROFILE_POLICY_CODE=$?
+if [ "$PROFILE_POLICY_CODE" -ne 0 ]; then exit "$PROFILE_POLICY_CODE"; fi
 # Query POOL (was 6 near-duplicate terms hammered every round). Wider + more varied so each
 # rotating slice reaches a fresher account population — the old set's results overlapped ~61%
 # (dup) and re-surfaced the same already-decided handles. QUERIES_PER_ROUND of these run each
