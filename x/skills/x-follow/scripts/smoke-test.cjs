@@ -14,8 +14,12 @@ try { prepareXFacingRuntime(process.env); }
 catch (error) { console.error(`FATAL: ${error.message}`); process.exit(2); }
 const { chromium } = require('playwright');
 
+const SOURCE_PROFILE_DIR = process.env.SOURCE_PROFILE_DIR
+  || process.env.X_FOLLOW_SOURCE_PROFILE_DIR
+  || `${process.env.HOME}/.config/playwright-chrome-profile`;
 const PROFILE_DIR = process.env.PROFILE_DIR || `${process.env.HOME}/.config/playwright-chrome-profile-campaign`;
 const MY_HANDLE = process.env.MY_HANDLE || '';
+const RUNNER = path.join(__dirname, '..', 'run.sh');
 
 const G = '\x1b[32m', R = '\x1b[31m', Y = '\x1b[33m', X = '\x1b[0m';
 const ok = (m) => console.log(`${G}✅ PASS${X} ${m}`);
@@ -31,7 +35,7 @@ async function main() {
   // Pre-check: profile dir exists
   if (!fs.existsSync(PROFILE_DIR)) {
     fail(`Profile dir does not exist: ${PROFILE_DIR}`);
-    console.log(`\nFix: cp -R ~/.config/playwright-chrome-profile ${PROFILE_DIR} && rm -f ${PROFILE_DIR}/SingletonLock*`);
+    console.log(`\nFix: export SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR}" PROFILE_DIR="${PROFILE_DIR}"; run ${RUNNER} so it safely prepares the copy after its guards pass.`);
     process.exit(3);
   }
   ok(`Profile dir exists`);
@@ -40,7 +44,7 @@ async function main() {
   const lockPath = path.join(PROFILE_DIR, 'SingletonLock');
   if (fs.existsSync(lockPath)) {
     fail(`SingletonLock present: ${lockPath}`);
-    console.log(`\nFix: rm -f ${PROFILE_DIR}/SingletonLock ${PROFILE_DIR}/SingletonCookie ${PROFILE_DIR}/SingletonSocket`);
+    console.log(`\nFix: keep SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR}" separate, close the browser using PROFILE_DIR="${PROFILE_DIR}", then re-run ${RUNNER}; it safely handles the copy after its guards pass.`);
     process.exit(3);
   }
   ok(`No SingletonLock`);

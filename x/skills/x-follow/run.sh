@@ -33,7 +33,9 @@ SCRIPTS="$SKILL_DIR/scripts"
 
 TARGET="${TARGET:-10}"
 MY_HANDLE="${MY_HANDLE:-}"
+SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
 PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
+export SOURCE_PROFILE_DIR PROFILE_DIR
 X_FOLLOW_DATA_DIR="${X_FOLLOW_DATA_DIR:-$HOME/.config/x-follow-data}"
 X_FOLLOW_RUN_ID="${X_FOLLOW_RUN_ID:-current}"
 if [[ ! "$X_FOLLOW_RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || [ "$X_FOLLOW_RUN_ID" = "." ] || [ "$X_FOLLOW_RUN_ID" = ".." ]; then
@@ -141,9 +143,11 @@ cleanup_locks() { pkill -9 -f "user-data-dir=$PROFILE_DIR" 2>/dev/null; rm -f "$
 
 # ---- Phase 0: profile ------------------------------------------------------
 if [ ! -d "$PROFILE_DIR" ]; then
-  say "FATAL: profile copy not found: $PROFILE_DIR"
-  say "Create it once (while base profile is NOT in use):"
-  say "  cp -R ~/.config/playwright-chrome-profile $PROFILE_DIR && rm -f $PROFILE_DIR/Singleton*"
+  say "FATAL: profile copy not found: PROFILE_DIR=$PROFILE_DIR"
+  say "Close any browser using the source profile: SOURCE_PROFILE_DIR=$SOURCE_PROFILE_DIR"
+  say "export SOURCE_PROFILE_DIR=\"$SOURCE_PROFILE_DIR\" PROFILE_DIR=\"$PROFILE_DIR\""
+  say "cp -R \"$SOURCE_PROFILE_DIR\" \"$PROFILE_DIR\""
+  say "bash \"$SKILL_DIR/run.sh\""
   exit 3
 fi
 cleanup_locks

@@ -824,6 +824,47 @@ test('source profile exits before run lock or cleanup pkill', () => {
   assert.ok(!fs.existsSync(path.join(dataDir, 'network-run.lock')));
   assert.ok(!fs.existsSync(pkillMarker));
 });
+test('run.sh missing-profile guidance preserves resolved source context and routes through the guarded runner', () => {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-guidance-source-'));
+  const profile = path.join(os.tmpdir(), `xf-run-guidance-copy-${process.pid}`);
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-guidance-data-'));
+  const result = spawnSync('bash', [path.join(__dirname, '..', 'run.sh')], {
+    env: { ...process.env, X_FOLLOW_DATA_DIR: dataDir, SOURCE_PROFILE_DIR: source, PROFILE_DIR: profile },
+    encoding: 'utf8',
+  });
+  const output = result.stderr + result.stdout;
+  assert.strictEqual(result.status, 3);
+  assert.match(output, new RegExp(`SOURCE_PROFILE_DIR="${source.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
+  assert.match(output, new RegExp(`PROFILE_DIR="${profile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
+  assert.match(output, /export SOURCE_PROFILE_DIR="[^"]+" PROFILE_DIR="[^"]+"/);
+  assert.match(output, /cp -R/);
+  assert.match(output, /run\.sh/);
+  assert.doesNotMatch(output, /rm\s+-f[^\n]*Singleton/);
+});
+test('smoke profile guidance routes missing and locked copies through run.sh without manual Singleton cleanup', () => {
+  const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-fake-playwright-guidance-'));
+  const fakeModule = path.join(fakeRoot, 'playwright');
+  fs.mkdirSync(fakeModule);
+  fs.writeFileSync(path.join(fakeModule, 'index.js'), 'module.exports = { chromium: {} };');
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-smoke-guidance-source-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-smoke-guidance-data-'));
+  const runSmoke = (profile) => spawnSync('node', [path.join(SCRIPTS, 'smoke-test.cjs')], {
+    env: { ...process.env, NODE_PATH: fakeRoot, X_FOLLOW_DATA_DIR: dataDir, SOURCE_PROFILE_DIR: source, PROFILE_DIR: profile },
+    encoding: 'utf8',
+  });
+  const missing = runSmoke(path.join(os.tmpdir(), `xf-smoke-guidance-missing-${process.pid}`));
+  const lockedProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-smoke-guidance-copy-'));
+  fs.writeFileSync(path.join(lockedProfile, 'SingletonLock'), 'locked');
+  const locked = runSmoke(lockedProfile);
+  for (const result of [missing, locked]) {
+    const output = result.stderr + result.stdout;
+    assert.strictEqual(result.status, 3);
+    assert.match(output, /SOURCE_PROFILE_DIR/);
+    assert.match(output, /run\.sh/);
+    assert.doesNotMatch(output, /rm\s+-f[^\n]*Singleton/);
+    assert.doesNotMatch(output, /cp -R ~\/\.config\/playwright-chrome-profile/);
+  }
+});
 
 // ------------------------------------------------------------------- summary
 console.log(`\n${'='.repeat(40)}`);

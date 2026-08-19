@@ -98,7 +98,8 @@ t['rejected'] = [r for r in t['rejected'] if 'not_blue' not in r['r']]
 **修复**:
 ```bash
 # 一次性抓自己的 /following,加入 skip set
-node scripts/snapshot-following.cjs YOUR_HANDLE > /tmp/my-following.json
+SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
+  node scripts/snapshot-following.cjs YOUR_HANDLE > /tmp/my-following.json
 # 把 handles 加进 tracker.rejected (reason: pre_existing_follow)
 python3 -c "
 import json

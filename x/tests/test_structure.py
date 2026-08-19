@@ -124,21 +124,22 @@ class StructureTests(unittest.TestCase):
                 self.assertIn("运行时强制", text)
 
     def test_follow_docs_do_not_recommend_recursive_profile_deletion(self):
-        docs = {
-            "x-readme": X / "README.md",
-            "skill": X / "skills" / "x-follow" / "SKILL.md",
-            "skill-readme": X / "skills" / "x-follow" / "README.md",
-            "pacing": X / "skills" / "x-follow" / "references" / "pacing-anti-detection.md",
-            "troubleshooting": X / "skills" / "x-follow" / "references" / "troubleshooting.md",
-            "candidates": X / "skills" / "x-follow" / "references" / "candidate-sources.md",
-        }
-        for name, path in docs.items():
-            with self.subTest(document=name):
+        docs = [X / "README.md", *(X / "skills" / "x-follow").rglob("*.md")]
+        for path in docs:
+            with self.subTest(document=path.name):
                 text = path.read_text(encoding="utf-8")
                 self.assertNotIn("rm -rf", text)
                 self.assertNotRegex(text, r"rm\s+-f[^\n]*Singleton")
+                self.assertNotRegex(text, r"Fix:.*rm.*Singleton")
                 if "cp -R" in text:
                     self.assertIn("export SOURCE_PROFILE_DIR PROFILE_DIR", text)
+
+    def test_troubleshooting_manual_profile_entry_keeps_source_context(self):
+        text = (X / "skills" / "x-follow" / "references" / "troubleshooting.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "SOURCE_PROFILE_DIR=\"$SOURCE_PROFILE_DIR\" PROFILE_DIR=\"$PROFILE_DIR\" \\",
+            text,
+        )
 
     def test_follow_reference_docs_share_safe_profile_lock_and_pacing_contracts(self):
         refs = X / "skills" / "x-follow" / "references"
