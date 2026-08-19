@@ -19,7 +19,9 @@ class CodexPluginTests(unittest.TestCase):
         self.assertIn("x-follow", manifest.get("description", ""))
         self.assertIn("明确确认", manifest.get("interface", {}).get("longDescription", ""))
         self.assertIn("评论", manifest.get("interface", {}).get("longDescription", ""))
-        self.assertTrue(any("关注" in prompt for prompt in manifest.get("interface", {}).get("defaultPrompt", [])))
+        prompts = manifest.get("interface", {}).get("defaultPrompt", [])
+        self.assertIn("筛选并列出10个符合条件候选，等待我明确授权后再关注", prompts)
+        self.assertFalse(any(prompt.startswith("关注前先确认条件，然后关注") for prompt in prompts))
 
     def test_native_skill_owns_generation_without_nesting(self):
         skill = read_optional(X_IMAGE / "SKILL.md")

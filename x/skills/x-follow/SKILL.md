@@ -72,7 +72,8 @@ verified_required: true
 following_gt_followers: true
 followers_max: 3000
 follow_ratio_min: 0.5
-bio_blacklist: [crypto, web3, btc, eth, defi, nft, ...]
+filter_crypto: 0                  # 默认不过滤币圈/web3；FILTER_CRYPTO=1 才用 crypto 列表
+bio_blacklist: []                 # 显式 BIO_BLACKLIST 优先于 FILTER_CRYPTO
 
 # 可选过滤
 bio_whitelist: []                 # 若非空,bio 必须含某词
@@ -83,8 +84,8 @@ search_queries: ["蓝V互关", "蓝V互粉", "蓝V互fo"]
 mine_post_replies: true
 mine_followers_of: []             # 额外挖某些小账号的 followers/following
 
-# 环境
-profile_dir: ~/.config/playwright-chrome-profile
+# 环境：只运行独立副本，不在原始 profile 上执行 workflow
+profile_dir: ~/.config/playwright-chrome-profile-campaign
 
 # 风控节奏(已实战调优,谨慎修改)
 follow_wait_min_ms: 25000
@@ -109,14 +110,16 @@ quiet_hours: []                   # [2,7] = 凌晨 2-7 点暂停
 详见 `references/troubleshooting.md` 的 "Profile Isolation" 段。
 
 ```bash
-# 1. 复制 profile 到独立 campaign 目录
-cp -R "$PROFILE_DIR" "$PROFILE_DIR-campaign"
+# 1. 从原始登录态复制到独立 campaign 目录；后续只使用 PROFILE_DIR
+SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}"
+PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
+cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"
 
 # 2. 删 lock 文件(必须,否则 Chrome 启动失败)
-rm -f "$PROFILE_DIR-campaign"/{SingletonLock,SingletonCookie,SingletonSocket}
+rm -f "$PROFILE_DIR"/{SingletonLock,SingletonCookie,SingletonSocket}
 
 # 3. 跑 smoke test(6 项指纹/登录态检查,RED 拒启)
-PROFILE_DIR="$PROFILE_DIR-campaign" \
+PROFILE_DIR="$PROFILE_DIR" \
   node "$SKILL_DIR/scripts/smoke-test.cjs"
 ```
 
@@ -132,11 +135,11 @@ PROFILE_DIR="$PROFILE_DIR-campaign" \
 ```bash
 node "$SKILL_DIR/scripts/harvest.cjs" search "蓝V互关" > /tmp/cand-1.json
 node "$SKILL_DIR/scripts/harvest.cjs" replies "https://x.com/SomeUser/status/123" > /tmp/cand-2.json
-# 合并/去重/去 skip(followed∪rejected)/币圈开关 → queue.json:
-JOB_DIR=/tmp NOCRYPTO=1 node "$SKILL_DIR/scripts/build-queue.cjs"
+# 合并/去重/去 skip(followed∪rejected)/按默认不过滤币圈 → queue.json:
+JOB_DIR=/tmp FILTER_CRYPTO=0 node "$SKILL_DIR/scripts/build-queue.cjs"
 ```
 
-### Step 3: Pre-filter(已关注 + crypto 启发式)
+### Step 3: Pre-filter(已关注 + 可选 crypto 启发式)
 
 强烈建议先 snapshot 自己的 `/following`,把所有已关注的账号一次性进 `skip set`。本次实战这一步省了 30% 时间。
 
@@ -145,16 +148,16 @@ node "$SKILL_DIR/scripts/snapshot-following.cjs" "$MY_HANDLE" > /tmp/my-followin
 # 合并到 tracker.rejected (reason: pre_existing_follow)
 ```
 
-启发式预过滤:在提取阶段就剔除 handle/name 含 crypto/web3/btc/等的候选(粗糙但快)。
+`FILTER_CRYPTO=0` 为默认值，不剔除 crypto/web3 候选；只有设为 `1` 时才在提取阶段按 handle/name 的 crypto 启发式预过滤。
 
 ### Step 4: Verify + Follow loop(主脚本)
 
 ```bash
 # 参数全部通过 env 传入
 TARGET=100 \
-PROFILE_DIR="$PROFILE_DIR-campaign" \
+PROFILE_DIR="$PROFILE_DIR" \
 MY_HANDLE=haoliucha \
-FERS_MAX=3000 FOLLOW_RATIO_MIN=0.5 \
+FERS_MAX=3000 FOLLOW_RATIO_MIN=0.5 FILTER_CRYPTO=0 \
 node "$SKILL_DIR/scripts/campaign.cjs"
 ```
 
@@ -171,7 +174,7 @@ node "$SKILL_DIR/scripts/campaign.cjs"
 `followed_assumed`(点了但 DOM 没及时翻成「正在关注」)会**虚报**。跑完复核,把没成的踢回 queue 重关,直到「确认数 == target」:
 
 ```bash
-FIX_TRACKER=1 PROFILE_DIR="$PROFILE_DIR-campaign" \
+FIX_TRACKER=1 PROFILE_DIR="$PROFILE_DIR" \
   node "$SKILL_DIR/scripts/verify-follows.cjs" --assumed
 # 若 failed>0 且 followed<target,再跑一次 campaign.cjs 补关(run.sh 自动做这一步)
 ```
@@ -179,8 +182,8 @@ FIX_TRACKER=1 PROFILE_DIR="$PROFILE_DIR-campaign" \
 ### Step 5: Cleanup
 
 ```bash
-# 删除 profile copy
-rm -rf "$PROFILE_DIR-campaign"
+# 删除独立 profile copy（绝不删除 SOURCE_PROFILE_DIR）
+rm -rf "$PROFILE_DIR"
 # 归档 log
 mv tracker.json campaign.log "$CAMPAIGN_ARCHIVE/"
 ```

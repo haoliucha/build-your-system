@@ -14,7 +14,7 @@
     "developerName": "haoliucha",
     "category": "Productivity",
     "capabilities": ["Interactive", "Read", "Write", "Image generation"],
-    "defaultPrompt": ["生成 X 未回关报告，不要取关", "关注前先确认条件，然后关注 10 个符合条件的蓝V互关账号", "为这篇 X 文章生成一张封面", "检查 X 关注关系的变化"],
+    "defaultPrompt": ["生成 X 未回关报告，不要取关", "筛选并列出10个符合条件候选，等待我明确授权后再关注", "为这篇 X 文章生成一张封面", "检查 X 关注关系的变化"],
     "brandColor": "#1DA1F2"
   }
 }

@@ -95,6 +95,19 @@ class StructureTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, readme)
 
+    def test_follow_skill_examples_keep_safe_filter_and_profile_defaults(self):
+        skill = (X / "skills" / "x-follow" / "SKILL.md").read_text(encoding="utf-8")
+        for phrase in (
+            "filter_crypto: 0",
+            "bio_blacklist: []",
+            "FILTER_CRYPTO=1 才用 crypto 列表",
+            "profile_dir: ~/.config/playwright-chrome-profile-campaign",
+            "JOB_DIR=/tmp FILTER_CRYPTO=0 node",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, skill)
+        self.assertNotIn("JOB_DIR=/tmp NOCRYPTO=1 node", skill)
+
     def test_x_image_assets_are_real_top_level_files_not_target_links(self):
         for directory in ("references", "styles", "previews"):
             path = X_IMAGE / directory
