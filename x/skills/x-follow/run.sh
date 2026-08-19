@@ -161,6 +161,7 @@ release_run_lock() {
 CURRENT_X_WORKER_PID=""
 PENDING_X_SIGNAL=""
 PENDING_X_EXIT_CODE=""
+X_WORKER_LAUNCHING=0
 record_pending_signal() {
   if [ -z "$PENDING_X_SIGNAL" ]; then
     PENDING_X_SIGNAL="$1"
@@ -171,40 +172,33 @@ run_x_worker() {
   local worker_pid code
   PENDING_X_SIGNAL=""
   PENDING_X_EXIT_CODE=""
-  trap 'record_pending_signal INT 130' INT
-  trap 'record_pending_signal TERM 143' TERM
+  X_WORKER_LAUNCHING=1
   "$@" &
   worker_pid=$!
   CURRENT_X_WORKER_PID="$worker_pid"
-  trap 'forward_worker_signal INT 130' INT
-  trap 'forward_worker_signal TERM 143' TERM
+  X_WORKER_LAUNCHING=0
   if [ -n "$PENDING_X_SIGNAL" ]; then
-    forward_worker_signal "$PENDING_X_SIGNAL" "$PENDING_X_EXIT_CODE"
+    kill -s "$PENDING_X_SIGNAL" "$worker_pid" 2>/dev/null || true
   fi
-  wait "$worker_pid"
-  code=$?
+  while true; do
+    wait "$worker_pid" 2>/dev/null
+    code=$?
+    if ! kill -0 "$worker_pid" 2>/dev/null; then break; fi
+  done
   if [ "$CURRENT_X_WORKER_PID" = "$worker_pid" ]; then CURRENT_X_WORKER_PID=""; fi
+  if [ -n "$PENDING_X_SIGNAL" ]; then exit "$PENDING_X_EXIT_CODE"; fi
   return "$code"
 }
 forward_worker_signal() {
   local signal="$1" code="$2" worker_pid="$CURRENT_X_WORKER_PID"
-  # While waiting for cleanup, later signals are recorded rather than ignored or allowed to
-  # re-enter this handler. Only the exact unreaped child recorded from `$!` is targeted.
-  trap 'record_pending_signal INT 130' INT
-  trap 'record_pending_signal TERM 143' TERM
+  # Signal traps must return immediately: Bash does not re-enter a blocking same-signal trap.
+  # The outer run_x_worker wait loop owns reap/exit ordering and can receive later signals.
+  record_pending_signal "$signal" "$code"
   if [[ "$worker_pid" =~ ^[0-9]+$ ]]; then
     kill -s "$signal" "$worker_pid" 2>/dev/null || true
-    while kill -0 "$worker_pid" 2>/dev/null; do
-      wait "$worker_pid" 2>/dev/null || true
-      if kill -0 "$worker_pid" 2>/dev/null && [ -n "$PENDING_X_SIGNAL" ]; then
-        kill -s "$PENDING_X_SIGNAL" "$worker_pid" 2>/dev/null || true
-        PENDING_X_SIGNAL=""
-        PENDING_X_EXIT_CODE=""
-      fi
-    done
-    wait "$worker_pid" 2>/dev/null || true
-    CURRENT_X_WORKER_PID=""
+    return
   fi
+  if [ "$X_WORKER_LAUNCHING" = "1" ]; then return; fi
   exit "$code"
 }
 trap release_run_lock EXIT

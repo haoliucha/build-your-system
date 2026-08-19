@@ -673,7 +673,13 @@ test('run.sh keeps waiting for its child after a second TERM interrupts wait', (
       const started = Date.now();
       const ownerExit = new Promise(resolve => owner.once('exit', (code, signal) => resolve({ code, signal })));
       owner.kill('SIGTERM');
-      await delay(80);
+      for (let i = 0; i < 100; i++) {
+        if (fs.existsSync(signalCountPath) && Number(fs.readFileSync(signalCountPath, 'utf8')) === 1) break;
+        await delay(10);
+      }
+      if (!fs.existsSync(signalCountPath) || Number(fs.readFileSync(signalCountPath, 'utf8')) !== 1) {
+        throw new Error('worker did not receive the first TERM before the synchronized second TERM');
+      }
       owner.kill('SIGTERM');
       const result = await Promise.race([ownerExit, delay(2000).then(() => null)]);
       if (!result) { if (alive(workerPid)) process.kill(workerPid, 'SIGKILL'); owner.kill('SIGKILL'); }
