@@ -470,6 +470,151 @@ test('owner SIGKILL keeps replacement blocked until the inherited runtime worker
   assert.deepStrictEqual(result, { whileWorker: 'blocked', recovered: true });
 });
 
+test('run.sh TERM forwards to its active inherited worker before releasing the owner lock', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-owner-term-'));
+  const fakeBin = path.join(root, 'bin');
+  const dataDir = path.join(root, 'data');
+  const jobDir = path.join(dataDir, 'runs', 'term-test');
+  const source = path.join(root, 'source-profile');
+  const profile = path.join(root, 'campaign-profile');
+  const workerScript = path.join(root, 'worker.cjs');
+  const readyPath = path.join(root, 'worker-ready.json');
+  const exitPath = path.join(root, 'worker-exit.json');
+  const heartbeatPath = path.join(root, 'worker-heartbeat.log');
+  fs.mkdirSync(fakeBin);
+  fs.mkdirSync(source);
+  fs.mkdirSync(profile);
+  fs.writeFileSync(workerScript, `
+    const fs = require('fs');
+    const { prepareXFacingRuntime } = require(${JSON.stringify(path.join(SCRIPTS, 'lib', 'runtime-gate.cjs'))});
+    const { inspectLock } = require(${JSON.stringify(path.join(SCRIPTS, 'lib', 'run-lock.cjs'))});
+    const runtime = prepareXFacingRuntime(process.env);
+    fs.writeFileSync(process.env.TEST_READY_PATH, JSON.stringify({ pid: process.pid }));
+    process.once('exit', () => {
+      const current = inspectLock(runtime.lease.lockPath);
+      fs.writeFileSync(process.env.TEST_EXIT_PATH, JSON.stringify({
+        workerFieldsPresent: current.state === 'ready' && Boolean(current.record.workerPid || current.record.workerStartedAt),
+      }));
+    });
+    setInterval(() => fs.appendFileSync(process.env.TEST_HEARTBEAT_PATH, '.'), 20);
+  `);
+  fs.writeFileSync(path.join(fakeBin, 'node'), [
+    '#!/bin/sh',
+    'case "$1" in',
+    '  */smoke-test.cjs) exec "$REAL_NODE" "$TEST_WORKER_SCRIPT" ;;',
+    'esac',
+    'exec "$REAL_NODE" "$@"',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(fakeBin, 'pkill'), '#!/bin/sh\nexit 1\n');
+  fs.chmodSync(path.join(fakeBin, 'node'), 0o755);
+  fs.chmodSync(path.join(fakeBin, 'pkill'), 0o755);
+
+  const coordinator = `
+    const fs = require('fs');
+    const path = require('path');
+    const { spawn } = require('child_process');
+    const { acquireLock, releaseLock, inspectLock } = require(${JSON.stringify(path.join(SCRIPTS, 'lib', 'run-lock.cjs'))});
+    const [runSh, fakeBin, dataDir, jobDir, source, profile, workerScript, readyPath, exitPath, heartbeatPath, realNode] = process.argv.slice(1);
+    const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    (async () => {
+      const owner = spawn('bash', [runSh], {
+        env: {
+          ...process.env,
+          PATH: fakeBin + path.delimiter + process.env.PATH,
+          REAL_NODE: realNode,
+          TEST_WORKER_SCRIPT: workerScript,
+          TEST_READY_PATH: readyPath,
+          TEST_EXIT_PATH: exitPath,
+          TEST_HEARTBEAT_PATH: heartbeatPath,
+          TARGET: '0',
+          X_FOLLOW_DATA_DIR: dataDir,
+          X_FOLLOW_RUN_ID: 'term-test',
+          JOB_DIR: jobDir,
+          SOURCE_PROFILE_DIR: source,
+          PROFILE_DIR: profile,
+        },
+        stdio: 'ignore',
+      });
+      let workerPid = 0;
+      for (let i = 0; i < 150; i++) {
+        if (fs.existsSync(readyPath)) { workerPid = JSON.parse(fs.readFileSync(readyPath, 'utf8')).pid; break; }
+        await delay(20);
+      }
+      if (!workerPid) {
+        owner.kill('SIGKILL');
+        throw new Error('worker did not become ready');
+      }
+      const lockPath = path.join(dataDir, 'network-run.lock');
+      const identityBefore = inspectLock(lockPath).record.workerPid === workerPid;
+      const ownerExit = new Promise(resolve => owner.once('exit', (code, signal) => resolve({ code, signal })));
+      owner.kill('SIGTERM');
+      const first = await Promise.race([ownerExit, delay(800).then(() => null)]);
+      const graceful = Boolean(first);
+      if (!graceful) {
+        if (alive(workerPid)) process.kill(workerPid, 'SIGKILL');
+        const second = await Promise.race([ownerExit, delay(800).then(() => null)]);
+        if (!second) owner.kill('SIGKILL');
+        await Promise.race([ownerExit, delay(800)]);
+      }
+      const heartbeatAtExit = fs.existsSync(heartbeatPath) ? fs.statSync(heartbeatPath).size : 0;
+      await delay(120);
+      const heartbeatAfter = fs.existsSync(heartbeatPath) ? fs.statSync(heartbeatPath).size : 0;
+      let replacement = false;
+      try {
+        const lease = acquireLock(lockPath, { jobDir: '/replacement' });
+        replacement = true;
+        releaseLock(lockPath, lease.token);
+      } catch {}
+      process.stdout.write(JSON.stringify({
+        graceful,
+        ownerCode: first && first.code,
+        identityBefore,
+        workerAlive: alive(workerPid),
+        exitMarker: fs.existsSync(exitPath) ? JSON.parse(fs.readFileSync(exitPath, 'utf8')) : null,
+        heartbeatStopped: heartbeatAtExit === heartbeatAfter,
+        replacement,
+      }));
+    })().catch(error => { process.stderr.write(error.stack + '\\n'); process.exit(1); });
+  `;
+  const observed = JSON.parse(execFileSync(process.execPath, [
+    '-e', coordinator, path.join(__dirname, '..', 'run.sh'), fakeBin, dataDir, jobDir,
+    source, profile, workerScript, readyPath, exitPath, heartbeatPath, process.execPath,
+  ], { encoding: 'utf8', timeout: 10000 }));
+  assert.deepStrictEqual(observed, {
+    graceful: true,
+    ownerCode: 143,
+    identityBefore: true,
+    workerAlive: false,
+    exitMarker: { workerFieldsPresent: false },
+    heartbeatStopped: true,
+    replacement: true,
+  });
+});
+
+test('run.sh routes every X-facing Node launch through the recorded-PID wrapper', () => {
+  const run = fs.readFileSync(path.join(__dirname, '..', 'run.sh'), 'utf8');
+  const lines = run.split('\n');
+  const expected = new Map([
+    ['smoke-test.cjs', 1],
+    ['harvest.cjs', 1],
+    ['campaign.cjs', 2],
+    ['verify-follows.cjs', 1],
+  ]);
+  for (const [script, count] of expected) {
+    const launches = lines
+      .map((line, index) => ({ line, previous: lines[index - 1] || '' }))
+      .filter(({ line }) => line.includes(`node "$SCRIPTS/${script}"`));
+    assert.strictEqual(launches.length, count, script);
+    for (const launch of launches) assert.match(`${launch.previous}\n${launch.line}`, /run_x_worker env/);
+  }
+  const handler = run.slice(run.indexOf('forward_worker_signal()'), run.indexOf('trap release_run_lock EXIT'));
+  assert.match(handler, /worker_pid="\$CURRENT_X_WORKER_PID"/);
+  assert.match(handler, /kill -s "\$signal" "\$worker_pid"/);
+  assert.doesNotMatch(handler, /pkill|kill\s+-9/);
+});
+
 test('owner schema rejects empty, incomplete, and wrong-type JSON without stale recovery', () => {
   const badRecords = [
     {},
@@ -800,6 +945,91 @@ test('document profile exports reach a child policy process and preserve the sou
   assert.strictEqual(different.stdout, `${source}\n${copy}`);
 });
 
+group('guarded profile copy');
+const profileCopyScript = path.join(SCRIPTS, 'prepare-profile-copy.cjs');
+function runProfileCopy(sourceProfileDir, profileDir) {
+  return spawnSync(process.execPath, [profileCopyScript], {
+    env: { ...process.env, SOURCE_PROFILE_DIR: sourceProfileDir, PROFILE_DIR: profileDir },
+    encoding: 'utf8',
+  });
+}
+test('profile copy rejects equal, ancestor, descendant, and symlink-parent overlap before side effects', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-profile-copy-overlap-'));
+  const source = path.join(root, 'source');
+  fs.mkdirSync(path.join(source, 'existing'), { recursive: true });
+  const sentinel = path.join(source, 'sentinel');
+  fs.writeFileSync(sentinel, 'unchanged');
+  const equal = runProfileCopy(source, source);
+  assert.strictEqual(equal.status, 2);
+  assert.match(equal.stderr, /overlapping login profiles/);
+  assert.strictEqual(fs.readFileSync(sentinel, 'utf8'), 'unchanged');
+
+  const child = path.join(source, 'must-not-exist');
+  const ancestor = runProfileCopy(source, child);
+  assert.strictEqual(ancestor.status, 2);
+  assert.match(ancestor.stderr, /overlapping login profiles/);
+  assert.ok(!fs.existsSync(child));
+
+  const descendant = runProfileCopy(path.join(source, 'existing'), source);
+  assert.strictEqual(descendant.status, 2);
+  assert.match(descendant.stderr, /overlapping login profiles/);
+  assert.strictEqual(fs.readFileSync(sentinel, 'utf8'), 'unchanged');
+
+  const alias = path.join(root, 'source-alias');
+  fs.symlinkSync(source, alias);
+  const symlinkChild = path.join(alias, 'missing', 'leaf');
+  const symlinkParent = runProfileCopy(source, symlinkChild);
+  assert.strictEqual(symlinkParent.status, 2);
+  assert.match(symlinkParent.stderr, /overlapping login profiles/);
+  assert.ok(!fs.existsSync(path.join(source, 'missing')));
+});
+test('profile copy fails closed for a missing source or existing target', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-profile-copy-inputs-'));
+  const missingTarget = path.join(root, 'missing-target');
+  const missingSource = runProfileCopy(path.join(root, 'missing-source'), missingTarget);
+  assert.strictEqual(missingSource.status, 2);
+  assert.match(missingSource.stderr, /SOURCE_PROFILE_DIR must be an existing directory/);
+  assert.ok(!fs.existsSync(missingTarget));
+
+  const source = path.join(root, 'source');
+  const target = path.join(root, 'target');
+  fs.mkdirSync(source);
+  fs.mkdirSync(target);
+  const sentinel = path.join(target, 'sentinel');
+  fs.writeFileSync(sentinel, 'unchanged');
+  const existingTarget = runProfileCopy(source, target);
+  assert.strictEqual(existingTarget.status, 2);
+  assert.match(existingTarget.stderr, /PROFILE_DIR already exists/);
+  assert.strictEqual(fs.readFileSync(sentinel, 'utf8'), 'unchanged');
+});
+test('profile copy copies an independent existing source into a new target', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-profile-copy-success-'));
+  const source = path.join(root, 'source');
+  const target = path.join(root, 'target');
+  fs.mkdirSync(path.join(source, 'nested'), { recursive: true });
+  fs.writeFileSync(path.join(source, 'nested', 'cookie'), 'preserved');
+  const result = runProfileCopy(source, target);
+  assert.strictEqual(result.status, 0, result.stderr);
+  assert.strictEqual(fs.readFileSync(path.join(target, 'nested', 'cookie'), 'utf8'), 'preserved');
+});
+test('all x-follow profile-copy guidance uses the guarded entry and never raw cp -R', () => {
+  const docs = [
+    path.join(__dirname, '..', 'SKILL.md'),
+    path.join(__dirname, '..', 'README.md'),
+    path.join(__dirname, '..', '..', '..', 'README.md'),
+    path.join(__dirname, '..', 'references', 'pacing-anti-detection.md'),
+    path.join(__dirname, '..', 'references', 'troubleshooting.md'),
+  ];
+  for (const document of docs) {
+    const text = fs.readFileSync(document, 'utf8');
+    assert.match(text, /prepare-profile-copy\.cjs/, document);
+    assert.doesNotMatch(text, /\bcp\s+-R\b/, document);
+  }
+  const run = fs.readFileSync(path.join(__dirname, '..', 'run.sh'), 'utf8');
+  assert.match(run, /prepare-profile-copy\.cjs/);
+  assert.doesNotMatch(run, /say "cp -R/);
+});
+
 group('shared crypto filter policy');
 test('FILTER_CRYPTO defaults off for direct callers', () => {
   assert.deepStrictEqual(resolveFilterPolicy({}), { filterCrypto: false, noCrypto: false, bioBlacklist: [] });
@@ -970,7 +1200,8 @@ test('run.sh missing-profile guidance preserves resolved source context and rout
   assert.match(output, new RegExp(`SOURCE_PROFILE_DIR="${source.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
   assert.match(output, new RegExp(`PROFILE_DIR="${profile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
   assert.match(output, /export SOURCE_PROFILE_DIR="[^"]+" PROFILE_DIR="[^"]+"/);
-  assert.match(output, /cp -R/);
+  assert.match(output, /prepare-profile-copy\.cjs/);
+  assert.doesNotMatch(output, /\bcp\s+-R\b/);
   assert.match(output, /run\.sh/);
   assert.doesNotMatch(output, /rm\s+-f[^\n]*Singleton/);
 });
@@ -1052,6 +1283,66 @@ test('README stop and empty BIO_BLACKLIST guidance matches safe runtime behavior
 });
 
 group('Skill manual workflow static contract');
+group('pre-existing following merge');
+const preExistingMergeScript = path.join(SCRIPTS, 'merge-pre-existing.cjs');
+test('snapshot merge preserves tracker fields and case-insensitively adds only new valid handles', () => {
+  const { mergePreExisting } = require(preExistingMergeScript);
+  const tracker = {
+    followed: [{ handle: 'Alice', action: 'followed' }],
+    rejected: [{ h: 'BOB', r: 'reject:not_blue' }],
+    stats: { profiles_checked: 7, follow_success: 1 },
+    custom: { keep: true },
+  };
+  const merged = mergePreExisting(
+    { handles: ['alice', 'bob', 'Charlie', 'CHARLIE', 'invalid-handle!', '', 42] },
+    tracker,
+  );
+  assert.deepStrictEqual(merged, {
+    ...tracker,
+    rejected: [
+      { h: 'BOB', r: 'reject:not_blue' },
+      { h: 'Charlie', r: 'pre_existing_follow' },
+    ],
+  });
+});
+test('snapshot merge CLI atomically creates/updates tracker and leaves it unchanged on invalid input', () => {
+  const jobDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-pre-existing-merge-'));
+  const snapshotPath = path.join(jobDir, 'my-following.json');
+  const trackerPath = path.join(jobDir, 'tracker.json');
+  fs.writeFileSync(snapshotPath, JSON.stringify({ handles: ['One', 'Two'] }));
+  const created = spawnSync(process.execPath, [preExistingMergeScript, snapshotPath, trackerPath], { encoding: 'utf8' });
+  assert.strictEqual(created.status, 0, created.stderr);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(trackerPath, 'utf8')), {
+    followed: [],
+    rejected: [
+      { h: 'One', r: 'pre_existing_follow' },
+      { h: 'Two', r: 'pre_existing_follow' },
+    ],
+    stats: { profiles_checked: 0, follow_success: 0 },
+  });
+  assert.deepStrictEqual(fs.readdirSync(jobDir).sort(), ['my-following.json', 'tracker.json']);
+
+  const before = fs.readFileSync(trackerPath);
+  fs.writeFileSync(snapshotPath, JSON.stringify({ handles: 'not-an-array' }));
+  const invalid = spawnSync(process.execPath, [preExistingMergeScript, snapshotPath, trackerPath], { encoding: 'utf8' });
+  assert.strictEqual(invalid.status, 2);
+  assert.match(invalid.stderr, /FATAL/);
+  assert.deepStrictEqual(fs.readFileSync(trackerPath), before);
+  assert.deepStrictEqual(fs.readdirSync(jobDir).sort(), ['my-following.json', 'tracker.json']);
+});
+test('recommended runner assigns and exports SKILL_DIR before expanding run.sh', () => {
+  const skill = fs.readFileSync(path.join(__dirname, '..', 'SKILL.md'), 'utf8');
+  const blockStart = skill.indexOf('> ```bash');
+  const block = skill.slice(blockStart, skill.indexOf('> ```', blockStart + 5) + 5);
+  const lines = block.split('\n');
+  const assignmentAt = lines.findIndex(line => /^> SKILL_DIR=/.test(line));
+  const exportAt = lines.findIndex(line => line === '> export SKILL_DIR');
+  const runnerAt = lines.findIndex(line => /bash "\$SKILL_DIR\/run\.sh"/.test(line));
+  assert.ok(assignmentAt >= 0, 'recommended block must assign SKILL_DIR');
+  assert.doesNotMatch(lines[assignmentAt], /\\\s*$/, 'SKILL_DIR assignment must be a completed command');
+  assert.ok(exportAt > assignmentAt, 'SKILL_DIR must be exported after assignment');
+  assert.ok(runnerAt > exportAt, 'run.sh must expand SKILL_DIR only after export');
+});
 test('manual five-step workflow exports one unique run and keeps every artifact in its JOB_DIR', () => {
   const skill = fs.readFileSync(path.join(__dirname, '..', 'SKILL.md'), 'utf8');
   const workflow = skill.slice(skill.indexOf('## 5 步工作流'), skill.indexOf('## 开工前 user 确认 checklist'));
@@ -1066,6 +1357,13 @@ test('manual five-step workflow exports one unique run and keeps every artifact 
   for (const command of ['harvest.cjs', 'build-queue.cjs', 'snapshot-following.cjs', 'campaign.cjs', 'verify-follows.cjs']) {
     assert.ok(workflow.indexOf(command) > exportAt, `${command} must run after the shared JOB_DIR export`);
   }
+  const harvestAt = workflow.indexOf('harvest.cjs');
+  const snapshotAt = workflow.indexOf('snapshot-following.cjs');
+  const mergeAt = workflow.indexOf('merge-pre-existing.cjs');
+  const buildAt = workflow.indexOf('build-queue.cjs');
+  assert.ok(harvestAt < snapshotAt, 'snapshot must follow harvest');
+  assert.ok(snapshotAt < mergeAt, 'snapshot must be consumed by the tracker merge');
+  assert.ok(mergeAt < buildAt, 'queue must be built after pre-existing handles enter tracker.rejected');
 });
 
 // ------------------------------------------------------------------- summary

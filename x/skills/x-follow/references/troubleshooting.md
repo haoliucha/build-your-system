@@ -97,19 +97,19 @@ t['rejected'] = [r for r in t['rejected'] if 'not_blue' not in r['r']]
 
 **修复**:
 ```bash
-# 一次性抓自己的 /following,加入 skip set
+# 使用唯一 run，snapshot / tracker / queue 都留在同一个 JOB_DIR
+X_FOLLOW_DATA_DIR="${X_FOLLOW_DATA_DIR:-$HOME/.config/x-follow-data}"
+X_FOLLOW_RUN_ID="manual-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+JOB_DIR="$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID"
+export X_FOLLOW_DATA_DIR X_FOLLOW_RUN_ID JOB_DIR
+mkdir -p "$JOB_DIR"
+
+# harvest 完成后抓自己的 /following，原子加入 skip set，再构建 queue
 SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
-  node scripts/snapshot-following.cjs YOUR_HANDLE > /tmp/my-following.json
-# 把 handles 加进 tracker.rejected (reason: pre_existing_follow)
-python3 -c "
-import json
-t = json.load(open('tracker.json'))
-my = json.load(open('/tmp/my-following.json'))
-for h in my['handles']:
-    if h not in {f['handle'] for f in t['followed']}:
-        t['rejected'].append({'h': h, 'r': 'pre_existing_follow'})
-json.dump(t, open('tracker.json','w'), indent=2)
-"
+  node "$SKILL_DIR/scripts/snapshot-following.cjs" YOUR_HANDLE > "$JOB_DIR/my-following.json"
+node "$SKILL_DIR/scripts/merge-pre-existing.cjs" \
+  "$JOB_DIR/my-following.json" "$JOB_DIR/tracker.json"
+FILTER_CRYPTO=0 JOB_DIR="$JOB_DIR" node "$SKILL_DIR/scripts/build-queue.cjs"
 ```
 
 本次实战这一步省了 30% 时间。
@@ -223,8 +223,8 @@ PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
 export SOURCE_PROFILE_DIR PROFILE_DIR
 X_FOLLOW_DATA_DIR=~/.config/x-follow-data
 
-# 1. 复制(保留 cookies/history/localStorage)
-cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"
+# 1. 先执行 canonical 门禁，再创建副本(保留 cookies/history/localStorage)
+node "$SKILL_DIR/scripts/prepare-profile-copy.cjs"
 
 # 2. 直接运行 run.sh；通过 canonical 门禁与 network-run.lock 后，它才安全处理副本 Singleton。
 # 手动调试也先走同一门禁，不手工清理。

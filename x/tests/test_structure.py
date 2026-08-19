@@ -106,6 +106,7 @@ class StructureTests(unittest.TestCase):
             'JOB_DIR="$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID"',
             '"$JOB_DIR/cand-search.json"',
             '"$JOB_DIR/my-following.json"',
+            'merge-pre-existing.cjs',
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, skill)
@@ -113,6 +114,24 @@ class StructureTests(unittest.TestCase):
             "## 开工前 user 确认 checklist", 1
         )[0]
         self.assertNotIn("/tmp", workflow)
+        order = tuple(
+            workflow.index(command)
+            for command in (
+                "harvest.cjs",
+                "snapshot-following.cjs",
+                "merge-pre-existing.cjs",
+                "build-queue.cjs",
+            )
+        )
+        self.assertEqual(order, tuple(sorted(order)))
+
+    def test_troubleshooting_snapshot_merge_stays_in_one_job_directory(self):
+        text = (X / "skills" / "x-follow" / "references" / "troubleshooting.md").read_text(encoding="utf-8")
+        section = text.split("## 6. 大量 `already_following` rejects", 1)[1].split("## 7.", 1)[0]
+        self.assertNotIn("/tmp", section)
+        self.assertIn('"$JOB_DIR/my-following.json"', section)
+        self.assertIn('"$JOB_DIR/tracker.json"', section)
+        self.assertIn("merge-pre-existing.cjs", section)
 
     def test_follow_docs_name_the_shared_source_profile_and_runtime_gate(self):
         for path in (
@@ -137,8 +156,21 @@ class StructureTests(unittest.TestCase):
                 self.assertNotIn("rm -rf", text)
                 self.assertNotRegex(text, r"rm\s+-f[^\n]*Singleton")
                 self.assertNotRegex(text, r"Fix:.*rm.*Singleton")
-                if "cp -R" in text:
-                    self.assertIn("export SOURCE_PROFILE_DIR PROFILE_DIR", text)
+                self.assertNotRegex(text, r"\bcp\s+-R\b")
+
+    def test_every_profile_copy_example_uses_the_guarded_offline_entry(self):
+        docs = (
+            X / "README.md",
+            X / "skills" / "x-follow" / "SKILL.md",
+            X / "skills" / "x-follow" / "README.md",
+            X / "skills" / "x-follow" / "references" / "pacing-anti-detection.md",
+            X / "skills" / "x-follow" / "references" / "troubleshooting.md",
+        )
+        for path in docs:
+            with self.subTest(document=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("prepare-profile-copy.cjs", text)
+                self.assertIn("export SOURCE_PROFILE_DIR PROFILE_DIR", text)
 
     def test_troubleshooting_manual_profile_entry_keeps_source_context(self):
         text = (X / "skills" / "x-follow" / "references" / "troubleshooting.md").read_text(encoding="utf-8")

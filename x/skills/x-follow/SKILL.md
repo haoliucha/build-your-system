@@ -11,9 +11,10 @@ description: Use when the user explicitly requests a batch-follow campaign on X 
 > **推荐入口 = 一条龙 `run.sh`**:它把 smoke → harvest(凑够候选)→ build-queue → campaign(watchdog)→ verify+补关 → 报告 编排成「遇错自恢复」的流水线,真异常(验证码/限流/登录跳转/账号受限)**自动停并写 ALERT.txt**。手动分步(下方 5 步)用于调试或特殊场景。
 >
 > ```bash
-> SKILL_DIR="/当前 Skill 目录的绝对路径" \
->   NODE_PATH=~/.config/playwright-mcp-server/node_modules \
->   TARGET=10 MY_HANDLE=<you> "$SKILL_DIR/run.sh"
+> SKILL_DIR="/当前 Skill 目录的绝对路径"
+> export SKILL_DIR
+> NODE_PATH=~/.config/playwright-mcp-server/node_modules \
+>   TARGET=10 MY_HANDLE=<you> bash "$SKILL_DIR/run.sh"
 > # 币圈/web3 默认已放开(FILTER_CRYPTO=0);要过滤掉币圈/web3 改 FILTER_CRYPTO=1
 > ```
 
@@ -129,7 +130,7 @@ mkdir -p "$JOB_DIR"
 SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
 PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
 export SOURCE_PROFILE_DIR PROFILE_DIR
-cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"
+node "$SKILL_DIR/scripts/prepare-profile-copy.cjs"
 
 # 3. 复制后直接运行 run.sh；它在同一 canonical 门禁和 network-run.lock 通过后
 #    才安全处理副本的 Singleton。手动调试也必须先经过该门禁，不能手工删除。
@@ -153,18 +154,20 @@ SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
   node "$SKILL_DIR/scripts/harvest.cjs" search "蓝V互关" > "$JOB_DIR/cand-search.json"
 SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
   node "$SKILL_DIR/scripts/harvest.cjs" replies "https://x.com/SomeUser/status/123" > "$JOB_DIR/cand-replies.json"
-# 合并/去重/去 skip(followed∪rejected)/按默认不过滤币圈 → queue.json:
-FILTER_CRYPTO=0 node "$SKILL_DIR/scripts/build-queue.cjs"
 ```
 
-### Step 3: Pre-filter(已关注 + 可选 crypto 启发式)
+### Step 3: Snapshot → tracker pre-filter → build queue
 
 强烈建议先 snapshot 自己的 `/following`,把所有已关注的账号一次性进 `skip set`。本次实战这一步省了 30% 时间。
 
 ```bash
 SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR" \
   node "$SKILL_DIR/scripts/snapshot-following.cjs" "$MY_HANDLE" > "$JOB_DIR/my-following.json"
-# 合并到 tracker.rejected (reason: pre_existing_follow)
+# 离线、原子合并到同一 JOB_DIR 的 tracker.rejected (reason: pre_existing_follow)
+node "$SKILL_DIR/scripts/merge-pre-existing.cjs" \
+  "$JOB_DIR/my-following.json" "$JOB_DIR/tracker.json"
+# snapshot 已进入 skip set 后再合并/去重候选并构建同一 JOB_DIR 的 queue.json
+FILTER_CRYPTO=0 JOB_DIR="$JOB_DIR" node "$SKILL_DIR/scripts/build-queue.cjs"
 ```
 
 `FILTER_CRYPTO=0` 为默认值，不剔除 crypto/web3 候选；只有设为 `1` 时才在提取阶段按 handle/name 的 crypto 启发式预过滤。
@@ -263,6 +266,7 @@ FIX_TRACKER=1 SOURCE_PROFILE_DIR="$SOURCE_PROFILE_DIR" PROFILE_DIR="$PROFILE_DIR
 - `scripts/campaign.cjs` — 主关注 loop(gotoRobust + verify + follow + pacing + 异常自停 + resume)
 - `scripts/harvest.cjs` — 候选抓取,`search|replies|followers` 三模式(gotoRobust)
 - `scripts/build-queue.cjs` — 候选 → 去重/去 skip(followed∪rejected)/币圈开关 → queue.json
+- `scripts/merge-pre-existing.cjs` — 离线、原子地把 following snapshot 合并进 tracker.rejected
 - `scripts/verify-follows.cjs` — 复核 followed_assumed 是否真「正在关注」,可踢回重关
 - `scripts/snapshot-following.cjs` — 抓自己 /following 进 skip set(UserCell 等待 + avatar 提取)
 - `scripts/smoke-test.cjs` — 启动前 6 项体检

@@ -49,7 +49,7 @@ RED 的任何一项 → 拒绝启动 campaign。
    PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
    export SOURCE_PROFILE_DIR PROFILE_DIR
    ```
-2. `cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"` (复制,保留 cookies/history/localStorage)
+2. 运行 `node "$SKILL_DIR/scripts/prepare-profile-copy.cjs"`（先执行 canonical 门禁，再复制并保留 cookies/history/localStorage）。
 3. 复制后直接运行 `run.sh`；它在 canonical 门禁和 `network-run.lock` 通过后才安全处理副本的 Singleton。手动调试也必须先经同一门禁，不能手工清理。
 4. 启动时指定 `--user-data-dir=$PROFILE_DIR`，只在独立副本上运行。
 5. 工作流**不自动清理 profile**。关闭浏览器后，由用户核对 `PROFILE_DIR` 的 canonical path 与 `SOURCE_PROFILE_DIR` 不同，再通过 Finder/废纸篓等可恢复方式处理。

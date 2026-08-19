@@ -113,7 +113,7 @@ campaign.cjs exit code
 SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
 PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
 export SOURCE_PROFILE_DIR PROFILE_DIR
-cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"
+node scripts/prepare-profile-copy.cjs
 
 # 跑一轮（默认 target=10，蓝V互关 preset）
 NODE_PATH=~/.config/playwright-mcp-server/node_modules \

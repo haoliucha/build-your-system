@@ -45,7 +45,8 @@ Claude 的 `/x:image` 还需要安装 OpenAI Codex 插件并运行 `/codex:setup
   SOURCE_PROFILE_DIR="${SOURCE_PROFILE_DIR:-${X_FOLLOW_SOURCE_PROFILE_DIR:-$HOME/.config/playwright-chrome-profile}}"
   PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
   export SOURCE_PROFILE_DIR PROFILE_DIR
-  cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"
+  X_FOLLOW_SKILL_DIR="/当前 x-follow Skill 目录的绝对路径"
+  node "$X_FOLLOW_SKILL_DIR/scripts/prepare-profile-copy.cjs"
   ```
 
 原始登录态源目录由 `SOURCE_PROFILE_DIR` 指定（兼容 `X_FOLLOW_SOURCE_PROFILE_DIR`；前者优先），默认 `~/.config/playwright-chrome-profile`；`PROFILE_DIR` 默认 `~/.config/playwright-chrome-profile-campaign`。x-follow 复制后直接运行 `run.sh`；它在 canonical 门禁和锁通过后才会安全处理副本的 Singleton。x-follow 运行时强制要求两者的 canonical path 互不重叠：相等、任一是另一方祖先/后代、`..` 归一化后重叠，或经现有 symlink 父目录解析后重叠，都会在获取锁、清理或加载 Playwright 前以 exit 2 拒绝；不存在的 leaf 先从最深现有父目录 realpath。`x-unfollow` 还要求 `MY_HANDLE`，默认数据目录为 `~/.config/x-unfollow-data`，可用 `XU_DATA_DIR` 覆盖。

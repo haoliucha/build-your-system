@@ -146,9 +146,32 @@ release_run_lock() {
   node "$SCRIPTS/lib/run-lock.cjs" release "$NETWORK_LOCK" "$LOCK_TOKEN" "$$" >/dev/null 2>&1 || true
   rm -f "$PID_FILE"
 }
+CURRENT_X_WORKER_PID=""
+run_x_worker() {
+  local worker_pid code
+  "$@" &
+  worker_pid=$!
+  CURRENT_X_WORKER_PID="$worker_pid"
+  wait "$worker_pid"
+  code=$?
+  if [ "$CURRENT_X_WORKER_PID" = "$worker_pid" ]; then CURRENT_X_WORKER_PID=""; fi
+  return "$code"
+}
+forward_worker_signal() {
+  local signal="$1" code="$2" worker_pid="$CURRENT_X_WORKER_PID"
+  # A second signal must not terminate the owner while it is waiting for the inherited
+  # worker's identity cleanup. Only the exact unreaped child recorded from `$!` is targeted.
+  trap '' INT TERM
+  if [[ "$worker_pid" =~ ^[0-9]+$ ]]; then
+    kill -s "$signal" "$worker_pid" 2>/dev/null || true
+    wait "$worker_pid" 2>/dev/null || true
+    CURRENT_X_WORKER_PID=""
+  fi
+  exit "$code"
+}
 trap release_run_lock EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'forward_worker_signal INT 130' INT
+trap 'forward_worker_signal TERM 143' TERM
 followed() {
   TRACKER_PATH="$TRACKER" node -e '
     try { process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.env.TRACKER_PATH, "utf8")).followed.length)); }
@@ -163,7 +186,7 @@ if [ ! -d "$PROFILE_DIR" ]; then
   say "FATAL: profile copy not found: PROFILE_DIR=$PROFILE_DIR"
   say "Close any browser using the source profile: SOURCE_PROFILE_DIR=$SOURCE_PROFILE_DIR"
   say "export SOURCE_PROFILE_DIR=\"$SOURCE_PROFILE_DIR\" PROFILE_DIR=\"$PROFILE_DIR\""
-  say "cp -R \"$SOURCE_PROFILE_DIR\" \"$PROFILE_DIR\""
+  say "node \"$SCRIPTS/prepare-profile-copy.cjs\""
   say "bash \"$SKILL_DIR/run.sh\""
   exit 3
 fi
@@ -171,7 +194,7 @@ cleanup_locks
 
 # ---- Phase 1: smoke test ---------------------------------------------------
 say "smoke-test..."
-MY_HANDLE="$MY_HANDLE" PROFILE_DIR="$PROFILE_DIR" node "$SCRIPTS/smoke-test.cjs"
+run_x_worker env MY_HANDLE="$MY_HANDLE" PROFILE_DIR="$PROFILE_DIR" node "$SCRIPTS/smoke-test.cjs"
 SMOKE=$?
 if [ "$SMOKE" -ne 0 ]; then
   say "smoke-test RED (exit $SMOKE) — refusing to launch. Fix env (login/profile) and retry."
@@ -226,7 +249,7 @@ harvest_round() {
     local subset; subset=$(select_queries "$round")
     say "harvest[$round]: rotating slice [$subset] (split into ${QUERIES_PER_ROUND}-query sessions)"
     status harvest "round $round"
-    PROFILE_DIR="$PROFILE_DIR" node "$SCRIPTS/harvest.cjs" search-multi "$subset" "$HARVEST_SCROLLS" > "$out" 2>"$JOB_DIR/harvest.err"
+    run_x_worker env PROFILE_DIR="$PROFILE_DIR" node "$SCRIPTS/harvest.cjs" search-multi "$subset" "$HARVEST_SCROLLS" > "$out" 2>"$JOB_DIR/harvest.err"
     local c; c=$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).count || 0); } catch { console.log(0); }' "$out")
     say "  -> $c raw merged (deduped across queries)"
   fi
@@ -286,7 +309,7 @@ while [ "$(followed)" -lt "$TARGET" ]; do
   cleanup_locks
   say "campaign attempt $attempt (followed=$(followed)/$TARGET)..."
   status campaign "attempt $attempt"
-  TARGET="$TARGET" MY_HANDLE="$MY_HANDLE" FERS_MAX="$FERS_MAX" \
+  run_x_worker env TARGET="$TARGET" MY_HANDLE="$MY_HANDLE" FERS_MAX="$FERS_MAX" \
     node "$SCRIPTS/campaign.cjs" >>"$JOB_DIR/campaign.stdout.log" 2>&1
   code=$?
   say "campaign exited code=$code followed=$(followed)/$TARGET"
@@ -305,7 +328,7 @@ for vpass in 1 2 3; do
   cleanup_locks
   say "verify pass $vpass: checking followed_assumed..."
   status verify "pass $vpass"
-  FIX_TRACKER=1 PROFILE_DIR="$PROFILE_DIR" TRACKER_PATH="$TRACKER" \
+  run_x_worker env FIX_TRACKER=1 PROFILE_DIR="$PROFILE_DIR" TRACKER_PATH="$TRACKER" \
     node "$SCRIPTS/verify-follows.cjs" --assumed >"$JOB_DIR/verify-$vpass.json" 2>>"$JOB_DIR/verify.err"
   FAILED=$(node -e 'try { console.log((JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).failed || []).length); } catch { console.log(0); }' "$JOB_DIR/verify-$vpass.json")
   say "  unconfirmed=$FAILED, followed now $(followed)/$TARGET"
@@ -315,7 +338,7 @@ for vpass in 1 2 3; do
   if [ "$(followed)" -lt "$TARGET" ] && [ "$(queue_size)" -gt 0 ]; then
     cleanup_locks
     say "top-up campaign after verify (followed=$(followed)/$TARGET)..."
-    POST_CLICK_SETTLE_MS="${POST_CLICK_SETTLE_MS:-6000}" TARGET="$TARGET" MY_HANDLE="$MY_HANDLE" FERS_MAX="$FERS_MAX" \
+    run_x_worker env POST_CLICK_SETTLE_MS="${POST_CLICK_SETTLE_MS:-6000}" TARGET="$TARGET" MY_HANDLE="$MY_HANDLE" FERS_MAX="$FERS_MAX" \
       node "$SCRIPTS/campaign.cjs" >>"$JOB_DIR/campaign.stdout.log" 2>&1
     tcode=$?
     # SAFETY: a real anomaly during the verify top-up must HALT too (not just the main loop).
