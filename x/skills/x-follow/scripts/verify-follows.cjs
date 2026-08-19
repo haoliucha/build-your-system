@@ -16,11 +16,15 @@
 
 const fs = require('fs');
 const path = require('path');
-const { chromium } = require('playwright');
 const { gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
+const { prepareXFacingRuntime } = require(path.join(__dirname, 'lib', 'runtime-gate.cjs'));
 
 const PROFILE_DIR = process.env.PROFILE_DIR || `${process.env.HOME}/.config/playwright-chrome-profile-campaign`;
-const TRACKER_PATH = process.env.TRACKER_PATH || path.resolve('tracker.json');
+let RUNTIME;
+try { RUNTIME = prepareXFacingRuntime(process.env).state; }
+catch (error) { console.error(`FATAL: ${error.message}`); process.exit(2); }
+const { chromium } = require('playwright');
+const TRACKER_PATH = RUNTIME.trackerPath;
 const FIX_TRACKER = process.env.FIX_TRACKER === '1';
 const argv = process.argv.slice(2);
 

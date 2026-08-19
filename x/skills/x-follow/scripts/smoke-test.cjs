@@ -6,9 +6,13 @@
 
 const path = require('path');
 const fs = require('fs');
-const { chromium } = require('playwright');
 const { detectAnomaly } = require(path.join(__dirname, 'lib', 'anomaly.cjs'));
 const { gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
+const { prepareXFacingRuntime } = require(path.join(__dirname, 'lib', 'runtime-gate.cjs'));
+
+try { prepareXFacingRuntime(process.env); }
+catch (error) { console.error(`FATAL: ${error.message}`); process.exit(2); }
+const { chromium } = require('playwright');
 
 const PROFILE_DIR = process.env.PROFILE_DIR || `${process.env.HOME}/.config/playwright-chrome-profile-campaign`;
 const MY_HANDLE = process.env.MY_HANDLE || '';

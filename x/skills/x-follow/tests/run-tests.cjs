@@ -17,7 +17,8 @@ const { parseCount, isCryptoHandle, backoffMs, decide, CRYPTO_TOKENS } = require
 const { buildSkipSet, classifyReason, softRejectNowPasses } = require(path.join(SCRIPTS, 'lib', 'skipset.cjs'));
 const { classifyAnomaly } = require(path.join(SCRIPTS, 'lib', 'anomaly.cjs'));
 const { resolveCommentPolicy } = require(path.join(SCRIPTS, 'lib', 'comment-policy.cjs'));
-const { acquireLock, releaseLock } = require(path.join(SCRIPTS, 'lib', 'run-lock.cjs'));
+const { acquireLock, releaseLock, acquireOrInheritLock, installLeaseCleanup } = require(path.join(SCRIPTS, 'lib', 'run-lock.cjs'));
+const { resolveRuntimeState } = require(path.join(SCRIPTS, 'lib', 'runtime-state.cjs'));
 
 let pass = 0, fail = 0;
 function test(name, fn) { try { fn(); console.log(`  ✅ ${name}`); pass++; } catch (e) { console.log(`  ❌ ${name}\n     ${e.message}`); fail++; } }
@@ -273,8 +274,9 @@ test('invalid comment boolean fails closed', () => {
   assert.throws(() => resolveCommentPolicy({ COMMENT_AFTER_FOLLOW: 'yes', ALLOW_COMMENT_AFTER_FOLLOW: '1' }), /must be true, false, 1, or 0/);
 });
 test('campaign direct invocation rejects an unapproved comment before browser startup', () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-comment-policy-'));
   const result = spawnSync('node', [path.join(SCRIPTS, 'campaign.cjs')], {
-    env: { ...process.env, TARGET: '1', COMMENT_AFTER_FOLLOW: 'true', ALLOW_COMMENT_AFTER_FOLLOW: '' },
+    env: { ...process.env, TARGET: '1', X_FOLLOW_DATA_DIR: dataDir, COMMENT_AFTER_FOLLOW: 'true', ALLOW_COMMENT_AFTER_FOLLOW: '' },
     encoding: 'utf8',
   });
   assert.strictEqual(result.status, 2);
@@ -308,8 +310,137 @@ test('stale lock is recovered before acquiring', () => {
   fs.writeFileSync(lockPath, JSON.stringify({ pid: 99999999, token: 'stale', jobDir: '/old', startedAt: '2026-08-01T00:00:00.000Z' }));
   const lock = acquireLock(lockPath, { pid: process.pid, token: 'fresh', jobDir: '/new', startedAt: '2026-08-19T00:00:00.000Z' });
   assert.strictEqual(lock.recovered.token, 'stale');
-  assert.strictEqual(JSON.parse(fs.readFileSync(lockPath, 'utf8')).token, 'fresh');
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(lockPath, 'owner.json'), 'utf8')).token, 'fresh');
   releaseLock(lockPath, lock.token);
+});
+
+test('lock stores its owner JSON atomically inside the lock directory', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-layout-'));
+  const lockPath = path.join(d, 'network-run.lock');
+  const lock = acquireLock(lockPath, { pid: process.pid, token: 'layout', jobDir: '/layout', startedAt: '2026-08-19T00:00:00.000Z' });
+  assert.ok(fs.statSync(lockPath).isDirectory());
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(lockPath, 'owner.json'), 'utf8')), {
+    pid: process.pid, token: 'layout', jobDir: '/layout', startedAt: '2026-08-19T00:00:00.000Z',
+  });
+  releaseLock(lockPath, lock.token);
+});
+
+function concurrentLockResults(lockPath, count) {
+  const helper = path.join(SCRIPTS, 'lib', 'run-lock.cjs');
+  const child = `
+    const { acquireLock, releaseLock } = require(${JSON.stringify(helper)});
+    const lockPath = process.argv[1];
+    try {
+      const lock = acquireLock(lockPath, { jobDir: process.argv[2] });
+      process.stdout.write('ok\\n');
+      process.on('SIGTERM', () => { releaseLock(lockPath, lock.token); process.exit(0); });
+      setInterval(() => {}, 1000);
+    } catch (error) { process.stdout.write('blocked\\n'); process.exit(2); }
+  `;
+  const coordinator = `
+    const { spawn } = require('child_process');
+    const children = Array.from({ length: Number(process.argv[2]) }, () => spawn(process.execPath, ['-e', process.argv[1], process.argv[3], '/job'], { stdio: ['ignore', 'pipe', 'ignore'] }));
+    const results = [];
+    let done = 0;
+    for (const child of children) child.stdout.on('data', chunk => { results.push(chunk.toString().trim()); if (++done === children.length) { for (const c of children) c.kill('SIGTERM'); } });
+    Promise.all(children.map(child => new Promise(resolve => child.on('exit', resolve)))).then(() => process.stdout.write(JSON.stringify(results)));
+  `;
+  return JSON.parse(execFileSync('node', ['-e', coordinator, child, String(count), lockPath], { encoding: 'utf8' }));
+}
+test('multiple live contenders have exactly one lock winner', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-race-'));
+  const results = concurrentLockResults(path.join(d, 'network-run.lock'), 6);
+  assert.strictEqual(results.filter(result => result === 'ok').length, 1);
+});
+test('multiple stale recoverers have exactly one lock winner', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-stale-race-'));
+  const lockPath = path.join(d, 'network-run.lock');
+  fs.mkdirSync(lockPath);
+  fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({ pid: 99999999, token: 'stale', jobDir: '/old', startedAt: '2026-08-01T00:00:00.000Z' }));
+  const results = concurrentLockResults(lockPath, 6);
+  assert.strictEqual(results.filter(result => result === 'ok').length, 1);
+});
+test('owner signal cleanup only removes its own lock token', () => {
+  const helper = path.join(SCRIPTS, 'lib', 'run-lock.cjs');
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-signal-'));
+    const lockPath = path.join(d, 'network-run.lock');
+    const script = `
+      const { acquireOrInheritLock, installLeaseCleanup } = require(${JSON.stringify(helper)});
+      const lease = acquireOrInheritLock({ lockPath: process.argv[1], jobDir: '/signal' });
+      installLeaseCleanup(lease);
+      process.kill(process.pid, process.argv[2]);
+      setTimeout(() => process.exit(99), 100);
+    `;
+    const result = spawnSync('node', ['-e', script, lockPath, signal], { encoding: 'utf8' });
+    assert.strictEqual(result.status, signal === 'SIGINT' ? 130 : 143);
+    assert.ok(!fs.existsSync(lockPath), signal);
+  }
+});
+test('inherited child token never releases its parent lock', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-inherited-'));
+  const lockPath = path.join(d, 'network-run.lock');
+  const parent = acquireLock(lockPath, { pid: process.pid, token: 'parent', jobDir: '/parent' });
+  const helper = path.join(SCRIPTS, 'lib', 'run-lock.cjs');
+  const script = `
+    const { acquireOrInheritLock, installLeaseCleanup } = require(${JSON.stringify(helper)});
+    const lease = acquireOrInheritLock({ lockPath: process.env.X_FOLLOW_NETWORK_LOCK, jobDir: '/child', env: process.env });
+    installLeaseCleanup(lease);
+  `;
+  const result = spawnSync('node', ['-e', script], { env: { ...process.env, X_FOLLOW_NETWORK_LOCK: lockPath, X_FOLLOW_NETWORK_LOCK_TOKEN: parent.token }, encoding: 'utf8' });
+  assert.strictEqual(result.status, 0);
+  assert.ok(fs.existsSync(lockPath));
+  assert.strictEqual(releaseLock(lockPath, parent.token), true);
+});
+
+group('runtime state resolver');
+test('runtime state defaults under the x-follow data directory', () => {
+  const state = resolveRuntimeState({ HOME: '/home/test' });
+  assert.deepStrictEqual(state, {
+    dataDir: '/home/test/.config/x-follow-data', runId: 'current', jobDir: '/home/test/.config/x-follow-data/runs/current',
+    queuePath: '/home/test/.config/x-follow-data/runs/current/queue.json', trackerPath: '/home/test/.config/x-follow-data/runs/current/tracker.json',
+    logPath: '/home/test/.config/x-follow-data/runs/current/campaign.log', alertPath: '/home/test/.config/x-follow-data/runs/current/ALERT.txt',
+    statusPath: '/home/test/.config/x-follow-data/runs/current/status.json', skipGlob: '/home/test/.config/x-follow-data/runs/*/tracker.json',
+    lockPath: '/home/test/.config/x-follow-data/network-run.lock',
+  });
+});
+test('runtime state preserves explicit JOB_DIR and file paths', () => {
+  const state = resolveRuntimeState({ HOME: '/home/test', X_FOLLOW_DATA_DIR: '/data', X_FOLLOW_RUN_ID: 'ignored', JOB_DIR: '/job', QUEUE_PATH: '/queue', TRACKER_PATH: '/tracker', LOG_PATH: '/log', ALERT_PATH: '/alert', STATUS_PATH: '/status', SKIP_GLOB: '/skip/*.json' });
+  assert.strictEqual(state.jobDir, '/job');
+  assert.strictEqual(state.queuePath, '/queue');
+  assert.strictEqual(state.trackerPath, '/tracker');
+  assert.strictEqual(state.skipGlob, '/skip/*.json');
+});
+test('runtime state rejects unsafe run ids', () => {
+  for (const runId of ['.', '..', '../bad', 'bad/name', 'bad name']) assert.throws(() => resolveRuntimeState({ HOME: '/home/test', X_FOLLOW_RUN_ID: runId }), /safe single path segment/);
+});
+
+group('Playwright entry lock gates');
+const PLAYWRIGHT_ENTRIES = [
+  ['campaign.cjs', ['TARGET=1']],
+  ['smoke-test.cjs', []],
+  ['harvest.cjs', ['search', 'offline']],
+  ['snapshot-following.cjs', ['offline']],
+  ['verify-follows.cjs', ['offline']],
+];
+test('every Playwright entry rejects an active lock before loading playwright', () => {
+  const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-fake-playwright-'));
+  const fakeModule = path.join(fakeRoot, 'playwright');
+  fs.mkdirSync(fakeModule);
+  const marker = path.join(fakeRoot, 'playwright-loaded');
+  fs.writeFileSync(path.join(fakeModule, 'index.js'), `require('fs').writeFileSync(${JSON.stringify(marker)}, 'loaded'); throw new Error('fake playwright loaded');`);
+  for (const [entry, args] of PLAYWRIGHT_ENTRIES) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-entry-lock-'));
+    const lockPath = path.join(dataDir, 'network-run.lock');
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({ pid: process.pid, token: entry, jobDir: '/other', startedAt: '2026-08-19T00:00:00.000Z' }));
+    const env = { ...process.env, NODE_PATH: fakeRoot, X_FOLLOW_DATA_DIR: dataDir };
+    if (entry === 'campaign.cjs') env.TARGET = '1';
+    const result = spawnSync('node', [path.join(SCRIPTS, entry), ...args.filter(arg => !arg.includes('='))], { env, encoding: 'utf8' });
+    assert.strictEqual(result.status, 2, entry);
+    assert.match(result.stderr, /network run lock already active/, entry);
+    assert.ok(!fs.existsSync(marker), `${entry} loaded playwright`);
+  }
 });
 
 group('build-queue historical skip glob');

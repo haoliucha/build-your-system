@@ -25,18 +25,26 @@ const { gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
 const { CRYPTO_TOKENS } = require(path.join(__dirname, 'lib', 'filters.cjs'));
 const { generateComment } = require(path.join(__dirname, 'lib', 'comment-generator.cjs'));
 const { resolveCommentPolicy } = require(path.join(__dirname, 'lib', 'comment-policy.cjs'));
-const { acquireLock, releaseLock, readLock, isPidActive } = require(path.join(__dirname, 'lib', 'run-lock.cjs'));
+const { prepareXFacingRuntime } = require(path.join(__dirname, 'lib', 'runtime-gate.cjs'));
+
+let RUNTIME;
+try {
+  RUNTIME = prepareXFacingRuntime(process.env).state;
+} catch (error) {
+  console.error(`FATAL: ${error.message}`);
+  process.exit(2);
+}
 
 // ============ CONFIG ============
 const CFG = {
   TARGET: parseInt(process.env.TARGET || '0', 10),
   PROFILE_DIR: process.env.PROFILE_DIR || `${process.env.HOME}/.config/playwright-chrome-profile-campaign`,
   MY_HANDLE: process.env.MY_HANDLE || '',
-  QUEUE_PATH: process.env.QUEUE_PATH || path.resolve('queue.json'),
-  TRACKER_PATH: process.env.TRACKER_PATH || path.resolve('tracker.json'),
-  LOG_PATH: process.env.LOG_PATH || path.resolve('campaign.log'),
-  ALERT_PATH: process.env.ALERT_PATH || path.resolve('ALERT.txt'),
-  STATUS_PATH: process.env.STATUS_PATH || (process.env.JOB_DIR ? path.join(process.env.JOB_DIR, 'status.json') : path.resolve('status.json')),
+  QUEUE_PATH: RUNTIME.queuePath,
+  TRACKER_PATH: RUNTIME.trackerPath,
+  LOG_PATH: RUNTIME.logPath,
+  ALERT_PATH: RUNTIME.alertPath,
+  STATUS_PATH: RUNTIME.statusPath,
 
   VERIFIED_REQUIRED: process.env.VERIFIED_REQUIRED !== 'false',
   FOLLOWING_GT_FOLLOWERS: process.env.FOLLOWING_GT_FOLLOWERS !== 'false',
@@ -75,37 +83,6 @@ const CFG = {
 
 try {
   CFG.COMMENT_AFTER_FOLLOW = resolveCommentPolicy(process.env).enabled;
-} catch (error) {
-  console.error(`FATAL: ${error.message}`);
-  process.exit(2);
-}
-
-let directRunLock = null;
-function ensureNetworkRunLock() {
-  const dataDir = process.env.X_FOLLOW_DATA_DIR || path.join(process.env.HOME || '', '.config', 'x-follow-data');
-  const lockPath = process.env.X_FOLLOW_NETWORK_LOCK || path.join(dataDir, 'network-run.lock');
-  const inheritedToken = process.env.X_FOLLOW_NETWORK_LOCK_TOKEN;
-  const inherited = inheritedToken && readLock(lockPath);
-  if (inherited && inherited.token === inheritedToken && isPidActive(inherited.pid)) return;
-
-  directRunLock = acquireLock(lockPath, {
-    pid: process.pid,
-    jobDir: process.env.JOB_DIR || path.dirname(CFG.TRACKER_PATH),
-  });
-  const cleanup = () => {
-    if (directRunLock) releaseLock(lockPath, directRunLock.token);
-  };
-  process.once('exit', cleanup);
-  ['SIGINT', 'SIGTERM'].forEach(signal => process.once(signal, () => {
-    cleanup();
-    process.exit(signal === 'SIGINT' ? 130 : 143);
-  }));
-}
-
-try {
-  // Direct campaign execution has no run.sh wrapper, so it acquires its own lock before
-  // Playwright is required. Wrapped execution verifies the parent run.sh token instead.
-  ensureNetworkRunLock();
 } catch (error) {
   console.error(`FATAL: ${error.message}`);
   process.exit(2);

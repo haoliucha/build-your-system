@@ -10,8 +10,8 @@
 // and exclude self.
 
 const path = require('path');
-const { chromium } = require('playwright');
 const { gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
+const { prepareXFacingRuntime } = require(path.join(__dirname, 'lib', 'runtime-gate.cjs'));
 
 const PROFILE_DIR = process.env.PROFILE_DIR || `${process.env.HOME}/.config/playwright-chrome-profile-campaign`;
 const handle = process.argv[2];
@@ -19,6 +19,9 @@ if (!handle) {
   console.error('Usage: node snapshot-following.cjs <handle>  (e.g. haoliucha)');
   process.exit(2);
 }
+try { prepareXFacingRuntime(process.env); }
+catch (error) { console.error(`FATAL: ${error.message}`); process.exit(2); }
+const { chromium } = require('playwright');
 
 const EXTRACT_JS = `(async (me) => {
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));

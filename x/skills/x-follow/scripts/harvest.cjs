@@ -28,8 +28,8 @@
 //        orchestrator can cool down instead of mis-counting it as a dry (pool-exhausted) round.
 
 const path = require('path');
-const { chromium } = require('playwright');
 const { gotoRobust, sleep } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
+const { prepareXFacingRuntime } = require(path.join(__dirname, 'lib', 'runtime-gate.cjs'));
 
 const PROFILE_DIR = process.env.PROFILE_DIR || `${process.env.HOME}/.config/playwright-chrome-profile-campaign`;
 const argv = process.argv.slice(2);
@@ -39,6 +39,9 @@ function fail(msg) { console.error(msg); process.exit(2); }
 if (!['search', 'search-multi', 'replies', 'followers'].includes(mode)) {
   fail('Usage: harvest.cjs search|search-multi|replies|followers ...');
 }
+try { prepareXFacingRuntime(process.env); }
+catch (error) { console.error(`FATAL: ${error.message}`); process.exit(2); }
+const { chromium } = require('playwright');
 
 // ---- build the list of navigation targets (one per query / status / list) ----
 const ARTICLE_SEL = 'article[role="article"]';

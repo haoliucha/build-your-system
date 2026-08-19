@@ -33,6 +33,7 @@ const fs = require('fs');
 const path = require('path');
 const { isCryptoHandle } = require(path.join(__dirname, 'lib', 'filters.cjs'));
 const { buildSkipSet, buildSkipSetFromPaths } = require(path.join(__dirname, 'lib', 'skipset.cjs'));
+const { resolveRuntimeState } = require(path.join(__dirname, 'lib', 'runtime-state.cjs'));
 
 // Expand a shell-style glob (only `*` in the basename direction) WITHOUT a shell, so a
 // crafted SKIP_GLOB can never inject a command. Node 22's fs.globSync handles `*`/`**`.
@@ -41,11 +42,13 @@ function expandGlob(pattern) {
   catch { return []; }
 }
 
-const JOB = process.env.JOB_DIR || process.cwd();
+let RUNTIME;
+try { RUNTIME = resolveRuntimeState(process.env); }
+catch (error) { process.stderr.write(`FATAL: ${error.message}\n`); process.exit(2); }
+const JOB = RUNTIME.jobDir;
 const NOCRYPTO = process.env.NOCRYPTO !== '0';
 const DROP_NONBLUE = process.env.DROP_NONBLUE === '1';
-const X_FOLLOW_DATA_DIR = process.env.X_FOLLOW_DATA_DIR || path.join(process.env.HOME || '', '.config', 'x-follow-data');
-const SKIP_GLOB = process.env.SKIP_GLOB || path.join(X_FOLLOW_DATA_DIR, 'runs', '*', 'tracker.json');
+const SKIP_GLOB = RUNTIME.skipGlob;
 const SOFT_TTL_DAYS = parseInt(process.env.SOFT_TTL_DAYS || '30', 10);
 // Current campaign thresholds, mirrored here so the skip-set can do THRESHOLD-AWARE release:
 // accounts soft-rejected under an older, stricter FERS_MAX / ratio whose stored stats now pass
