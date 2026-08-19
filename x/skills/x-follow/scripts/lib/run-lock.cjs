@@ -157,10 +157,10 @@ function acquireTakeover(markerPath, replacement, retry = 0) {
     }
     if (isPidActive(current.record.pid)) throw new Error(`network run lock coordination takeover already active (pid=${current.record.pid})`);
     const isolated = isolateDirectory(takeoverPath, 'stale');
-    try { createDirectoryLease(takeoverPath, record); }
-    catch (error) { throw error; }
-    cleanupIsolated(isolated);
-    return { takeoverPath, record };
+    try {
+      createDirectoryLease(takeoverPath, record);
+      return { takeoverPath, record };
+    } finally { cleanupIsolated(isolated); }
   } finally {
     // The claim moves with a successfully isolated directory. If recovery aborted before
     // isolation, removing only this caller's claim lets a later owner retry safely.
@@ -185,8 +185,8 @@ function replaceStaleMarker(markerPath, observed, replacement) {
     }
     if (isPidActive(current.record.pid)) throw new Error(`network run lock coordination already active (pid=${current.record.pid})`);
     const isolated = isolateDirectory(markerPath, 'stale');
-    createDirectoryLease(markerPath, replacement);
-    cleanupIsolated(isolated);
+    try { createDirectoryLease(markerPath, replacement); }
+    finally { cleanupIsolated(isolated); }
   } finally {
     releaseTakeover(takeover);
   }
@@ -243,9 +243,10 @@ function acquireMainUnderCoordination(lockPath, record, expected = null) {
     throw new Error('network run lock changed during stale recovery');
   }
   const isolated = isolateDirectory(lockPath, 'stale');
-  createMainLock(lockPath, record);
-  cleanupIsolated(isolated);
-  return { ...record, recovered: current.record };
+  try {
+    createMainLock(lockPath, record);
+    return { ...record, recovered: current.record };
+  } finally { cleanupIsolated(isolated); }
 }
 
 function acquireLock(lockPath, details = {}, retry = 0) {

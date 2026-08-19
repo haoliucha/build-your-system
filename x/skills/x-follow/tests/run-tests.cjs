@@ -556,6 +556,92 @@ test('long owner tokens do not lengthen isolated paths and successful isolation 
   assert.strictEqual(releaseLock(lockPath, replacement.token), true);
   assert.deepStrictEqual(fs.readdirSync(d), []);
 });
+function staleRecord(token = 'stale-owner') {
+  return { pid: 99999999, token, jobDir: '/old', startedAt: '2026-08-01T00:00:00.000Z' };
+}
+function assertNoIsolatedLockArtifacts(directory) {
+  const artifacts = fs.readdirSync(directory).filter(name => /\.stale-|\.released-|\.takeover(?:\.|$)/.test(name));
+  assert.deepStrictEqual(artifacts, []);
+}
+function withOwnerPublishFailure(canonicalPath, action) {
+  const originalWrite = fs.writeFileSync;
+  fs.writeFileSync = (file, ...args) => {
+    if (String(file).startsWith(`${canonicalPath}${path.sep}owner.json.`)) throw new Error('simulated canonical publish failure');
+    return originalWrite(file, ...args);
+  };
+  try { action(); } finally { fs.writeFileSync = originalWrite; }
+}
+test('failed main lease publication cleans its isolated stale directory', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-main-isolation-failure-'));
+  const lockPath = path.join(d, 'network-run.lock');
+  fs.mkdirSync(lockPath);
+  fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify(staleRecord()));
+  withOwnerPublishFailure(lockPath, () => {
+    assert.throws(() => acquireLock(lockPath, { jobDir: '/new' }), /simulated canonical publish failure/);
+  });
+  assertNoIsolatedLockArtifacts(d);
+  assert.deepStrictEqual(fs.readdirSync(d), []);
+});
+test('failed recovery marker publication cleans its isolated stale directory', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-marker-isolation-failure-'));
+  const lockPath = path.join(d, 'network-run.lock');
+  const marker = `${lockPath}.recovery`;
+  fs.mkdirSync(marker);
+  fs.writeFileSync(path.join(marker, 'owner.json'), JSON.stringify(staleRecord('stale-marker')));
+  withOwnerPublishFailure(marker, () => {
+    assert.throws(() => acquireLock(lockPath, { jobDir: '/new' }), /simulated canonical publish failure/);
+  });
+  assertNoIsolatedLockArtifacts(d);
+  assert.deepStrictEqual(fs.readdirSync(d), []);
+});
+test('failed takeover publication cleans its isolated stale directory', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-takeover-isolation-failure-'));
+  const lockPath = path.join(d, 'network-run.lock');
+  const marker = `${lockPath}.recovery`;
+  const takeover = `${marker}.takeover`;
+  const oldTakeover = staleRecord('stale-takeover');
+  fs.mkdirSync(marker);
+  fs.writeFileSync(path.join(marker, 'owner.json'), JSON.stringify(staleRecord('stale-marker')));
+  fs.mkdirSync(takeover);
+  fs.writeFileSync(path.join(takeover, 'owner.json'), JSON.stringify(oldTakeover));
+  fs.writeFileSync(leaseIdentityPath(takeover, oldTakeover), 'lease identity\n');
+  withOwnerPublishFailure(takeover, () => {
+    assert.throws(() => acquireCoordination(lockPath, { jobDir: '/new' }), /simulated canonical publish failure/);
+  });
+  assertNoIsolatedLockArtifacts(d);
+  assert.deepStrictEqual(fs.readdirSync(d), [path.basename(marker)]);
+});
+test('stale marker and takeover recovery contention leaves no isolated artifacts', () => {
+  const helper = path.join(SCRIPTS, 'lib', 'run-lock.cjs');
+  const worker = `
+    const { acquireLock } = require(${JSON.stringify(helper)});
+    try { acquireLock(process.argv[1], { jobDir: '/new' }); process.stdout.write('ok'); } catch {}
+  `;
+  const coordinator = `
+    const { spawn } = require('child_process');
+    const worker = process.argv[1], lockPath = process.argv[2];
+    const children = Array.from({ length: 4 }, () => spawn(process.execPath, ['-e', worker, lockPath]));
+    Promise.all(children.map(child => new Promise(resolve => child.on('exit', resolve)))).then(() => process.exit(0));
+  `;
+  for (let i = 0; i < 5; i++) {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-marker-takeover-race-'));
+    const lockPath = path.join(d, 'network-run.lock');
+    const marker = `${lockPath}.recovery`;
+    const takeover = `${marker}.takeover`;
+    const oldTakeover = staleRecord(`stale-takeover-${i}`);
+    fs.mkdirSync(marker);
+    fs.writeFileSync(path.join(marker, 'owner.json'), JSON.stringify(staleRecord(`stale-marker-${i}`)));
+    fs.mkdirSync(takeover);
+    fs.writeFileSync(path.join(takeover, 'owner.json'), JSON.stringify(oldTakeover));
+    fs.writeFileSync(leaseIdentityPath(takeover, oldTakeover), 'lease identity\n');
+    execFileSync('node', ['-e', coordinator, worker, lockPath]);
+    assertNoIsolatedLockArtifacts(d);
+    const owner = inspectLock(lockPath).record;
+    assert.ok(owner);
+    assert.strictEqual(releaseLock(lockPath, owner.token, owner.pid), true);
+    assert.deepStrictEqual(fs.readdirSync(d), []);
+  }
+});
 
 group('runtime state resolver');
 test('runtime state defaults under the x-follow data directory', () => {
