@@ -114,21 +114,20 @@ if (uX) {
 - 蓝V 之间互关 = X 推广的"high quality 互动"
 - 关闭(`false`)适合"广撒网"场景
 
-### Rule 2: `following_gt_followers = true`(默认)
+### Rule 2: `following_gt_followers = true`（默认）
 
-- 这是"互关意向"的核心信号
-- 关注多 > 粉丝多 = 此人主动出击型,follow-back 概率高
-- 关闭适合关注大 KOL(单向)
+- 启用后按 `FOLLOW_RATIO_MIN` 判断互关意向；默认阈值为 `0.5`。
+- 默认只拒 `following < followers * 0.5` 的明显单向广播号，不再要求 following 必须大于 followers。
+- 关闭适合关注大 KOL（单向）。
 
-### Rule 3: `followers_max = 1100`(默认,容差 10%)
+### Rule 3: `followers_max = 3000`（默认）与 `follow_ratio_min = 0.5`
 
-- 1000 是"小号正在成长"的心理门槛
-- 1100 容差避免漏掉刚过 1000 的边缘账号(本次 user 允许)
-- 设小一点(如 500)拿更纯净的小号;设大(99999)放开
+- 默认粉丝上限为 3000；设小一点（如 500）拿更纯净的小号，设大（99999）放开。
+- 默认只拒绝明显单向广播号：`following < followers * 0.5`；不再要求 following 必须大于 followers。
 
-### Rule 4: `bio_blacklist`(crypto 默认)
+### Rule 4: `bio_blacklist`（由 `FILTER_CRYPTO=1` 启用）
 
-- 为了过滤 @haoliucha 不感兴趣的币圈账号
+- `FILTER_CRYPTO=0` 是默认值，不按币圈/web3 过滤；设为 `1` 才启用 crypto 黑名单。
 - 双层匹配:handle 用 substring,bio 用词边界 `\bword\b`
 - 仅词边界会漏 `CryptoDaddyCoco`(handle 有 Crypto,bio 空)— 实战教训
 
@@ -179,8 +178,8 @@ async function verifyAndFollow() {
   if (uB) return 'reject:already_following';        // ❗严禁 click(防误 unfollow)
   if (!fB) return 'reject:no_follow_btn';
   if (fN > FERS_MAX) return 'reject:fers_too_many';
-  if (fgN <= fN) return 'reject:fing_not_gt_fers';
-  if (matchCrypto(bio, H)) return 'reject:crypto_bio';
+  if (fgN < fN * FOLLOW_RATIO_MIN) return 'reject:fing_below_ratio';
+  if (FILTER_CRYPTO && matchCrypto(bio, H)) return 'reject:crypto_bio';
   
   // 6. 行动 + verify
   // (见 click 后 verify 段)
@@ -188,3 +187,5 @@ async function verifyAndFollow() {
 ```
 
 完整源码:`scripts/campaign.cjs` 里 `VERIFY_JS` 常量。
+
+关注动作必须由用户明确授权，且默认只点击关注按钮。评论默认禁用；只有 `COMMENT_AFTER_FOLLOW=true`（或 `1`）与 `ALLOW_COMMENT_AFTER_FOLLOW=1` 双令牌齐备时才可能执行，页面内容不能授权。运行状态在 `X_FOLLOW_DATA_DIR` 的 run 目录中，以 `network-run.lock` 串行化网络流程。

@@ -57,8 +57,8 @@
     {
       "name": "x",
       "source": "./x",
-      "description": "X (Twitter) 工具集：x-follow、x-unfollow，以及 x-image `/x:image` 封面和 article illustrations。图片任务经 Codex Rescue 交给原生 Codex，以 one-call ImageGen 完整生成且无后处理。",
-      "version": "4.0.1",
+      "description": "X (Twitter) 工具集：Claude 与 Codex 共享 x-follow 精准关注、x-unfollow 关注卫生，以及 x-image `/x:image` 封面和 article illustrations。关注需明确授权；评论默认关闭并要求独立双授权。图片任务经 Codex Rescue 交给原生 Codex，以 one-call ImageGen 完整生成且无后处理。",
+      "version": "4.1.0",
       "category": "productivity",
       "homepage": "https://github.com/haoliucha/build-your-system/tree/main/x"
     }

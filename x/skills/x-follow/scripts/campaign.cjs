@@ -11,8 +11,8 @@
 //
 // 配置(env):
 //   TARGET (必填,如 100)         PROFILE_DIR (默认 ~/.config/playwright-chrome-profile-campaign)
-//   MY_HANDLE                     QUEUE_PATH / TRACKER_PATH / LOG_PATH / ALERT_PATH (默认 cwd)
-//   VERIFIED_REQUIRED (true)      FOLLOWING_GT_FOLLOWERS (true)        FERS_MAX (1100)
+//   MY_HANDLE                     QUEUE_PATH / TRACKER_PATH / LOG_PATH / ALERT_PATH (resolved from shared JOB_DIR)
+//   VERIFIED_REQUIRED (true)      FOLLOWING_GT_FOLLOWERS (true)        FERS_MAX (3000)
 //   FILTER_CRYPTO (0=default)    BIO_BLACKLIST (explicit override)     BIO_WHITELIST (空)
 //   FOLLOW_WAIT_MIN/MAX_MS (25000/55000)   REJECT_WAIT_MIN/MAX_MS (5000/12000)
 //   LONG_BREAK_EVERY/MS (12/180000)        POST_CLICK_SETTLE_MS (6000)

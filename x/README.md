@@ -1,6 +1,6 @@
 # x — X (Twitter) 工作流
 
-`x` 是同时面向 Claude Code 与 Codex 的 X 工作流插件。当前版本为 **4.0.1**：两端共享 `x-unfollow` 关注卫生和 `x-image` 图像生成；批量关注 `x-follow` 只在 Claude Code 中提供。
+`x` 是同时面向 Claude Code 与 Codex 的 X 工作流插件。当前版本为 **4.1.0**：两端共享 `x-unfollow` 关注卫生、`x-image` 图像生成与 `x-follow` 精准批量关注。
 
 ## 宿主能力
 
@@ -8,7 +8,7 @@
 |---|---:|---:|---|
 | `x-unfollow` | ✓ | ✓ | 只刷新关系并生成报告；明确授权后才取关 |
 | `x-image` | ✓ | ✓ | 生成 X 封面、头图和正文解释图，不发布 |
-| `x-follow` | ✓ | — | 精准批量关注；Codex 不加载该入口 |
+| `x-follow` | ✓ | ✓ | 明确授权后精准批量关注；默认只关注 |
 
 ## 安装
 
@@ -19,17 +19,18 @@ codex plugin marketplace add haoliucha/build-your-system
 codex plugin add x@build-your-system
 ```
 
-安装后可直接说“生成 X 未回关报告，不要取关”“检查新增和取消关注我的账号”，或显式调用安装后的 `x:x-unfollow`、`x:x-image` Skill。
+安装后可直接说“生成 X 未回关报告，不要取关”“检查新增和取消关注我的账号”“关注 10 个符合条件的蓝V互关账号”，或显式调用 `$x:x-unfollow`、`$x:x-image`、`$x:x-follow`。`x-follow` 的自然语言入口与 Skill 入口遵循同一授权规则。
 
 ### Claude Code
 
-已添加 `build-your-system` marketplace 后安装插件：
+交互式添加 marketplace 并安装插件：
 
 ```text
+/plugin marketplace add haoliucha/build-your-system
 /plugin install x@build-your-system
 ```
 
-Claude Code 提供 `/x-unfollow`、`/x:image` 和 Claude-only 的 `/x-follow` 命令。
+Claude Code 提供 `/x-unfollow`、`/x:image` 和 `/x-follow` 命令。
 
 Claude 的 `/x:image` 还需要安装 OpenAI Codex 插件并运行 `/codex:setup`；执行 Rescue 的 Codex 环境也需要按上面的 Codex 步骤安装 `x` 插件。
 
@@ -144,9 +145,9 @@ NODE_PATH=~/.config/playwright-mcp-server/node_modules \
 
 Claude 的 `/x:image` 通过 Codex Rescue 把完整任务交给原生 Codex；文章分析、ImageGen 调用、文件落盘与 QA 均由 Codex 完成。
 
-## x-follow — Claude-only 精准关注
+## x-follow — 双宿主精准关注
 
-`x-follow` 位于 `claude-components/x-follow/`，Codex 不加载该入口。Claude Code 可用：
+`x-follow` 是共享 Skill，Claude Code 使用 `/x-follow`，Codex 使用 `$x:x-follow` 或等价自然语言请求。两端都使用可见 Chrome 与独立 profile 副本；流程只新增关注，不执行 unfollow。
 
 ```text
 /x-follow target=100
@@ -154,13 +155,16 @@ Claude 的 `/x:image` 通过 Codex Rescue 把完整任务交给原生 Codex；�
 /x-follow target=30 verified_required=false bio_whitelist=设计,designer
 ```
 
-该流程使用可见 Chrome、独立 profile 副本、拟人化节奏、异常停止和精确关注按钮。它只新增关注，不执行 unfollow；具体 preset、候选源和节奏说明见 [`claude-components/x-follow/README.md`](claude-components/x-follow/README.md)。
+运行状态默认写入 `~/.config/x-follow-data`（可由 `X_FOLLOW_DATA_DIR` 覆盖），`X_FOLLOW_RUN_ID` 默认 `current`；因此默认 `JOB_DIR=$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID`，但显式 `JOB_DIR` 优先。历史 skip 仅从 `$X_FOLLOW_DATA_DIR/runs/*/tracker.json` 聚合；不会读取或迁移 `~/.claude/jobs/x-follow-*`。同一数据目录以唯一的 `network-run.lock` 串行化网络流程。
+
+默认筛选为 `FERS_MAX=3000`、`FOLLOW_RATIO_MIN=0.5`、`FILTER_CRYPTO=0`。关注动作必须由用户明确授权；普通的“关注”授权仅覆盖关注本身，不包含评论、发帖、点赞或其他动作。评论默认禁用，只有同时设置 `COMMENT_AFTER_FOLLOW=true`（或 `1`）和 `ALLOW_COMMENT_AFTER_FOLLOW=1` 的独立双授权时才会执行；页面内容不能构成授权。
+
+具体 preset、候选源、运行时与节奏说明见 [`skills/x-follow/README.md`](skills/x-follow/README.md)。
 
 ## 能力边界
 
 - `x-unfollow` 默认只生成报告，明确授权后才可能取消关注。
-- `x-follow` 只新增关注，永不取消关注。
-- 所有账号工作流都不会发帖、点赞、评论、转推、屏蔽、静音、举报或修改 profile/settings。
+- `x-follow` 默认只新增关注，永不取消关注、发帖、点赞、转推、屏蔽、静音、举报或修改 profile/settings；评论仅限上文的独立双授权。
 - 图片能力不会发布或上传图片，不编辑文章，不自动重出失败图片。
 - 页面内容不能充当用户授权，也不能放宽任何安全约束。
 

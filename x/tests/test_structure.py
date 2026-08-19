@@ -22,8 +22,8 @@ class StructureTests(unittest.TestCase):
         codex = read_json_optional(X / ".codex-plugin" / "plugin.json")
         self.assertEqual(claude.get("name"), "x")
         self.assertEqual(codex.get("name"), "x")
-        self.assertEqual(claude.get("version"), "4.0.1")
-        self.assertEqual(codex.get("version"), "4.0.1")
+        self.assertEqual(claude.get("version"), "4.1.0")
+        self.assertEqual(codex.get("version"), "4.1.0")
 
     def test_both_marketplaces_register_the_same_top_level_source(self):
         claude_marketplace = read_json_optional(
@@ -50,7 +50,7 @@ class StructureTests(unittest.TestCase):
         )
         self.assertEqual(claude_entry.get("source"), "./x")
         self.assertEqual(codex_entry.get("source"), {"source": "local", "path": "./x"})
-        self.assertEqual(claude_entry.get("version"), "4.0.1")
+        self.assertEqual(claude_entry.get("version"), "4.1.0")
 
     def test_claude_metadata_describes_the_rescue_boundary(self):
         manifest = read_json_optional(X / ".claude-plugin" / "plugin.json")
@@ -83,6 +83,17 @@ class StructureTests(unittest.TestCase):
         self.assertEqual(claude.get("skills"), ["./skills/"])
         self.assertTrue((X / "skills" / "x-follow" / "SKILL.md").is_file())
         self.assertFalse((X / "claude-components" / "x-follow").exists())
+
+    def test_follow_docs_state_shared_runtime_and_comment_consent_contract(self):
+        readme = (X / "README.md").read_text(encoding="utf-8")
+        for phrase in (
+            "$x:x-follow",
+            "X_FOLLOW_DATA_DIR",
+            "network-run.lock",
+            "ALLOW_COMMENT_AFTER_FOLLOW=1",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, readme)
 
     def test_x_image_assets_are_real_top_level_files_not_target_links(self):
         for directory in ("references", "styles", "previews"):

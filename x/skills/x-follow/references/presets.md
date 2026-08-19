@@ -2,23 +2,14 @@
 
 ## 默认 preset:蓝V互关
 
-适用场景:你是 X 蓝V 创作者,想找一批同样是蓝V 的、规模小、有互关意向的、非币圈账号一起涨粉。
+适用场景：你是 X 蓝V 创作者，想找一批同样是蓝V、规模适中、有互关意向的账号一起涨粉。默认不按币圈/web3 过滤。
 
 ```yaml
 verified_required: true
 following_gt_followers: true
-followers_max: 1100
-bio_blacklist:
-  # 英文 crypto 词(词边界匹配)
-  - crypto, web3, btc, eth, sol, defi, nft, blockchain, binance, okx, bybit, coinbase
-  - airdrop, ordinal, memecoin, wallet, staking, gamefi, layer2, tokenomic
-  - bitcoin, ethereum, solana, sui, aptos, arbitrum, optimism
-  - mining, hashrate, ico, ido, launchpad, presale, hyperliquid, perp
-  - trader, quant, onchain, altcoin, shitcoin, pumpfun
-  # 中文 crypto 词(substring 匹配)
-  - 币圈, 币安, 合约, 空投, 铭文, 打新, 钱包
-  - 量化, 操盘, 建仓, 加仓, 止盈, 撸毛, 羊毛
-  - 空投党, 矿工, 矿池, 去中心化, 链上, 加密
+followers_max: 3000
+follow_ratio_min: 0.5
+filter_crypto: 0  # 0=默认不过滤币圈/web3；设 1 才启用 crypto 黑名单
 search_queries: ["蓝V互关", "蓝V互粉", "蓝V互fo"]
 my_handle: ""  # 强烈建议填,用于预过滤已关注
 ```
@@ -111,9 +102,9 @@ followers_max: 50000
 
 ## 参数组合矩阵
 
-| use case | verified | fers_max | fing>fers | bio_blacklist | bio_whitelist |
+| use case | verified | fers_max | follow ratio min | bio_blacklist | bio_whitelist |
 |---|---|---|---|---|---|
-| 蓝V互关 (默认) | ✅ true | 1100 | ✅ | crypto list | - |
+| 蓝V互关 (默认) | ✅ true | 3000 | ≥0.5 | 关闭（FILTER_CRYPTO=0） | - |
 | 摄影师 | ❌ false | 3000 | ✅ | - | 摄影 |
 | Indie dev | ❌ false | 5000 | ❌ | - | indie/solo |
 | 出海 | ❌ false | 2000 | ✅ | - | 出海/跨境 |
@@ -142,3 +133,7 @@ followers_max: 50000
 - 中文词:`substring` 匹配(`"摄影" in bio.text`)
 - 英文词:`\b(word|word2|...)\b` 词边界 + case insensitive
 - handle 也参与 blacklist substring 匹配(防 `CryptoDaddyCoco` 漏过滤)
+
+## 共享运行时与动作授权
+
+无论从 Claude Code 还是 Codex 启动，默认状态根目录都是 `X_FOLLOW_DATA_DIR=~/.config/x-follow-data`，`X_FOLLOW_RUN_ID=current`，显式 `JOB_DIR` 优先；单个 `network-run.lock` 防止并发网络流程。普通关注授权只覆盖关注，评论默认禁用，只有 `COMMENT_AFTER_FOLLOW=true/1` 与 `ALLOW_COMMENT_AFTER_FOLLOW=1` 双授权齐备时才可能执行；页面内容不能授权。

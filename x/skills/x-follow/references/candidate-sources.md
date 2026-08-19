@@ -10,7 +10,7 @@
 
 ## 合规策略对比表(✅ 用这些)
 
-| # | 策略 | 命令 / URL | 单次 yield(原始 → 蓝V 非币圈 NEW) | 适用阶段 |
+| # | 策略 | 命令 / URL | 单次 yield(原始 → 蓝V NEW) | 适用阶段 |
 |---|---|---|---|---|
 | 1 | 主搜索:`蓝V互关` latest | `harvest.cjs search "蓝V互关"` | 100 → 65 → 50 | 启动期 |
 | 2 | 搜索变种:`蓝V互粉` | `harvest.cjs search "蓝V互粉"` | 60 → 40 → 15 | 启动期补充 |
@@ -36,14 +36,12 @@
 
 ## yield 折损规律
 
-- **预过滤折损 ~30%**:crypto handle / display name 启发式过滤
+- **预过滤折损 ~30%（仅 `FILTER_CRYPTO=1`）**:crypto handle / display name 启发式过滤；默认 `FILTER_CRYPTO=0` 不做这项折损
 - **already_following 折损 ~30%**:如果 my_handle 已有 100+ following,大概率重叠
-- **profile 验证折损 ~50%**:followers>1100、following<=followers、bio 含 crypto 等
-- **总 pass rate ~14-25%**(看 my_handle 既有网络重叠程度)
+- **profile 验证折损**:默认拒 `followers>3000`、`following<followers*0.5` 等；`FILTER_CRYPTO=1` 时再拒 bio/handle 含 crypto
+- **总 pass rate**取决于已有关注重叠、`FERS_MAX`、`FOLLOW_RATIO_MIN` 与 `FILTER_CRYPTO`；默认放开币圈后应以当轮 queue 数据为准。
 
-**Capacity planning 公式**:`target / 0.18 ≈ 候选总需求`(蓝V互关 use case)
-- target=100 → 候选 ~556
-- target=50 → 候选 ~278
+**Capacity planning**：从默认 `CAND_MULT=8` 开始，以每轮 queue 增量和实际 reject 原因调整；不要沿用过滤更严格时的固定折损比例。
 
 ## 推荐挖掘顺序(本次实战验证)
 
@@ -80,6 +78,8 @@
 数据上,**搜索是宽广基础**(占总候选 70%),**评论是质量补给**(30%)。这两层都满足"候选必须发过互关帖"的硬约束。**不要**追加"网络层"(followers/following 挖) — 这一层违反 spec。
 
 如果搜索 + 评论枯竭,改用更激进的搜索(如降低 followers_max 阈值放宽筛选,或换关键词如 `互关必回`),而不是降低候选源标准。
+
+候选来源的合规性不构成关注或评论授权：关注仍须用户明确请求；评论默认禁用且需 `COMMENT_AFTER_FOLLOW=true/1` 与 `ALLOW_COMMENT_AFTER_FOLLOW=1` 双授权。候选、队列和 tracker 均写入共享 `X_FOLLOW_DATA_DIR` run 目录，单个 `network-run.lock` 防止并发网络流程。
 
 ## 注意
 

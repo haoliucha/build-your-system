@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | `assistant/` | Claude + Codex | 2.0.0 | 19 个 Vault 捕获、回顾、任务、时间线、周报与导出 Skill；Claude 命令为薄入口 |
 | `insights/` | Codex-only | 0.4.0 | `$insights` 可恢复 `codex exec` Runner、200 会话 facet、七视角、独立总览和离线 HTML 报告 |
-| `x/` | Claude + Codex | 4.0.1 | 共享 `x-unfollow` 与 `x-image`；`x-follow` 仅 Claude |
+| `x/` | Claude + Codex | 4.1.0 | 共享 `x-unfollow`、`x-image` 与 `x-follow` |
 | `coding-anywhere/` | Claude + Codex | 1.4.0 | mosh、tmux、SSH 中继、DDNS 与 dropfile |
 | `bid/` | Claude + Codex | 0.1.0 | To-B 投标与交付物方法论 |
 | `media/` | Claude + Codex | 1.1.0 | 共享选题、Hook、结构、逐字稿、标题与发布工作流；Claude 命令为薄入口 |
@@ -26,6 +26,13 @@ codex plugin add insights@build-your-system
 
 安装后新建一个 Codex 任务，显式输入 `$insights`。默认使用简体中文，报告写入 `~/.codex/usage-data/insights/report.html`。Claude Code 使用其原生 `/insights`，不会加载顶层 Codex-only 插件。
 
+安装 X 插件的 Claude Code 交互命令：
+
+```text
+/plugin marketplace add haoliucha/build-your-system
+/plugin install x@build-your-system
+```
+
 仓库 marketplace 位于 `.agents/plugins/marketplace.json`，名称为 `build-your-system`。本地开发环境若使用个人 marketplace `local-build-your-system`，仍可从对应本地真源安装各插件；该名称不是公开安装入口。
 
 ## 目录原则
@@ -36,7 +43,7 @@ build-your-system/
 ├── bid/                # 双宿主
 ├── coding-anywhere/    # 双宿主，含 dropfile
 ├── insights/           # Codex-only
-├── x/                  # 双宿主；x-follow 位于 Claude-only 组件
+├── x/                  # 双宿主共享 x-unfollow、x-image、x-follow
 ├── media/              # 双宿主；Claude 命令为薄入口
 ├── goal-creator/       # Claude-only
 └── claude-notify/      # Claude-only

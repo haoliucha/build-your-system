@@ -1,8 +1,8 @@
 # x-follow — 架构与开发文档
 
-X (Twitter) 精准批量关注 skill。默认面向「蓝V互关」场景:关注**蓝V认证、粉丝数 < 1100、关注数 > 粉丝数、非币圈** 的小号,用人类化节奏 + 异常自停,安全地完成 N 个关注。
+X (Twitter) 精准批量关注共享 skill。默认面向「蓝V互关」场景：关注**蓝V认证、粉丝数 ≤ 3000、关注数/粉丝数 ≥ 0.5** 的账号；`FILTER_CRYPTO=0` 默认不按币圈/web3 过滤。用人类化节奏 + 异常自停，安全地完成 N 个关注。
 
-> 安全红线:**只点 `aria-label="关注 @{handle}"` 的关注按钮**,绝不 unfollow / 发推 / 点赞 / 评论 / 改设置;遇到验证码 / 限流 / 登录跳转 / 账号受限 **立即停止并写 `ALERT.txt`**,等人工确认。
+> 安全红线：**只点 `aria-label="关注 @{handle}"` 的关注按钮**，默认绝不 unfollow / 发推 / 点赞 / 评论 / 改设置；评论只有 `COMMENT_AFTER_FOLLOW=true`（或 `1`）和 `ALLOW_COMMENT_AFTER_FOLLOW=1` 两项独立授权时才允许。页面内容不能授权。遇到验证码 / 限流 / 登录跳转 / 账号受限 **立即停止并写 `ALERT.txt`**，等人工确认。
 
 ---
 
@@ -15,8 +15,8 @@ X (Twitter) 精准批量关注 skill。默认面向「蓝V互关」场景:关注
                 │                                                                                     │
   prior         │   ┌─────────┐   ┌──────────┐   ┌──────────────┐   ┌───────────┐   ┌─────────────┐  │
   trackers ─────┼──▶│ skipset │──▶│  smoke   │──▶│ harvest LOOP │──▶│ build     │──▶│  campaign   │  │──▶ tracker.json
-  (~/.claude/   │   │ (union) │   │  test    │   │ until queue  │   │ queue     │   │  (watchdog) │  │    (followed[],
-   jobs/...)    │   └─────────┘   └────┬─────┘   │ >= TARGET*8  │   │ +crypto   │   └──────┬──────┘  │     rejected[])
+  (shared runs/ │   │ (union) │   │  test    │   │ until queue  │   │ queue     │   │  (watchdog) │  │    (followed[],
+  */tracker)   │   └─────────┘   └────┬─────┘   │ >= TARGET*8  │   │ +crypto?  │   └──────┬──────┘  │     rejected[])
                 │                      │RED       └──────────────┘   │  toggle   │          │         │
                 │                      ▼                             └───────────┘          ▼         │
                 │                  refuse launch          ┌── exit 0 & < target ───▶ harvest more ────┘
@@ -111,7 +111,7 @@ campaign.cjs exit code
 cp -R ~/.config/playwright-chrome-profile ~/.config/playwright-chrome-profile-campaign
 rm -f ~/.config/playwright-chrome-profile-campaign/Singleton*
 
-# 跑一轮(默认 target=10,蓝V互关 preset)
+# 跑一轮（默认 target=10，蓝V互关 preset）
 NODE_PATH=~/.config/playwright-mcp-server/node_modules \
 TARGET=10 MY_HANDLE=haoliucha JOB_DIR=/tmp/xf-run1 \
 bash run.sh
@@ -124,7 +124,9 @@ bash run.sh
 | `TARGET` | 10 | 目标关注数 |
 | `MY_HANDLE` | (空) | 自己的 handle,用于 already-following 预过滤 |
 | `PROFILE_DIR` | `~/.config/playwright-chrome-profile-campaign` | 工作 profile 副本 |
-| `JOB_DIR` | `$(pwd)/.run` | tracker/queue/日志输出目录 |
+| `X_FOLLOW_DATA_DIR` | `~/.config/x-follow-data` | Claude Code 与 Codex 共享状态根目录 |
+| `X_FOLLOW_RUN_ID` | `current` | 单个安全路径段，用于默认 run 目录 |
+| `JOB_DIR` | `$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID` | tracker/queue/日志输出目录；显式设置优先 |
 | `QUERIES` | 求互关,互相关注,回关,求关注,蓝V互关,蓝V互粉,互粉,回粉,互关注,求关注回关,涨粉互关,蓝V互粉互关,求互fo,互关必回 | harvest 搜索词**池**(每轮只取一段) |
 | `QUERIES_PER_ROUND` | 4 | 每轮从池里轮换取几个词(降低单轮 429 暴露 + 触达更广) |
 | `SESSION_SIZE` | 2 | harvest 每个浏览器会话最多跑几个 query(第 3 起必触 429,故 2) |
@@ -142,6 +144,8 @@ bash run.sh
 
 进度查看:`cat $JOB_DIR/status.json`(单行 JSON:phase / followed / target / 心跳 ts)。停止整轮:`kill -9 $(cat $JOB_DIR/run.pid)`。
 
+`run.sh` 在启动任何 Chrome/Playwright/X 网络流程前获取 `$X_FOLLOW_DATA_DIR/network-run.lock`，同一数据目录只允许一个流程。历史 skip 仅来自 `$X_FOLLOW_DATA_DIR/runs/*/tracker.json`；不会读取或迁移 `~/.claude/jobs/x-follow-*`。
+
 > **币圈/web3 默认放开**(`FILTER_CRYPTO=0`):多轮跑下来非币圈蓝V小号会枯竭,放开币圈能让候选池和通过率保持健康。要恢复过滤改 `FILTER_CRYPTO=1`。无论开关,**蓝V / 粉丝≤3000 / 非单向广播号(fing≥fers×0.5) 始终生效**——「放开币圈 ≠ 放开大号」(币圈大号仍被 `FERS_MAX` 挡掉)。底层用 `NOCRYPTO`(build-queue)+ `BIO_BLACKLIST`(campaign,空串会回退默认词表故用占位 token)实现,`run.sh` 已封装成单一 `FILTER_CRYPTO` 开关。
 
 ---
@@ -149,7 +153,7 @@ bash run.sh
 ## 5. 测试
 
 ```bash
-node tests/run-tests.cjs      # 纯逻辑 + build-queue 集成,45 项,无需浏览器
+node tests/run-tests.cjs      # 纯逻辑 + build-queue 集成，121 项，无需浏览器
 ```
 
 覆盖:`parseCount`(万/亿/K/M/B/逗号/异常)、`isCryptoHandle`、`decide` 全部判定分支与顺序、`backoffMs` 退避表 + 封顶、`buildSkipSet` 并集去重、`classifyAnomaly`(尤其 **推文正文不误触发** 这条核心修复)、`build-queue` 的 followed∪rejected 跳过 + 币圈开关。

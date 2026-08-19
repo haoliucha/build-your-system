@@ -9,13 +9,17 @@ class CodexPluginTests(unittest.TestCase):
     def test_manifest_contract_uses_the_unified_x_identity(self):
         manifest = read_json_optional(X / ".codex-plugin" / "plugin.json")
         self.assertEqual(manifest.get("name"), "x")
-        self.assertEqual(manifest.get("version"), "4.0.1")
+        self.assertEqual(manifest.get("version"), "4.1.0")
         self.assertEqual(manifest.get("skills"), "./skills/")
         self.assertEqual(manifest.get("author", {}).get("name"), "haoliucha")
         self.assertIn(
             "Image generation",
             manifest.get("interface", {}).get("capabilities", []),
         )
+        self.assertIn("x-follow", manifest.get("description", ""))
+        self.assertIn("明确确认", manifest.get("interface", {}).get("longDescription", ""))
+        self.assertIn("评论", manifest.get("interface", {}).get("longDescription", ""))
+        self.assertTrue(any("关注" in prompt for prompt in manifest.get("interface", {}).get("defaultPrompt", [])))
 
     def test_native_skill_owns_generation_without_nesting(self):
         skill = read_optional(X_IMAGE / "SKILL.md")

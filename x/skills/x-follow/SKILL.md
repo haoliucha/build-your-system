@@ -23,6 +23,7 @@ description: Use when the user explicitly requests a batch-follow campaign on X 
 运行状态默认位于 `$HOME/.config/x-follow-data`：`X_FOLLOW_RUN_ID=current`，因此
 `JOB_DIR=$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID`，历史 skip 默认读取
 `$X_FOLLOW_DATA_DIR/runs/*/tracker.json`。运行 ID 只能是单个安全路径段；不会读取、迁移或删除旧的 Claude job 目录。
+同一数据目录使用唯一的 `$X_FOLLOW_DATA_DIR/network-run.lock` 串行化网络流程；显式 `JOB_DIR` 优先于默认 run 目录。
 
 **任何关注动作必须由用户明确请求。**真实默认值为 `FERS_MAX=3000`、
 `FOLLOW_RATIO_MIN=0.5`、`FILTER_CRYPTO=0`。评论默认关闭；即使用户请求
@@ -54,9 +55,9 @@ description: Use when the user explicitly requests a batch-follow campaign on X 
 | 规则 | 默认 | 含义 |
 |---|---|---|
 | `verified_required` | `true` | 必须是蓝V (X premium 认证账号) |
-| `following_gt_followers` | `true` | following 数 > followers 数(互关意向高) |
+| `following_gt_followers` | `true` | 启用关注/粉丝比筛选；默认 `FOLLOW_RATIO_MIN=0.5`，只拒明显单向广播号 |
 | `followers_max` | `3000` | 粉丝数上限(严格用户可调低) |
-| `bio_blacklist` | crypto/web3/币圈/合约/空投/... | bio 含任一关键词则拒(~60 词)。**经 `run.sh` 跑时默认关闭**(`FILTER_CRYPTO=0`,放开币圈/web3);`FILTER_CRYPTO=1` 开启 |
+| `bio_blacklist` | 空（`FILTER_CRYPTO=0`） | 默认不按币圈/web3 过滤；`FILTER_CRYPTO=1` 启用 crypto 黑名单，显式 `BIO_BLACKLIST` 优先 |
 
 可选附加:`bio_whitelist`(必须含某词)、`my_handle`(预过滤已关注)。
 
@@ -70,6 +71,7 @@ target_count: 100                 # 要新增的关注数
 verified_required: true
 following_gt_followers: true
 followers_max: 3000
+follow_ratio_min: 0.5
 bio_blacklist: [crypto, web3, btc, eth, defi, nft, ...]
 
 # 可选过滤

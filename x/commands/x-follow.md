@@ -1,6 +1,6 @@
 ---
-description: "在 X 上启动一次精准批量关注 campaign。默认 preset 蓝V互关。参数: target / verified_required / followers_max / bio_blacklist 等。详见 skill x-follow"
-argument-hint: "target=100 [verified_required=true] [followers_max=3000] [bio_whitelist=...]"
+description: "在 X 上启动共享 x-follow 精准批量关注 campaign。默认 FERS_MAX=3000、FOLLOW_RATIO_MIN=0.5、FILTER_CRYPTO=0；默认只关注。"
+argument-hint: "target=100 [verified_required=true] [followers_max=3000] [bio_whitelist=...] [FILTER_CRYPTO=0]"
 ---
 
 # /x-follow — X 精准批量关注
@@ -27,6 +27,7 @@ argument-hint: "target=100 [verified_required=true] [followers_max=3000] [bio_wh
 ## 安全保证
 
 skill 内部强制护栏:
-- 永不 unfollow / 发推 / 点赞 / 评论 / 修改 settings
+- 默认只关注；不 unfollow / 发推 / 点赞 / 修改 settings
+- 评论默认禁用；仅在 `COMMENT_AFTER_FOLLOW=true`（或 `1`）与 `ALLOW_COMMENT_AFTER_FOLLOW=1` 均由用户独立明确授权时执行
 - 异常(验证码/限流/登录跳转)立即 STOP + 找用户
 - 严格 click 选择器,不模糊匹配按钮

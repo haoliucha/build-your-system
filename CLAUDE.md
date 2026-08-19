@@ -10,7 +10,7 @@
 | `bid` | ✓ | ✓ | 共享业务实现 |
 | `coding-anywhere` | ✓ | ✓ | 共享远程开发与 dropfile |
 | `insights` | — | ✓ | Codex `$insights`，Claude 使用原生 `/insights` |
-| `x` | ✓ | ✓ | `x-unfollow`、`x-image` 共享；`x-follow` Claude-only |
+| `x` | ✓ | ✓ | 共享 `x-unfollow`、`x-image` 与 `x-follow` |
 | `media` | ✓ | ✓ | 共享 12 个创作 Skill；Claude 命令为薄入口 |
 | `goal-creator` | ✓ | — | 依赖 Claude `/goal` evaluator |
 | `claude-notify` | ✓ | — | 依赖 Claude hooks |
@@ -20,7 +20,7 @@
 - 共享业务只改插件根目录的 `skills/`、`scripts/` 和文档；不要复制到 `targets/codex/`。
 - 宿主适配放在 manifest、薄 command 或 `claude-components/`；通过 `references/host-adaptation.md` 说明来源和参数。
 - `insights/` 是 Codex-only，禁止添加 `.claude-plugin` 或 Claude command。
-- `x/skills/x-unfollow` 是唯一业务源；Codex 不可见 `x-follow`，Claude 通过 `claude-components/x-follow/` 加载。
+- `x/skills/x-unfollow` 与 `x/skills/x-follow` 都是双宿主共享业务源；Claude 的 `/x-follow` 仅为共享 Skill 的薄命令入口。
 - 原始用户会话只读，秘密不得写入缓存；所有 X 对外动作由用户手动执行。
 
 ## 本地验证

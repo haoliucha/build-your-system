@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.1.0 (2026-08-19)
+
+### Shared x-follow release
+
+- 将 `x-follow` 迁移为 Claude Code 与 Codex 共享 Skill；Codex 支持 `$x:x-follow` 与等价自然语言入口。
+- 统一运行状态到 `~/.config/x-follow-data`、默认 `current` run，并以单个 `network-run.lock` 串行化网络流程。
+- 明确默认只关注；评论默认关闭，必须同时提供 `COMMENT_AFTER_FOLLOW=true/1` 与 `ALLOW_COMMENT_AFTER_FOLLOW=1` 的独立双授权。
+- 将默认筛选同步为 `FERS_MAX=3000`、`FOLLOW_RATIO_MIN=0.5`、`FILTER_CRYPTO=0`，补充 Claude Code / Codex 安装和离线测试文档。
+
 ## 4.0.1 (2026-08-19)
 
 ### Documentation and metadata
