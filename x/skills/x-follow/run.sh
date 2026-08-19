@@ -280,14 +280,7 @@ if [ -n "$MY_HANDLE" ]; then
     SNAPSHOT_TMP=""
     exit "$SNAPSHOT_CODE"
   fi
-  node "$SCRIPTS/merge-pre-existing.cjs" "$SNAPSHOT_TMP" "$TRACKER"
-  SNAPSHOT_CODE=$?
-  if [ "$SNAPSHOT_CODE" -ne 0 ]; then
-    rm -f -- "$SNAPSHOT_TMP"
-    SNAPSHOT_TMP=""
-    exit "$SNAPSHOT_CODE"
-  fi
-  mv "$SNAPSHOT_TMP" "$JOB_DIR/my-following.json"
+  node "$SCRIPTS/merge-pre-existing.cjs" "$SNAPSHOT_TMP" "$TRACKER" "$JOB_DIR/my-following.json"
   SNAPSHOT_CODE=$?
   if [ "$SNAPSHOT_CODE" -ne 0 ]; then
     rm -f -- "$SNAPSHOT_TMP"

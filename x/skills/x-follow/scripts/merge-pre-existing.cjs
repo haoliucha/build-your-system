@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// merge-pre-existing.cjs — offline snapshot -> tracker.rejected merge with atomic persistence.
+// merge-pre-existing.cjs — strict offline snapshot -> tracker merge, with optional two-file publication.
 
 const fs = require('fs');
 const path = require('path');
@@ -10,9 +10,12 @@ function emptyTracker() {
 }
 
 function validateSnapshot(snapshot) {
-  if (!snapshot || typeof snapshot !== 'object' || !Array.isArray(snapshot.handles)) {
-    throw new Error('snapshot must be a JSON object with a handles array');
-  }
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) throw new Error('snapshot must be a JSON object');
+  if (Object.prototype.hasOwnProperty.call(snapshot, 'error')) throw new Error(`snapshot reported ${snapshot.error}`);
+  if (!Number.isInteger(snapshot.count) || snapshot.count < 0) throw new Error('snapshot count must be a non-negative integer');
+  if (!Array.isArray(snapshot.handles)) throw new Error('snapshot handles must be an array');
+  if (snapshot.count !== snapshot.handles.length) throw new Error('snapshot count must equal handles.length');
+  if (!snapshot.handles.every(validHandle)) throw new Error('snapshot contains an invalid X handle');
 }
 
 function validateTracker(tracker) {
@@ -50,42 +53,82 @@ function mergePreExisting(snapshot, tracker = emptyTracker()) {
   return { ...tracker, followed: [...tracker.followed], rejected };
 }
 
-function readJson(file) {
-  return JSON.parse(fs.readFileSync(file, 'utf8'));
+function readJson(file, fsModule = fs) {
+  return JSON.parse(fsModule.readFileSync(file, 'utf8'));
 }
 
-function writeJsonAtomic(file, value) {
+function writeJsonAtomic(file, value, fsModule = fs) {
   const directory = path.dirname(file);
   const temporary = path.join(directory, `.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`);
   try {
-    fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
-    fs.renameSync(temporary, file);
+    fsModule.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    fsModule.renameSync(temporary, file);
   } finally {
-    try { fs.unlinkSync(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    try { fsModule.unlinkSync(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
 }
 
-function mergePreExistingFiles(snapshotPath, trackerPath) {
-  const snapshot = readJson(snapshotPath);
+function mergePreExistingFiles(snapshotPath, trackerPath, fsModule = fs) {
+  const snapshot = readJson(snapshotPath, fsModule);
+  validateSnapshot(snapshot);
   let tracker;
-  try { tracker = readJson(trackerPath); }
+  try { tracker = readJson(trackerPath, fsModule); }
   catch (error) {
     if (error.code !== 'ENOENT') throw error;
     tracker = emptyTracker();
   }
   const merged = mergePreExisting(snapshot, tracker);
-  writeJsonAtomic(trackerPath, merged);
+  writeJsonAtomic(trackerPath, merged, fsModule);
+  return merged;
+}
+
+function restoreSnapshot(file, previous, fsModule) {
+  if (previous === null) {
+    try { fsModule.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    return;
+  }
+  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.restore.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    fsModule.writeFileSync(temporary, previous, { flag: 'wx', mode: 0o600 });
+    fsModule.renameSync(temporary, file);
+  } finally {
+    try { fsModule.unlinkSync(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+}
+
+function publishSnapshotAndTracker(stagedSnapshotPath, finalSnapshotPath, trackerPath, fsModule = fs) {
+  const snapshot = readJson(stagedSnapshotPath, fsModule);
+  validateSnapshot(snapshot);
+  let tracker;
+  try { tracker = readJson(trackerPath, fsModule); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    tracker = emptyTracker();
+  }
+  const merged = mergePreExisting(snapshot, tracker);
+  let previousSnapshot = null;
+  try { previousSnapshot = fsModule.readFileSync(finalSnapshotPath); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  fsModule.renameSync(stagedSnapshotPath, finalSnapshotPath);
+  try {
+    writeJsonAtomic(trackerPath, merged, fsModule);
+  } catch (error) {
+    restoreSnapshot(finalSnapshotPath, previousSnapshot, fsModule);
+    throw error;
+  }
   return merged;
 }
 
 if (require.main === module) {
-  const [snapshotPath, trackerPath] = process.argv.slice(2);
+  const [snapshotPath, trackerPath, finalSnapshotPath] = process.argv.slice(2);
   if (!snapshotPath || !trackerPath) {
-    process.stderr.write('FATAL: usage: node merge-pre-existing.cjs <snapshot.json> <tracker.json>\n');
+    process.stderr.write('FATAL: usage: node merge-pre-existing.cjs <snapshot.json> <tracker.json> [final-snapshot.json]\n');
     process.exitCode = 2;
   } else {
     try {
-      const merged = mergePreExistingFiles(snapshotPath, trackerPath);
+      const merged = finalSnapshotPath
+        ? publishSnapshotAndTracker(snapshotPath, finalSnapshotPath, trackerPath)
+        : mergePreExistingFiles(snapshotPath, trackerPath);
       process.stdout.write(`pre-existing following merged: ${merged.rejected.length} total rejects\n`);
     } catch (error) {
       process.stderr.write(`FATAL: ${error.message}\n`);
@@ -94,4 +137,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { emptyTracker, mergePreExisting, mergePreExistingFiles, writeJsonAtomic };
+module.exports = { emptyTracker, mergePreExisting, mergePreExistingFiles, publishSnapshotAndTracker, writeJsonAtomic };

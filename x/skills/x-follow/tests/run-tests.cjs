@@ -621,17 +621,19 @@ test('run.sh keeps waiting for its child after a second TERM interrupts wait', (
   const workerScript = path.join(root, 'worker.cjs');
   const readyPath = path.join(root, 'ready.json');
   const exitPath = path.join(root, 'worker-exit');
+  const signalCountPath = path.join(root, 'signal-count');
   fs.mkdirSync(fakeBin);
   fs.mkdirSync(source);
   fs.mkdirSync(profile);
   fs.writeFileSync(workerScript, `
     const fs = require('fs');
     fs.writeFileSync(process.env.TEST_READY_PATH, JSON.stringify({ pid: process.pid }));
-    let stopping = false;
     process.on('SIGTERM', () => {
-      if (stopping) return;
-      stopping = true;
-      setTimeout(() => { fs.writeFileSync(process.env.TEST_EXIT_PATH, 'done'); process.exit(0); }, 350);
+      let count = 0;
+      try { count = Number(fs.readFileSync(process.env.TEST_SIGNAL_COUNT_PATH, 'utf8')); } catch {}
+      count += 1;
+      fs.writeFileSync(process.env.TEST_SIGNAL_COUNT_PATH, String(count));
+      if (count >= 2) { fs.writeFileSync(process.env.TEST_EXIT_PATH, 'done'); process.exit(0); }
     });
     setInterval(() => {}, 1000);
   `);
@@ -650,14 +652,15 @@ test('run.sh keeps waiting for its child after a second TERM interrupts wait', (
     const fs = require('fs');
     const path = require('path');
     const { spawn } = require('child_process');
-    const [runSh, fakeBin, dataDir, jobDir, source, profile, workerScript, readyPath, exitPath, realNode] = process.argv.slice(1);
+    const [runSh, fakeBin, dataDir, jobDir, source, profile, workerScript, readyPath, exitPath, signalCountPath, realNode] = process.argv.slice(1);
     const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
     const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
     (async () => {
       const owner = spawn('bash', [runSh], { env: {
         ...process.env, PATH: fakeBin + path.delimiter + process.env.PATH,
         REAL_NODE: realNode, TEST_WORKER_SCRIPT: workerScript, TEST_READY_PATH: readyPath,
-        TEST_EXIT_PATH: exitPath, TARGET: '0', X_FOLLOW_DATA_DIR: dataDir,
+        TEST_EXIT_PATH: exitPath, TEST_SIGNAL_COUNT_PATH: signalCountPath,
+        TARGET: '0', X_FOLLOW_DATA_DIR: dataDir,
         X_FOLLOW_RUN_ID: 'double-term', JOB_DIR: jobDir,
         SOURCE_PROFILE_DIR: source, PROFILE_DIR: profile,
       }, stdio: 'ignore' });
@@ -674,18 +677,18 @@ test('run.sh keeps waiting for its child after a second TERM interrupts wait', (
       owner.kill('SIGTERM');
       const result = await Promise.race([ownerExit, delay(2000).then(() => null)]);
       if (!result) { if (alive(workerPid)) process.kill(workerPid, 'SIGKILL'); owner.kill('SIGKILL'); }
-      process.stdout.write(JSON.stringify({ result, elapsed: Date.now() - started, workerAlive: alive(workerPid), exitMarker: fs.existsSync(exitPath) }));
+      process.stdout.write(JSON.stringify({ result, elapsed: Date.now() - started, workerAlive: alive(workerPid), exitMarker: fs.existsSync(exitPath), signalCount: Number(fs.readFileSync(signalCountPath, 'utf8')) }));
     })().catch(error => { process.stderr.write(error.stack + '\\n'); process.exit(1); });
   `;
   const observed = JSON.parse(execFileSync(process.execPath, [
     '-e', coordinator, path.join(__dirname, '..', 'run.sh'), fakeBin, dataDir, jobDir,
-    source, profile, workerScript, readyPath, exitPath, process.execPath,
+    source, profile, workerScript, readyPath, exitPath, signalCountPath, process.execPath,
   ], { encoding: 'utf8', timeout: 10000 }));
   assert.deepStrictEqual(observed.result, { code: 143, signal: null });
-  assert.ok(observed.elapsed >= 300, `owner exited before child cleanup (${observed.elapsed}ms)`);
   assert.ok(observed.elapsed < 1800, `owner did not exit promptly (${observed.elapsed}ms)`);
   assert.strictEqual(observed.workerAlive, false);
   assert.strictEqual(observed.exitMarker, true);
+  assert.strictEqual(observed.signalCount, 2);
 });
 
 test('run.sh queues TERM delivered after fork but before recording the child PID', () => {
@@ -1638,7 +1641,7 @@ test('README stop and empty BIO_BLACKLIST guidance matches safe runtime behavior
 });
 test('README reports the final offline test count', () => {
   const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
-  assert.match(readme, /纯逻辑 \+ 离线集成，169 项，无需浏览器/);
+  assert.match(readme, /纯逻辑 \+ 离线集成，172 项，无需浏览器/);
 });
 
 group('Skill manual workflow static contract');
@@ -1762,10 +1765,7 @@ test('snapshot merge preserves tracker fields and case-insensitively adds only n
     stats: { profiles_checked: 7, follow_success: 1 },
     custom: { keep: true },
   };
-  const merged = mergePreExisting(
-    { handles: ['alice', 'bob', 'Charlie', 'CHARLIE', 'invalid-handle!', '', 42] },
-    tracker,
-  );
+  const merged = mergePreExisting({ count: 4, handles: ['alice', 'bob', 'Charlie', 'CHARLIE'] }, tracker);
   assert.deepStrictEqual(merged, {
     ...tracker,
     rejected: [
@@ -1778,7 +1778,7 @@ test('snapshot merge CLI atomically creates/updates tracker and leaves it unchan
   const jobDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-pre-existing-merge-'));
   const snapshotPath = path.join(jobDir, 'my-following.json');
   const trackerPath = path.join(jobDir, 'tracker.json');
-  fs.writeFileSync(snapshotPath, JSON.stringify({ handles: ['One', 'Two'] }));
+  fs.writeFileSync(snapshotPath, JSON.stringify({ count: 2, handles: ['One', 'Two'] }));
   const created = spawnSync(process.execPath, [preExistingMergeScript, snapshotPath, trackerPath], { encoding: 'utf8' });
   assert.strictEqual(created.status, 0, created.stderr);
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(trackerPath, 'utf8')), {
@@ -1798,6 +1798,76 @@ test('snapshot merge CLI atomically creates/updates tracker and leaves it unchan
   assert.match(invalid.stderr, /FATAL/);
   assert.deepStrictEqual(fs.readFileSync(trackerPath), before);
   assert.deepStrictEqual(fs.readdirSync(jobDir).sort(), ['my-following.json', 'tracker.json']);
+});
+test('snapshot merge rejects error, count mismatch, and invalid handles before touching tracker', () => {
+  const jobDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-pre-existing-strict-'));
+  const snapshotPath = path.join(jobDir, 'snapshot.json');
+  const trackerPath = path.join(jobDir, 'tracker.json');
+  const tracker = { followed: [], rejected: [{ h: 'Keep', r: 'pre_existing_follow' }], stats: {} };
+  fs.writeFileSync(trackerPath, JSON.stringify(tracker));
+  const before = fs.readFileSync(trackerPath);
+  for (const bad of [
+    { count: 0, handles: [], error: 'no_render' },
+    { count: 2, handles: ['OnlyOne'] },
+    { count: 1, handles: ['bad-handle!'] },
+  ]) {
+    fs.writeFileSync(snapshotPath, JSON.stringify(bad));
+    const result = spawnSync(process.execPath, [preExistingMergeScript, snapshotPath, trackerPath], { encoding: 'utf8' });
+    assert.strictEqual(result.status, 2, result.stderr);
+    assert.deepStrictEqual(fs.readFileSync(trackerPath), before);
+  }
+});
+test('snapshot/tracker transaction rolls back when final snapshot publication fails', () => {
+  const { publishSnapshotAndTracker } = require(preExistingMergeScript);
+  const jobDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-snapshot-transaction-'));
+  const stagedSnapshot = path.join(jobDir, '.snapshot.tmp');
+  const finalSnapshot = path.join(jobDir, 'my-following.json');
+  const trackerPath = path.join(jobDir, 'tracker.json');
+  const oldSnapshot = Buffer.from(JSON.stringify({ count: 1, handles: ['Old'] }));
+  const oldTracker = Buffer.from(JSON.stringify({ followed: [], rejected: [], stats: {} }));
+  fs.writeFileSync(stagedSnapshot, JSON.stringify({ count: 1, handles: ['New'] }));
+  fs.writeFileSync(finalSnapshot, oldSnapshot);
+  fs.writeFileSync(trackerPath, oldTracker);
+  const injectedFs = {
+    ...fs,
+    renameSync(source, destination) {
+      if (source === stagedSnapshot && destination === finalSnapshot) throw Object.assign(new Error('injected snapshot publish failure'), { code: 'EIO' });
+      return fs.renameSync(source, destination);
+    },
+  };
+  assert.throws(
+    () => publishSnapshotAndTracker(stagedSnapshot, finalSnapshot, trackerPath, injectedFs),
+    /injected snapshot publish failure/,
+  );
+  assert.deepStrictEqual(fs.readFileSync(finalSnapshot), oldSnapshot);
+  assert.deepStrictEqual(fs.readFileSync(trackerPath), oldTracker);
+});
+test('snapshot/tracker transaction restores the old snapshot when tracker publication fails', () => {
+  const { publishSnapshotAndTracker } = require(preExistingMergeScript);
+  const jobDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-tracker-transaction-'));
+  const stagedSnapshot = path.join(jobDir, '.snapshot.tmp');
+  const finalSnapshot = path.join(jobDir, 'my-following.json');
+  const trackerPath = path.join(jobDir, 'tracker.json');
+  const oldSnapshot = Buffer.from(JSON.stringify({ count: 1, handles: ['Old'] }));
+  const oldTracker = Buffer.from(JSON.stringify({ followed: [], rejected: [], stats: {} }));
+  fs.writeFileSync(stagedSnapshot, JSON.stringify({ count: 1, handles: ['New'] }));
+  fs.writeFileSync(finalSnapshot, oldSnapshot);
+  fs.writeFileSync(trackerPath, oldTracker);
+  const injectedFs = {
+    ...fs,
+    renameSync(source, destination) {
+      if (destination === trackerPath && path.basename(source).startsWith('.tracker.json.')) {
+        throw Object.assign(new Error('injected tracker publish failure'), { code: 'EIO' });
+      }
+      return fs.renameSync(source, destination);
+    },
+  };
+  assert.throws(
+    () => publishSnapshotAndTracker(stagedSnapshot, finalSnapshot, trackerPath, injectedFs),
+    /injected tracker publish failure/,
+  );
+  assert.deepStrictEqual(fs.readFileSync(finalSnapshot), oldSnapshot);
+  assert.deepStrictEqual(fs.readFileSync(trackerPath), oldTracker);
 });
 test('recommended runner assigns and exports SKILL_DIR before expanding run.sh', () => {
   const skill = fs.readFileSync(path.join(__dirname, '..', 'SKILL.md'), 'utf8');
