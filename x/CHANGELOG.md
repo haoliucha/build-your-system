@@ -1,5 +1,53 @@
 # Changelog
 
+## 4.0.1 (2026-08-19)
+
+### Documentation and metadata
+
+- 重写插件 README，以双宿主能力矩阵说明共享的 `x-unfollow`、`x-image` 和 Claude-only `x-follow`。
+- 补充 Codex / Claude Code 安装、X 账号工作流前置条件、四种 `x-unfollow` 模式、当前态数据路径和安全边界。
+- 修正 `/x-unfollow` 命令文档中的列表扫描节奏：真实分页响应间隔 1–3 秒，每 25 个响应暂停 10 秒，单表使用 45 分钟看门狗。
+- 同步 Claude、Codex、marketplace 和仓库总览中的插件版本；本版本不包含运行时行为变化。
+
+## 4.0.0 (2026-08-13)
+
+### Dual-host plugin architecture
+
+- 新增 Codex plugin manifest，将 `x` 作为统一的 Claude Code + Codex 顶层插件发布。
+- `x-unfollow` 与 `x-image` 由两个宿主共享同一份业务真源；`x-follow` 移入 `claude-components/`，仅由 Claude Code 加载。
+- Codex 原生加载 `x-image` 与 `x-unfollow`，Claude 的 `/x:image` 继续通过 Codex Rescue 完成原生 ImageGen 工作流。
+
+## 3.0.1 (2026-08-13)
+
+### x-unfollow v4 safety and pagination
+
+- 受控 Chrome 默认使用无头模式，只有显式设置 `XU_HEADLESS=0` 才进入可见调试，且无头失败时不自动回退。
+- 列表扫描改为被动解析页面自己的 Followers / Following 响应，以连续 Bottom cursor 链验证完整性。
+- 网络响应启动后只采用响应账号集合；DOM 仅在完全无响应时兜底，并新增 1–3 秒分页节奏、每 25 个响应长暂停和 45 分钟看门狗。
+
+## 3.0.0 (2026-08-09)
+
+### Current relationship state
+
+- 用 `current/` 中的 following、followers 与 relationships 最新状态替代逐日历史快照。
+- 新扫描先写入 `.staging/<run-token>/`，校验完成后原子晋升 current 和 latest reports，失败时保留旧状态。
+- 新增 `followers-report` 和 `relationships-report`，一次完整 followers 扫描即可输出新增、确认移除、待确认移除和证据冲突。
+- 连续未回关状态压缩进最新关系行，仅相邻自然日的有效观察会延续。
+
+## 2.2.1 (2026-08-08)
+
+### Signal handling
+
+- 修正中断信号处理，确保异常退出时清理浏览器上下文和 staging，并释放网络运行锁。
+
+## 2.2.0 (2026-08-08)
+
+### Serialized runs and bulk verification
+
+- 同一数据目录只允许一个 x-unfollow 网络流程；移除跨流程时间冷却，前一流程退出后可立即重跑。
+- 取关完成后改为一次完整 following 扫描和本地集合差验证，不再逐账号访问主页复查。
+- 新增增量动作日志、精确取关控件与确认框校验、互关保护和统一限速策略。
+
 ## 2.0.0 (2026-07-16)
 
 ### Breaking changes

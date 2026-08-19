@@ -1,6 +1,6 @@
 {
   "name": "x",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "X 工作流：安全的关注卫生与图像生成；Codex 不暴露 Claude-only 的批量关注入口。",
   "author": {"name": "haoliucha", "url": "https://github.com/haoliucha"},
   "repository": "https://github.com/haoliucha/build-your-system",

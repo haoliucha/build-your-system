@@ -85,7 +85,7 @@ for (const script of ['list-snapshot.cjs', 'unfollow.cjs']) {
   assert.doesNotMatch(source, /headless:\s*false/, `${script} must not hard-code visible mode`);
 }
 
-assert.strictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'x/.claude-plugin/plugin.json'))).version, '4.0.0');
-assert.strictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'x/.codex-plugin/plugin.json'))).version, '4.0.0');
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'x/.claude-plugin/plugin.json'))).version, '4.0.1');
+assert.strictEqual(JSON.parse(fs.readFileSync(path.join(repo, 'x/.codex-plugin/plugin.json'))).version, '4.0.1');
 
 console.log('x-unfollow safety and Codex/Claude parity checks passed');

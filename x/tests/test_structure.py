@@ -22,8 +22,8 @@ class StructureTests(unittest.TestCase):
         codex = read_json_optional(X / ".codex-plugin" / "plugin.json")
         self.assertEqual(claude.get("name"), "x")
         self.assertEqual(codex.get("name"), "x")
-        self.assertEqual(claude.get("version"), "4.0.0")
-        self.assertEqual(codex.get("version"), "4.0.0")
+        self.assertEqual(claude.get("version"), "4.0.1")
+        self.assertEqual(codex.get("version"), "4.0.1")
 
     def test_both_marketplaces_register_the_same_top_level_source(self):
         claude_marketplace = read_json_optional(
@@ -50,7 +50,7 @@ class StructureTests(unittest.TestCase):
         )
         self.assertEqual(claude_entry.get("source"), "./x")
         self.assertEqual(codex_entry.get("source"), {"source": "local", "path": "./x"})
-        self.assertEqual(claude_entry.get("version"), "4.0.0")
+        self.assertEqual(claude_entry.get("version"), "4.0.1")
 
     def test_claude_metadata_describes_the_rescue_boundary(self):
         manifest = read_json_optional(X / ".claude-plugin" / "plugin.json")

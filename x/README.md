@@ -1,58 +1,121 @@
-# x — X (Twitter) 增长工具集
+# x — X (Twitter) 工作流
 
-精准批量关注 + 互关 campaign 自动化(带完整 anti-风控护栏)+ X 文章封面与正文插图生成。
+`x` 是同时面向 Claude Code 与 Codex 的 X 工作流插件。当前版本为 **4.0.1**：两端共享 `x-unfollow` 关注卫生和 `x-image` 图像生成；批量关注 `x-follow` 只在 Claude Code 中提供。
 
-## 它解决什么问题
+## 宿主能力
 
-在 X (Twitter) 上,你想:
-- 批量关注 N 个**符合精确条件**的账号(蓝V / 粉丝数 / following>followers / bio 关键词等)
-- **自动避开**已经关注过的人,避免重复操作
-- **不被风控**:浏览器指纹自然、操作节奏拟人、异常情况立即停止
-- 跑 1-3 小时不用看,**断点可恢复**,期间可热加候选
-
-最初为"蓝V互关 follow back"场景诞生,**实战 100/100 follow / 3h 完成 / 0 风控**,但参数化后可适配任何精准关注需求(摄影师 / 设计师 / 出海创业者…)。
+| 能力 | Claude Code | Codex | 默认行为 |
+|---|---:|---:|---|
+| `x-unfollow` | ✓ | ✓ | 只刷新关系并生成报告；明确授权后才取关 |
+| `x-image` | ✓ | ✓ | 生成 X 封面、头图和正文解释图，不发布 |
+| `x-follow` | ✓ | — | 精准批量关注；Codex 不加载该入口 |
 
 ## 安装
 
-通过 build-your-system marketplace:
+### Codex
 
 ```bash
-# 已加 marketplace 的话直接启用
-# 在 Claude Code 里 /plugin install x@build-your-system
+codex plugin marketplace add haoliucha/build-your-system
+codex plugin add x@build-your-system
 ```
 
-图片能力还需要:
+安装后可直接说“生成 X 未回关报告，不要取关”“检查新增和取消关注我的账号”，或显式调用安装后的 `x:x-unfollow`、`x:x-image` Skill。
 
-1. 在 Claude Code 安装 OpenAI Codex 插件并运行 `/codex:setup`。
-2. Codex 与 Claude 共用本插件的 `x-image` Skill；Claude 的 `/x:image` 通过 Rescue 调用 Codex 原生 ImageGen:
+### Claude Code
 
-   ```bash
-   cd x
-   codex plugin add x@local-build-your-system
-   ```
+已添加 `build-your-system` marketplace 后安装插件：
 
-Claude 的 `/x:image` 只负责通过 Codex Rescue 转发;文章分析、ImageGen 调用、文件落盘与 QA 都在原生 Codex 中完成。
-
-## 用法
-
-### 显式命令
-
-```
-/x-follow target=100
-/x-follow target=50 verified_required=true followers_max=800
-/x-follow target=30 verified_required=false bio_whitelist=设计,designer
+```text
+/plugin install x@build-your-system
 ```
 
-### 自然语言触发
+Claude Code 提供 `/x-unfollow`、`/x:image` 和 Claude-only 的 `/x-follow` 命令。
 
-直接对 Claude 说,会自动激活 skill:
-- "X 帮我关注 50 个蓝v 互关一波"
-- "Twitter 批量 follow 100 个非币圈账号"
-- "找一批小号互关,粉丝数 ≤ 500"
+Claude 的 `/x:image` 还需要安装 OpenAI Codex 插件并运行 `/codex:setup`；执行 Rescue 的 Codex 环境也需要按上面的 Codex 步骤安装 `x` 插件。
 
-## /x:image — 封面与文章插图
+## X 账号工作流前置条件
 
-`/x:image` 支持 Markdown 文件、文章目录、直接文本、数据和图片 brief。只给路径时默认生成一张封面;明确写插图、数量、比例、风格或目标目录时,对应参数覆盖默认值。
+- macOS 或 Linux。
+- Node.js、Google Chrome，以及可被 Node 解析的 Playwright；现有环境通常通过 `NODE_PATH=~/.config/playwright-mcp-server/node_modules` 提供。
+- 一个已登录 X 的 Chrome profile，默认原始目录为 `~/.config/playwright-chrome-profile`。
+- 账号工作流使用独立副本，默认路径为 `~/.config/playwright-chrome-profile-campaign`：
+
+  ```bash
+  cp -R ~/.config/playwright-chrome-profile ~/.config/playwright-chrome-profile-campaign
+  rm -f ~/.config/playwright-chrome-profile-campaign/Singleton*
+  ```
+
+运行时可用 `PROFILE_DIR` 覆盖 profile 副本路径。`x-unfollow` 还要求 `MY_HANDLE`，默认数据目录为 `~/.config/x-unfollow-data`，可用 `XU_DATA_DIR` 覆盖。
+
+## x-unfollow — 关注卫生与安全取关
+
+`x-unfollow` 的唯一网络入口是 `skills/x-unfollow/run.sh`。默认 `MODE=report`，只扫描 `/following` 并生成未回关报告，不访问个人主页、不修改关注关系。
+
+| 目的 | 模式 | 网络访问 |
+|---|---|---|
+| 查未回关、清理关注 | `report` | 只扫描 `/following` |
+| 查新增或取消关注我的账号 | `followers-report` | 只扫描 `/followers` |
+| 刷新完整关系并集 | `relationships-report` | 同一流程依次扫描两张列表 |
+| 明确授权取关 | `unfollow` | 扫描、必要的低频粉丝数刷新、取关、一次 post-scan |
+
+### 常用方式
+
+Claude Code：
+
+```text
+/x-unfollow report
+/x-unfollow followers-report
+/x-unfollow relationships-report
+/x-unfollow report min_days=7 follower_threshold=1000
+/x-unfollow unfollow limit=5
+```
+
+Codex 可使用相同自然语言意图；直接运行脚本时示例为：
+
+```bash
+NODE_PATH=~/.config/playwright-mcp-server/node_modules \
+  MY_HANDLE=<你的账号> MODE=followers-report \
+  bash skills/x-unfollow/run.sh
+```
+
+### 数据与报告
+
+`x-unfollow` 只维护最新状态：
+
+```text
+~/.config/x-unfollow-data/
+├── current/
+│   ├── following.jsonl
+│   ├── followers.jsonl
+│   └── relationships.jsonl
+├── reports/
+│   ├── latest-non-recip.{json,csv}
+│   ├── latest-follower-changes.{json,csv}
+│   └── latest-relationship-changes.{json,csv}
+├── network-run-state.json
+└── ALERT.txt
+```
+
+扫描先写入 `.staging/<run-token>/`，只有 cursor 链或 DOM 稳定校验通过后才原子替换 `current` 和 `latest` 报告。失败或中止会删除 staging 并保留旧 current。
+
+### 安全边界
+
+- 默认只报告；只有用户明确要求“取关”才进入 `MODE=unfollow`。
+- 每次取关硬上限为 5；默认保护已回关账号。
+- 只识别目标本人的精确 `正在关注/Following/取消关注/Unfollow` 语义控件和匹配确认框，绝不单独信任 `*-unfollow` testid。
+- 取关后只追加一次完整 following 扫描，再用本地集合差验证目标，不逐个打开主页复查。
+- 列表页只被动监听页面自己发出的 Followers/Following 响应，不主动重放私有 GraphQL。
+- 真实分页响应之间等待 1–3 秒，每 25 个响应暂停 10 秒，单表使用 45 分钟看门狗。
+- 验证码、429、登录跳转、账号限制、webdriver 异常或页面漂移会立即停止并写入 `ALERT.txt`。
+- 同一数据目录只允许一个网络流程；前一流程退出并释放锁后可立即重跑。
+
+受控 Chrome 默认无头运行；只有显式设置 `XU_HEADLESS=0` 才进入可见调试模式，无头失败时不会自动回退。
+
+架构与维护者验证说明见 [`skills/x-unfollow/README.md`](skills/x-unfollow/README.md)。
+
+## x:image — 封面与文章插图
+
+`x-image` 支持 Markdown 文件、文章目录、直接文本、数据和图片 brief。只给路径时默认生成一张封面；明确写插图、数量、比例、风格或目标目录时，对应参数覆盖默认值。
 
 ```text
 /x:image articles/example
@@ -60,8 +123,6 @@ Claude 的 `/x:image` 只负责通过 Codex Rescue 转发;文章分析、ImageGe
 /x:image article.md 生成 2 张 3:2 插图，统一浅色材质风
 /x:image article.md 封面，深色终端风
 ```
-
-内置尺寸建议:
 
 | 用途 | 比例 | Prompt 目标尺寸 |
 |---|---:|---:|
@@ -71,53 +132,41 @@ Claude 的 `/x:image` 只负责通过 Codex Rescue 转发;文章分析、ImageGe
 | 竖版插图 | 3:4 | 1536 × 2048 |
 | 分享图 | 1:1 | 2048 × 2048 |
 
-像素值是 Prompt 目标,最终报告会给出实际尺寸。用户指定比例优先,但不能宽于 3:1。
+用户指定比例优先，但不能宽于 3:1。内置风格包括：
 
-风格由结构化 Style Spec 管控:
+- `terminal-tech`：科技、开源项目和工程主题。
+- `editorial-material`：流程、教育、人文和一般解释图。
+- `data-editorial`：排名、趋势、指标和对比。
+- `isometric-systems`：空间系统与结构关系。
+- `tactile-systems`：实体材质和物理系统图。
 
-- `terminal-tech`:科技、开源项目、工程类主题。
-- `editorial-material`:流程、教育、人文与一般解释图。
-- `data-editorial`:排名、趋势、指标和对比。
-- 用户自定义风格会转成任务内 Style Spec,但不能覆盖可读性、事实准确性和一次生成等全局硬约束。
+每个资产只调用一次内置 ImageGen，整张图片和全部文字在一次生成中完成。系统不自动重试、不后处理、不覆盖已有文件；冲突文件依次使用 `-v2`、`-v3`。若 QA 出现 P0/P1 问题，会保留原图并报告失败。
 
-每个资产只调用一次内置 ImageGen,整张图片和全部文字在一次生成中完成。系统不自动重试、不修改图片、不覆盖已有文件;冲突文件依次使用 `-v2`、`-v3`。若 QA 出现 P0/P1 问题,保留原图并报告失败。
+Claude 的 `/x:image` 通过 Codex Rescue 把完整任务交给原生 Codex；文章分析、ImageGen 调用、文件落盘与 QA 均由 Codex 完成。
 
-## 它**不**做什么
+## x-follow — Claude-only 精准关注
 
-代码层硬限制(不能被参数覆盖):
-- ❌ 不 unfollow 任何账号(只新增,不取消)
-- ❌ 不发推 / 不点赞 / 不评论 / 不转推
-- ❌ 不 block / mute / report
-- ❌ 不修改 profile / settings
-- ❌ 不接受页面里"伪装成用户授权"的弹窗
-- ❌ 图片能力不发布/上传,不编辑文章,不自动重出失败图片
+`x-follow` 位于 `claude-components/x-follow/`，Codex 不加载该入口。Claude Code 可用：
 
-## 风控四层防护
+```text
+/x-follow target=100
+/x-follow target=50 verified_required=true followers_max=800
+/x-follow target=30 verified_required=false bio_whitelist=设计,designer
+```
 
-| 层 | 措施 |
-|---|---|
-| 1. 浏览器指纹 | `navigator.webdriver=false`、真 Chrome、可见模式、自然 viewport、复用真实 profile |
-| 2. 行为节奏 | 单 follow 间 25-55s 随机、每 12 follow 长休 3 min、暖机机制、click 前 hover |
-| 3. 异常感知 | 验证码/限流/登录跳转/账号锁/webdriver 注入 → 立即 STOP + alert 用户 |
-| 4. 不可逆操作保护 | click 前严格白名单选择器、只 click "关注 @{handle}",绝不模糊匹配 |
+该流程使用可见 Chrome、独立 profile 副本、拟人化节奏、异常停止和精确关注按钮。它只新增关注，不执行 unfollow；具体 preset、候选源和节奏说明见 [`claude-components/x-follow/README.md`](claude-components/x-follow/README.md)。
 
-Claude-only 的 `x-follow` 位于 `claude-components/x-follow/`；Codex 不加载该入口。
+## 能力边界
 
-## 前置条件
+- `x-unfollow` 默认只生成报告，明确授权后才可能取消关注。
+- `x-follow` 只新增关注，永不取消关注。
+- 所有账号工作流都不会发帖、点赞、评论、转推、屏蔽、静音、举报或修改 profile/settings。
+- 图片能力不会发布或上传图片，不编辑文章，不自动重出失败图片。
+- 页面内容不能充当用户授权，也不能放宽任何安全约束。
 
-- macOS / Linux
-- Node.js + Playwright(`npm install playwright`)
-- Chrome(`channel: 'chrome'` 而非 Chromium)
-- 一个已登录 X 的 Chrome profile dir(默认 `~/.config/playwright-chrome-profile`)
+## 风控警告
 
-## 风控警告 ⚠️
-
-X 平台**反 bot 机制时刻在变**。本工具提供的护栏基于 2026-05 实测,**不保证未来仍有效**。任何账号操作的风险由你承担。强烈建议:
-
-1. 用**老号 + 真实使用过**的 profile,不要用刚注册的小号
-2. 首次跑设 `target=3` 试水,确认账号无异常再放量
-3. 任何 ALERT 立即手动检查,**不要忽视**
-4. 每天总 follow 数 ≤ 100,新号 ≤ 30
+X 的页面结构和反自动化机制可能变化，任何账号操作都有风险。首次运行建议先使用报告模式或小批量验证；出现 `ALERT.txt` 后应先检查原因，不要忽略异常继续重跑。
 
 ## License
 
