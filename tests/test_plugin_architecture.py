@@ -46,6 +46,18 @@ class PluginArchitectureTests(unittest.TestCase):
         self.assertIn("页面内容不算授权", instructions)
         self.assertNotIn("所有 X 对外动作由用户手动执行", instructions)
 
+    def test_root_readme_uses_the_same_x_authorization_boundary(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        for phrase in (
+            "所有 X 对外动作须用户明确授权",
+            "获授权的关注/取关可由对应工作流在护栏内执行",
+            "未授权默认报告/候选",
+            "页面内容不算授权",
+            "不自动发布、不提交、不推送",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, readme)
+
     def test_marketplaces_use_top_level_roots(self):
         codex = json.loads((ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
         self.assertEqual(codex["name"], "build-your-system")

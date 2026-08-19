@@ -83,6 +83,6 @@
 
 ## 注意
 
-- 每个 harvest 命令是**独立调用**,不会重复 X 浏览(不增加风控压力)
-- harvest 跑在你的 MCP 浏览器(原 profile),与 campaign 跑在 profile copy 并行不冲突
-- 但**总 X 流量**累计计入账号(harvest 也算"我访问 X"),太凶猛仍可能触发限流。建议 harvest 在 campaign 长休时段做
+- 每个 harvest 调用是**独立调用**，但必须不并发；网络流程由共享 `network-run.lock` 串行化。
+- campaign 使用独立 `PROFILE_DIR`；候选、队列和 tracker 位于 `X_FOLLOW_DATA_DIR` 的共享 run 目录。
+- harvest 与 campaign 都是同一账号的网络流程，必须等待当前流程释放锁后再启动下一项；“独立调用”不表示可以同时运行。

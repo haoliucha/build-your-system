@@ -84,7 +84,7 @@ Click 触发后,X 服务端处理 + 前端 DOM update 是异步的。一次检�
 fB.scrollIntoView({block:'center'});
 await sleep(300 + Math.random() * 400);  // 拟人 hover
 fB.click();
-await sleep(2500);                        // 初始等待
+await sleep(6000);                        // 等待服务端处理与 DOM 渲染
 
 const uX = document.querySelector(`button[data-testid$="-unfollow"][aria-label*="@${H}"]`);
 if (uX) {

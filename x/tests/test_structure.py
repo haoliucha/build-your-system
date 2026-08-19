@@ -108,6 +108,46 @@ class StructureTests(unittest.TestCase):
                 self.assertIn(phrase, skill)
         self.assertNotIn("JOB_DIR=/tmp NOCRYPTO=1 node", skill)
 
+    def test_follow_docs_do_not_recommend_recursive_profile_deletion(self):
+        docs = {
+            "skill": X / "skills" / "x-follow" / "SKILL.md",
+            "pacing": X / "skills" / "x-follow" / "references" / "pacing-anti-detection.md",
+            "troubleshooting": X / "skills" / "x-follow" / "references" / "troubleshooting.md",
+        }
+        for name, path in docs.items():
+            with self.subTest(document=name):
+                self.assertNotIn("rm -rf", path.read_text(encoding="utf-8"))
+
+    def test_follow_reference_docs_share_safe_profile_lock_and_pacing_contracts(self):
+        refs = X / "skills" / "x-follow" / "references"
+        pacing = (refs / "pacing-anti-detection.md").read_text(encoding="utf-8")
+        troubleshooting = (refs / "troubleshooting.md").read_text(encoding="utf-8")
+        candidates = (refs / "candidate-sources.md").read_text(encoding="utf-8")
+        run_sh = (X / "skills" / "x-follow" / "run.sh").read_text(encoding="utf-8")
+        for phrase in (
+            "SOURCE_PROFILE_DIR",
+            "PROFILE_DIR",
+            "post_click_settle_ms: 6000",
+            "不自动清理 profile",
+        ):
+            with self.subTest(document="pacing", phrase=phrase):
+                self.assertIn(phrase, pacing)
+        for phrase in (
+            "SOURCE_PROFILE_DIR",
+            "PROFILE_DIR",
+            "X_FOLLOW_DATA_DIR",
+            "network-run.lock",
+            "post_click_settle_ms: 6000",
+        ):
+            with self.subTest(document="troubleshooting", phrase=phrase):
+                self.assertIn(phrase, troubleshooting)
+        self.assertIn("campaign 使用独立 `PROFILE_DIR`", candidates)
+        self.assertIn("network-run.lock", candidates)
+        self.assertIn("不并发", candidates)
+        self.assertNotIn("MCP 浏览器", candidates)
+        self.assertIn("FILTER_CRYPTO=0 (default; 1 filters crypto)", run_sh)
+        self.assertNotIn("NOCRYPTO=1               CAND_MULT", run_sh)
+
     def test_x_image_assets_are_real_top_level_files_not_target_links(self):
         for directory in ("references", "styles", "previews"):
             path = X_IMAGE / directory

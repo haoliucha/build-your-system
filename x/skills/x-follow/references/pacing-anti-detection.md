@@ -43,10 +43,11 @@ RED 的任何一项 → 拒绝启动 campaign。
 **永远复用**用户已登录 + 浏览过的 profile。不要让脚本自己 login。
 
 复用步骤:
-1. `cp -R "$ORIG" "$ORIG-campaign"` (复制,保留 cookies/history/localStorage)
-2. `rm -f "$ORIG-campaign"/{SingletonLock,SingletonCookie,SingletonSocket}` (必须,否则 Chrome 拒启)
-3. 启动时指定 `--user-data-dir=$ORIG-campaign`
-4. 用完 `rm -rf "$ORIG-campaign"`(原 profile 不动)
+1. `SOURCE_PROFILE_DIR=~/.config/playwright-chrome-profile`，`PROFILE_DIR=~/.config/playwright-chrome-profile-campaign`。
+2. `cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"` (复制,保留 cookies/history/localStorage)
+3. `rm -f "$PROFILE_DIR"/{SingletonLock,SingletonCookie,SingletonSocket}` (必须,否则 Chrome 拒启)
+4. 启动时指定 `--user-data-dir=$PROFILE_DIR`，只在独立副本上运行。
+5. 工作流**不自动清理 profile**。关闭浏览器后，由用户核对 `PROFILE_DIR` 的 canonical path 与 `SOURCE_PROFILE_DIR` 不同，再通过 Finder/废纸篓等可恢复方式处理。
 
 这样 X 服务端看到的是"我熟悉的浏览器(cookies match) + 自然 fingerprint",过审。
 
@@ -63,7 +64,7 @@ long_break_every: 12           # 每 12 个 follow 强制长休
 long_break_ms: 180000          # 3 min
 click_pre_delay_min_ms: 300    # click 前 scrollIntoView + 300-700ms 模拟人犹豫
 click_pre_delay_max_ms: 700
-post_click_settle_ms: 2500     # click 后等 X 服务端处理 + DOM 渲染
+post_click_settle_ms: 6000     # click 后等 X 服务端处理 + DOM 渲染
 ```
 
 ### 节奏不变量

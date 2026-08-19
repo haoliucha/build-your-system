@@ -10,7 +10,7 @@
 
 **修复**:
 ```bash
-rm -f $PROFILE_DIR-campaign/{SingletonLock,SingletonCookie,SingletonSocket}
+rm -f "$PROFILE_DIR"/{SingletonLock,SingletonCookie,SingletonSocket}
 # 确认没有其他 Chrome 进程占用同 profile dir
 ps aux | grep -i chrome | grep -i playwright-chrome-profile
 ```
@@ -39,9 +39,9 @@ args: ['--disable-blink-features=AutomationControlled'],
 **原因**:profile 里没登录态(可能是空 profile,或 cookies 过期)。
 
 **修复**:
-- 检查原 profile(`PROFILE_DIR`)是否真的登录了 X
-- 用 MCP 浏览器打开原 profile,确认能进 /home
-- 然后重新 cp 到 campaign
+- 检查 `SOURCE_PROFILE_DIR` 是否真有登录态，再复制到独立 `PROFILE_DIR`
+- campaign 只使用 `PROFILE_DIR`，不要在 `SOURCE_PROFILE_DIR` 上运行 workflow
+- 重新复制前，先关闭占用 `PROFILE_DIR` 的浏览器
 
 ---
 
@@ -79,7 +79,7 @@ t['rejected'] = [r for r in t['rejected'] if 'not_blue' not in r['r']]
 **原因**:click 触发后,X 服务端处理 + 前端 DOM update 是异步的;script 检查太快。
 
 **修复**:已在最新 verify 函数实现:
-- post_click_settle_ms: 2500 (初始等)
+- post_click_settle_ms: 6000 (等待服务端处理与 DOM 渲染)
 - fallback: 若 follow btn 不存在 → `followed_assumed`,当成功记
 - 详见 `verify-logic.md` 第 4 段
 
@@ -215,23 +215,21 @@ const VERIFY_JS = `(async () => { ... })()`;
 ## Profile Isolation 完整步骤
 
 ```bash
-ORIG=~/.config/playwright-chrome-profile
-COPY=$ORIG-campaign
+SOURCE_PROFILE_DIR=~/.config/playwright-chrome-profile
+PROFILE_DIR=~/.config/playwright-chrome-profile-campaign
+X_FOLLOW_DATA_DIR=~/.config/x-follow-data
 
 # 1. 复制(保留 cookies/history/localStorage)
-cp -R "$ORIG" "$COPY"
+cp -R "$SOURCE_PROFILE_DIR" "$PROFILE_DIR"
 
 # 2. 删除 singleton 锁(必须)
-rm -f "$COPY"/SingletonLock "$COPY"/SingletonCookie "$COPY"/SingletonSocket
+rm -f "$PROFILE_DIR"/SingletonLock "$PROFILE_DIR"/SingletonCookie "$PROFILE_DIR"/SingletonSocket
 
 # 3. 校验
-ls -la "$COPY"/Cookies > /dev/null || { echo "ERR: no cookies"; exit 1; }
+ls -la "$PROFILE_DIR"/Cookies > /dev/null || { echo "ERR: no cookies"; exit 1; }
 
-# 4. 用 COPY 启动 chromium(代码层)
-chromium.launchPersistentContext(COPY, { ... })
-
-# 5. campaign 结束清理
-rm -rf "$COPY"
+# 4. 只用 PROFILE_DIR 启动 chromium；network-run.lock 位于 X_FOLLOW_DATA_DIR
+chromium.launchPersistentContext(PROFILE_DIR, { ... })
 ```
 
-如果 MCP playwright 还在跑(占着原 profile),copy 之后两个 Chrome 实例可以并行运行,因为是不同 profile 目录。X 服务端看到的是"同 account 两个 session",合规。
+`network-run.lock` 会串行化同一数据目录的网络流程。工作流不自动删除 `PROFILE_DIR`：关闭浏览器后，由用户核对其 canonical path 与 `SOURCE_PROFILE_DIR` 不同，再通过 Finder/废纸篓等可恢复方式处理；不要删除原始 profile。

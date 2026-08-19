@@ -18,7 +18,8 @@
 #   TARGET=10                MY_HANDLE=                PROFILE_DIR=~/.config/playwright-chrome-profile-campaign
 #   X_FOLLOW_DATA_DIR=~/.config/x-follow-data  X_FOLLOW_RUN_ID=current
 #   JOB_DIR=$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID  QUERIES="求互关,互相关注,回关,求关注,蓝V互关,蓝V互粉"
-#   NOCRYPTO=1               CAND_MULT=8   (harvest until queue >= TARGET*CAND_MULT)
+#   FILTER_CRYPTO=0 (default; 1 filters crypto)  CAND_MULT=8   (harvest until queue >= TARGET*CAND_MULT)
+#   NOCRYPTO is an explicit compatibility override; prefer FILTER_CRYPTO.
 #   SKIP_GLOB="$X_FOLLOW_DATA_DIR/runs/*/tracker.json"   (prior trackers -> skip-set)
 #   FERS_MAX=3000 FOLLOW_RATIO_MIN=0.5 FILTER_CRYPTO=0    HARVEST_SCROLLS=18
 #   COMMENT_AFTER_FOLLOW=true ALLOW_COMMENT_AFTER_FOLLOW=1   (both required to comment)

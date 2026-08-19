@@ -96,7 +96,7 @@ long_break_every: 12
 long_break_ms: 180000
 click_pre_delay_min_ms: 300
 click_pre_delay_max_ms: 700
-post_click_settle_ms: 6000          # 6s(原 2500):高延迟下让按钮可靠翻成「正在关注」,减少 followed_assumed 虚报
+post_click_settle_ms: 6000          # 高延迟下让按钮可靠翻成「正在关注」,减少 followed_assumed 虚报
 
 # ULTRA-SAFE 选项(默认关)
 max_follows_per_hour: 0           # 0=不限,30 是安全值
@@ -179,14 +179,10 @@ FIX_TRACKER=1 PROFILE_DIR="$PROFILE_DIR" \
 # 若 failed>0 且 followed<target,再跑一次 campaign.cjs 补关(run.sh 自动做这一步)
 ```
 
-### Step 5: Cleanup
+### Step 5: 结束与可恢复清理
 
-```bash
-# 删除独立 profile copy（绝不删除 SOURCE_PROFILE_DIR）
-rm -rf "$PROFILE_DIR"
-# 归档 log
-mv tracker.json campaign.log "$CAMPAIGN_ARCHIVE/"
-```
+工作流不会自动删除独立 profile。先关闭 campaign 浏览器；如需回收该副本，由用户核对
+`PROFILE_DIR` 的 canonical path 与 `SOURCE_PROFILE_DIR` 不同后，再通过 Finder 移到废纸篓等可恢复方式处理。不要处理原始 profile。
 
 ## 开工前 user 确认 checklist
 
