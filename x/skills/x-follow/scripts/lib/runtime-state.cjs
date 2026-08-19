@@ -3,6 +3,7 @@
 
 const os = require('os');
 const path = require('path');
+const { CRYPTO_TOKENS } = require('./filters.cjs');
 
 function validateRunId(runId) {
   if (!/^[A-Za-z0-9._-]+$/.test(runId) || runId === '.' || runId === '..') {
@@ -30,4 +31,22 @@ function resolveRuntimeState(env = process.env) {
   };
 }
 
-module.exports = { resolveRuntimeState, validateRunId };
+function parseBinaryFlag(value, name, defaultValue) {
+  if (value === undefined || value === '') return defaultValue;
+  if (value === '0') return false;
+  if (value === '1') return true;
+  throw new Error(`${name} must be 0 or 1`);
+}
+
+function resolveFilterPolicy(env = process.env) {
+  const filterCrypto = parseBinaryFlag(env.FILTER_CRYPTO, 'FILTER_CRYPTO', false);
+  const noCrypto = Object.prototype.hasOwnProperty.call(env, 'NOCRYPTO')
+    ? parseBinaryFlag(env.NOCRYPTO, 'NOCRYPTO', false)
+    : filterCrypto;
+  const bioBlacklist = Object.prototype.hasOwnProperty.call(env, 'BIO_BLACKLIST')
+    ? String(env.BIO_BLACKLIST).split(',').map(token => token.trim()).filter(Boolean)
+    : (filterCrypto ? [...CRYPTO_TOKENS] : []);
+  return { filterCrypto, noCrypto, bioBlacklist };
+}
+
+module.exports = { resolveRuntimeState, validateRunId, resolveFilterPolicy };

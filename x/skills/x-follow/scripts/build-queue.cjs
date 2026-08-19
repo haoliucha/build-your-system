@@ -24,8 +24,8 @@
 // flag comes from the search-result DOM badge, which is reliable for verified accounts;
 // VERIFIED_REQUIRED runs therefore lose nothing by trusting it. priority.json handles are
 // human-picked and bypass this filter.
-// Env: JOB_DIR (default cwd), X_FOLLOW_DATA_DIR (default ~/.config/x-follow-data),
-//      NOCRYPTO (default 1; 0 KEEPs crypto handles), DROP_NONBLUE (0),
+// Env: JOB_DIR (default runtime job), X_FOLLOW_DATA_DIR (default ~/.config/x-follow-data),
+//      FILTER_CRYPTO (default 0), NOCRYPTO (explicit 0/1 override), DROP_NONBLUE (0),
 //      SKIP_GLOB (explicit prior trackers glob; otherwise all runs' trackers),
 //      SOFT_TTL_DAYS (30).
 
@@ -33,7 +33,7 @@ const fs = require('fs');
 const path = require('path');
 const { isCryptoHandle } = require(path.join(__dirname, 'lib', 'filters.cjs'));
 const { buildSkipSet, buildSkipSetFromPaths } = require(path.join(__dirname, 'lib', 'skipset.cjs'));
-const { resolveRuntimeState } = require(path.join(__dirname, 'lib', 'runtime-state.cjs'));
+const { resolveRuntimeState, resolveFilterPolicy } = require(path.join(__dirname, 'lib', 'runtime-state.cjs'));
 
 // Expand a shell-style glob (only `*` in the basename direction) WITHOUT a shell, so a
 // crafted SKIP_GLOB can never inject a command. Node 22's fs.globSync handles `*`/`**`.
@@ -43,10 +43,11 @@ function expandGlob(pattern) {
 }
 
 let RUNTIME;
-try { RUNTIME = resolveRuntimeState(process.env); }
+let FILTER_POLICY;
+try { RUNTIME = resolveRuntimeState(process.env); FILTER_POLICY = resolveFilterPolicy(process.env); }
 catch (error) { process.stderr.write(`FATAL: ${error.message}\n`); process.exit(2); }
 const JOB = RUNTIME.jobDir;
-const NOCRYPTO = process.env.NOCRYPTO !== '0';
+const NOCRYPTO = FILTER_POLICY.noCrypto;
 const DROP_NONBLUE = process.env.DROP_NONBLUE === '1';
 const SKIP_GLOB = RUNTIME.skipGlob;
 const SOFT_TTL_DAYS = parseInt(process.env.SOFT_TTL_DAYS || '30', 10);

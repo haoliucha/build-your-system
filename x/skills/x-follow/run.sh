@@ -52,13 +52,13 @@ QUERIES_PER_ROUND="${QUERIES_PER_ROUND:-4}"
 # Rationale: deep into repeated runs the non-crypto蓝V小号 pool depletes; allowing crypto
 # keeps the eligible pool large and the pass rate healthy.
 FILTER_CRYPTO="${FILTER_CRYPTO:-0}"
-if [ "$FILTER_CRYPTO" = "1" ]; then
-  NOCRYPTO=1                                   # build-queue drops crypto handles; campaign uses default crypto blacklist
+case "$FILTER_CRYPTO" in 0|1) ;; *) echo "FATAL: FILTER_CRYPTO must be 0 or 1" >&2; exit 2 ;; esac
+if [ -n "${NOCRYPTO+x}" ]; then
+  case "$NOCRYPTO" in 0|1) ;; *) echo "FATAL: NOCRYPTO must be 0 or 1" >&2; exit 2 ;; esac
 else
-  NOCRYPTO=0                                   # build-queue keeps crypto handles
-  export BIO_BLACKLIST="${BIO_BLACKLIST:-__crypto_filter_disabled__}"  # never-matching token disables campaign bio filter
+  NOCRYPTO="$FILTER_CRYPTO"
 fi
-export NOCRYPTO
+export FILTER_CRYPTO NOCRYPTO
 CAND_MULT="${CAND_MULT:-8}"
 SKIP_GLOB="${SKIP_GLOB:-$X_FOLLOW_DATA_DIR/runs/*/tracker.json}"
 # FERS_MAX 3000 (was 1100): 1100 over-rejected blue-V accounts (they skew to more followers).
@@ -120,7 +120,7 @@ export X_FOLLOW_NETWORK_LOCK="$NETWORK_LOCK" X_FOLLOW_NETWORK_LOCK_TOKEN="$LOCK_
 # Write own PID so callers can stop the whole process tree reliably.
 echo $$ > "$PID_FILE"
 release_run_lock() {
-  node "$SCRIPTS/lib/run-lock.cjs" release "$NETWORK_LOCK" "$LOCK_TOKEN" >/dev/null 2>&1 || true
+  node "$SCRIPTS/lib/run-lock.cjs" release "$NETWORK_LOCK" "$LOCK_TOKEN" "$$" >/dev/null 2>&1 || true
   rm -f "$PID_FILE"
 }
 trap release_run_lock EXIT

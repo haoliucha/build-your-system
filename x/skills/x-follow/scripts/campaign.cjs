@@ -13,7 +13,7 @@
 //   TARGET (必填,如 100)         PROFILE_DIR (默认 ~/.config/playwright-chrome-profile-campaign)
 //   MY_HANDLE                     QUEUE_PATH / TRACKER_PATH / LOG_PATH / ALERT_PATH (默认 cwd)
 //   VERIFIED_REQUIRED (true)      FOLLOWING_GT_FOLLOWERS (true)        FERS_MAX (1100)
-//   BIO_BLACKLIST (内置 crypto)   BIO_WHITELIST (空)
+//   FILTER_CRYPTO (0=default)    BIO_BLACKLIST (explicit override)     BIO_WHITELIST (空)
 //   FOLLOW_WAIT_MIN/MAX_MS (25000/55000)   REJECT_WAIT_MIN/MAX_MS (5000/12000)
 //   LONG_BREAK_EVERY/MS (12/180000)        POST_CLICK_SETTLE_MS (6000)
 //   MAX_FOLLOWS_PER_HOUR (0=off) QUIET_HOURS ("2,7")  DRY_RUN (1)  RELOAD_QUEUE_EVERY (20)
@@ -22,14 +22,16 @@ const path = require('path');
 const fs = require('fs');
 const { EXIT_CODES, detectAnomaly, writeAlert } = require(path.join(__dirname, 'lib', 'anomaly.cjs'));
 const { gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
-const { CRYPTO_TOKENS } = require(path.join(__dirname, 'lib', 'filters.cjs'));
 const { generateComment } = require(path.join(__dirname, 'lib', 'comment-generator.cjs'));
 const { resolveCommentPolicy } = require(path.join(__dirname, 'lib', 'comment-policy.cjs'));
 const { prepareXFacingRuntime } = require(path.join(__dirname, 'lib', 'runtime-gate.cjs'));
+const { resolveFilterPolicy } = require(path.join(__dirname, 'lib', 'runtime-state.cjs'));
 
 let RUNTIME;
+let FILTER_POLICY;
 try {
   RUNTIME = prepareXFacingRuntime(process.env).state;
+  FILTER_POLICY = resolveFilterPolicy(process.env);
 } catch (error) {
   console.error(`FATAL: ${error.message}`);
   process.exit(2);
@@ -55,9 +57,8 @@ const CFG = {
   // FOLLOW_RATIO_MIN 0.5: reject only clear one-way broadcasters (fing < fers*0.5), not every
   // account whose followers slightly exceed their following. See lib/filters.decide() note.
   FOLLOW_RATIO_MIN: parseFloat(process.env.FOLLOW_RATIO_MIN || '0.5'),
-  // Default blacklist = shared CRYPTO_TOKENS. Override with BIO_BLACKLIST. To DISABLE the
-  // crypto filter, pass a never-matching token (empty string falls back to this default).
-  BIO_BLACKLIST: (process.env.BIO_BLACKLIST || CRYPTO_TOKENS.join(',')).split(',').map(s => s.trim()).filter(Boolean),
+  // FILTER_CRYPTO defaults off. Explicit BIO_BLACKLIST remains the highest-priority override.
+  BIO_BLACKLIST: FILTER_POLICY.bioBlacklist,
   BIO_WHITELIST: (process.env.BIO_WHITELIST || '').split(',').map(s => s.trim()).filter(Boolean),
 
   FOLLOW_WAIT_MIN_MS: parseInt(process.env.FOLLOW_WAIT_MIN_MS || '25000', 10),

@@ -17,8 +17,8 @@ const { parseCount, isCryptoHandle, backoffMs, decide, CRYPTO_TOKENS } = require
 const { buildSkipSet, classifyReason, softRejectNowPasses } = require(path.join(SCRIPTS, 'lib', 'skipset.cjs'));
 const { classifyAnomaly } = require(path.join(SCRIPTS, 'lib', 'anomaly.cjs'));
 const { resolveCommentPolicy } = require(path.join(SCRIPTS, 'lib', 'comment-policy.cjs'));
-const { acquireLock, releaseLock, acquireOrInheritLock, installLeaseCleanup } = require(path.join(SCRIPTS, 'lib', 'run-lock.cjs'));
-const { resolveRuntimeState } = require(path.join(SCRIPTS, 'lib', 'runtime-state.cjs'));
+const { acquireLock, releaseLock, acquireOrInheritLock, installLeaseCleanup, inspectLock, acquireCoordination, releaseCoordination } = require(path.join(SCRIPTS, 'lib', 'run-lock.cjs'));
+const { resolveRuntimeState, resolveFilterPolicy } = require(path.join(SCRIPTS, 'lib', 'runtime-state.cjs'));
 
 let pass = 0, fail = 0;
 function test(name, fn) { try { fn(); console.log(`  ✅ ${name}`); pass++; } catch (e) { console.log(`  ❌ ${name}\n     ${e.message}`); fail++; } }
@@ -393,6 +393,73 @@ test('inherited child token never releases its parent lock', () => {
   assert.strictEqual(releaseLock(lockPath, parent.token), true);
 });
 
+test('owner schema rejects empty, incomplete, and wrong-type JSON without stale recovery', () => {
+  const badRecords = [
+    {},
+    { pid: 1, token: 'a', jobDir: '/job' },
+    { pid: '1', token: 'a', jobDir: '/job', startedAt: '2026-08-19T00:00:00.000Z' },
+    { pid: 1, token: '', jobDir: '/job', startedAt: '2026-08-19T00:00:00.000Z' },
+    { pid: 1, token: 'a', jobDir: 7, startedAt: '2026-08-19T00:00:00.000Z' },
+    { pid: 1, token: 'a', jobDir: '/job', startedAt: 'not-a-date' },
+  ];
+  for (const record of badRecords) {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-schema-'));
+    const lockPath = path.join(d, 'network-run.lock');
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify(record));
+    assert.strictEqual(inspectLock(lockPath).state, 'malformed');
+    assert.throws(() => acquireLock(lockPath, { jobDir: '/new' }), /malformed/);
+    assert.ok(fs.existsSync(lockPath));
+  }
+});
+test('active recovery marker blocks coordination and stale marker is safely replaced', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-marker-'));
+  const lockPath = path.join(d, 'network-run.lock');
+  const marker = `${lockPath}.recovery`;
+  fs.mkdirSync(marker);
+  fs.writeFileSync(path.join(marker, 'owner.json'), JSON.stringify({ pid: process.pid, token: 'active-marker', jobDir: '/coord', startedAt: '2026-08-19T00:00:00.000Z' }));
+  assert.throws(() => acquireCoordination(lockPath, { jobDir: '/new' }), /coordination already active/);
+  fs.rmSync(marker, { recursive: true });
+  fs.mkdirSync(marker);
+  fs.writeFileSync(path.join(marker, 'owner.json'), JSON.stringify({ pid: 99999999, token: 'stale-marker', jobDir: '/coord', startedAt: '2026-08-01T00:00:00.000Z' }));
+  const lease = acquireCoordination(lockPath, { jobDir: '/new' });
+  assert.strictEqual(inspectLock(marker).record.token, lease.token);
+  assert.strictEqual(releaseCoordination(lease), true);
+  assert.ok(!fs.existsSync(marker));
+});
+test('old owner token cannot delete a replacement recovered under coordination', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-release-race-'));
+  const lockPath = path.join(d, 'network-run.lock');
+  fs.mkdirSync(lockPath);
+  fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({ pid: 99999999, token: 'old-owner', jobDir: '/old', startedAt: '2026-08-01T00:00:00.000Z' }));
+  const replacement = acquireLock(lockPath, { jobDir: '/new' });
+  assert.strictEqual(releaseLock(lockPath, 'old-owner', 99999999), false);
+  assert.strictEqual(inspectLock(lockPath).record.token, replacement.token);
+  releaseLock(lockPath, replacement.token);
+});
+test('concurrent stale recovery and old-owner release leave only a replacement owner', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-release-recover-race-'));
+  const lockPath = path.join(d, 'network-run.lock');
+  fs.mkdirSync(lockPath);
+  fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({ pid: 99999999, token: 'old-race-owner', jobDir: '/old', startedAt: '2026-08-01T00:00:00.000Z' }));
+  const helper = path.join(SCRIPTS, 'lib', 'run-lock.cjs');
+  const worker = `
+    const { acquireLock, releaseLock } = require(${JSON.stringify(helper)});
+    if (process.argv[1] === 'recover') { acquireLock(process.argv[2], { jobDir: '/new' }); }
+    else { releaseLock(process.argv[2], 'old-race-owner', 99999999); }
+  `;
+  const coordinator = `
+    const { spawn } = require('child_process');
+    const worker = process.argv[1], lockPath = process.argv[2];
+    const children = ['recover', 'release'].map(mode => spawn(process.execPath, ['-e', worker, mode, lockPath]));
+    Promise.all(children.map(child => new Promise(resolve => child.on('exit', resolve)))).then(() => process.exit(0));
+  `;
+  execFileSync('node', ['-e', coordinator, worker, lockPath]);
+  const finalOwner = inspectLock(lockPath);
+  assert.strictEqual(finalOwner.state, 'ready');
+  assert.notStrictEqual(finalOwner.record.token, 'old-race-owner');
+});
+
 group('runtime state resolver');
 test('runtime state defaults under the x-follow data directory', () => {
   const state = resolveRuntimeState({ HOME: '/home/test' });
@@ -413,6 +480,29 @@ test('runtime state preserves explicit JOB_DIR and file paths', () => {
 });
 test('runtime state rejects unsafe run ids', () => {
   for (const runId of ['.', '..', '../bad', 'bad/name', 'bad name']) assert.throws(() => resolveRuntimeState({ HOME: '/home/test', X_FOLLOW_RUN_ID: runId }), /safe single path segment/);
+});
+
+group('shared crypto filter policy');
+test('FILTER_CRYPTO defaults off for direct callers', () => {
+  assert.deepStrictEqual(resolveFilterPolicy({}), { filterCrypto: false, noCrypto: false, bioBlacklist: [] });
+});
+test('FILTER_CRYPTO=1 enables queue and campaign crypto filters', () => {
+  const policy = resolveFilterPolicy({ FILTER_CRYPTO: '1' });
+  assert.strictEqual(policy.filterCrypto, true);
+  assert.strictEqual(policy.noCrypto, true);
+  assert.ok(policy.bioBlacklist.includes('crypto'));
+});
+test('explicit NOCRYPTO and BIO_BLACKLIST override FILTER_CRYPTO', () => {
+  assert.deepStrictEqual(resolveFilterPolicy({ FILTER_CRYPTO: '1', NOCRYPTO: '0', BIO_BLACKLIST: 'custom,only' }), { filterCrypto: true, noCrypto: false, bioBlacklist: ['custom', 'only'] });
+});
+test('crypto flags reject invalid values', () => {
+  assert.throws(() => resolveFilterPolicy({ FILTER_CRYPTO: 'true' }), /FILTER_CRYPTO must be 0 or 1/);
+  assert.throws(() => resolveFilterPolicy({ NOCRYPTO: 'yes' }), /NOCRYPTO must be 0 or 1/);
+});
+test('build-queue direct default keeps crypto while FILTER_CRYPTO=1 filters it', () => {
+  const d = fixtureDir();
+  assert.ok(runBuildQueueEnv(d, {}).includes('BTCwhale'));
+  assert.ok(!runBuildQueueEnv(fixtureDir(), { FILTER_CRYPTO: '1' }).includes('BTCwhale'));
 });
 
 group('Playwright entry lock gates');
