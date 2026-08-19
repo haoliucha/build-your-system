@@ -16,11 +16,12 @@
 #
 # Key env (all optional except where noted):
 #   TARGET=10                MY_HANDLE=                PROFILE_DIR=~/.config/playwright-chrome-profile-campaign
-#   JOB_DIR=$(pwd)/.run      QUERIES="求互关,互相关注,回关,求关注,蓝V互关,蓝V互粉"
+#   X_FOLLOW_DATA_DIR=~/.config/x-follow-data  X_FOLLOW_RUN_ID=current
+#   JOB_DIR=$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID  QUERIES="求互关,互相关注,回关,求关注,蓝V互关,蓝V互粉"
 #   NOCRYPTO=1               CAND_MULT=8   (harvest until queue >= TARGET*CAND_MULT)
-#   SKIP_GLOB="$HOME/.claude/jobs/x-follow-*/tracker.json"   (prior trackers -> skip-set)
-#   FERS_MAX=1100            HARVEST_SCROLLS=18        MAX_CAMPAIGN_ATTEMPTS=12
-#   COMMENT_AFTER_FOLLOW=true   (reply to pinned post after follow, 引流回关; default false)
+#   SKIP_GLOB="$X_FOLLOW_DATA_DIR/runs/*/tracker.json"   (prior trackers -> skip-set)
+#   FERS_MAX=3000 FOLLOW_RATIO_MIN=0.5 FILTER_CRYPTO=0    HARVEST_SCROLLS=18
+#   COMMENT_AFTER_FOLLOW=true ALLOW_COMMENT_AFTER_FOLLOW=1   (both required to comment)
 #   NODE_PATH must point at a node_modules with playwright (set by caller).
 
 set -o pipefail
@@ -32,7 +33,13 @@ SCRIPTS="$SKILL_DIR/scripts"
 TARGET="${TARGET:-10}"
 MY_HANDLE="${MY_HANDLE:-}"
 PROFILE_DIR="${PROFILE_DIR:-$HOME/.config/playwright-chrome-profile-campaign}"
-JOB_DIR="${JOB_DIR:-$(pwd)/.run}"
+X_FOLLOW_DATA_DIR="${X_FOLLOW_DATA_DIR:-$HOME/.config/x-follow-data}"
+X_FOLLOW_RUN_ID="${X_FOLLOW_RUN_ID:-current}"
+if [[ ! "$X_FOLLOW_RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || [ "$X_FOLLOW_RUN_ID" = "." ] || [ "$X_FOLLOW_RUN_ID" = ".." ]; then
+  echo "FATAL: X_FOLLOW_RUN_ID must be a safe single path segment (letters, digits, ., _, -; not . or ..)" >&2
+  exit 2
+fi
+JOB_DIR="${JOB_DIR:-$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID}"
 # Query POOL (was 6 near-duplicate terms hammered every round). Wider + more varied so each
 # rotating slice reaches a fresher account population — the old set's results overlapped ~61%
 # (dup) and re-surfaced the same already-decided handles. QUERIES_PER_ROUND of these run each
@@ -53,7 +60,7 @@ else
 fi
 export NOCRYPTO
 CAND_MULT="${CAND_MULT:-8}"
-SKIP_GLOB="${SKIP_GLOB:-$HOME/.claude/jobs/x-follow-*/tracker.json}"
+SKIP_GLOB="${SKIP_GLOB:-$X_FOLLOW_DATA_DIR/runs/*/tracker.json}"
 # FERS_MAX 3000 (was 1100): 1100 over-rejected blue-V accounts (they skew to more followers).
 # FOLLOW_RATIO_MIN 0.5: reject only one-way broadcasters (fing < fers*0.5), not every account
 # whose followers slightly exceed following. Both feed campaign AND the threshold-aware skip
@@ -78,10 +85,14 @@ POOL_MIN_GAIN="${POOL_MIN_GAIN:-5}"
 # counting it toward POOL_DRY_ROUNDS — so a throttled run no longer bails early as "exhausted".
 ROUND_COOLDOWN_RL_S="${ROUND_COOLDOWN_RL_S:-300}"
 MAX_RL_RETRIES="${MAX_RL_RETRIES:-3}"
-# Comment引流: after each follow, reply to the target's pinned post with a varied comment
-# hinting at reciprocal following. Default OFF. Set COMMENT_AFTER_FOLLOW=true to enable.
+# Comment引流 requires both an explicit request and a separate allow token. Validate before
+# any cleanup, Chrome, Playwright, or X-facing action; campaign.cjs repeats this fail-closed.
 COMMENT_AFTER_FOLLOW="${COMMENT_AFTER_FOLLOW:-false}"
-export SKIP_GLOB SOFT_TTL_DAYS DROP_NONBLUE VERIFIED_REQUIRED FERS_MAX FOLLOW_RATIO_MIN COMMENT_AFTER_FOLLOW
+ALLOW_COMMENT_AFTER_FOLLOW="${ALLOW_COMMENT_AFTER_FOLLOW:-}"
+COMMENT_POLICY=$(COMMENT_AFTER_FOLLOW="$COMMENT_AFTER_FOLLOW" ALLOW_COMMENT_AFTER_FOLLOW="$ALLOW_COMMENT_AFTER_FOLLOW" node "$SCRIPTS/lib/comment-policy.cjs")
+COMMENT_POLICY_CODE=$?
+if [ "$COMMENT_POLICY_CODE" -ne 0 ]; then exit "$COMMENT_POLICY_CODE"; fi
+export X_FOLLOW_DATA_DIR X_FOLLOW_RUN_ID SKIP_GLOB SOFT_TTL_DAYS DROP_NONBLUE VERIFIED_REQUIRED FERS_MAX FOLLOW_RATIO_MIN COMMENT_AFTER_FOLLOW ALLOW_COMMENT_AFTER_FOLLOW
 
 mkdir -p "$JOB_DIR"
 TRACKER="$JOB_DIR/tracker.json"
@@ -98,9 +109,23 @@ status() {  # status <phase> <extra-msg>
   node -e "require('fs').writeFileSync('$STATUS', JSON.stringify({phase:process.argv[1], msg:process.argv[2], followed:(()=>{try{return JSON.parse(require('fs').readFileSync('$TRACKER')).followed.length}catch(e){return 0}})(), target:$TARGET, ts:new Date().toISOString()},null,2))" "$1" "${2:-}" 2>/dev/null || true
 }
 
+# Acquire the cross-host lock before cleanup_locks/pkill or any Chrome/Playwright/X-facing
+# operation. The helper records this shell's pid, a unique token, jobDir, and startedAt.
+NETWORK_LOCK="$X_FOLLOW_DATA_DIR/network-run.lock"
+LOCK_TOKEN=$(node "$SCRIPTS/lib/run-lock.cjs" acquire "$NETWORK_LOCK" "$JOB_DIR" "$$")
+LOCK_CODE=$?
+if [ "$LOCK_CODE" -ne 0 ]; then exit "$LOCK_CODE"; fi
+export X_FOLLOW_NETWORK_LOCK="$NETWORK_LOCK" X_FOLLOW_NETWORK_LOCK_TOKEN="$LOCK_TOKEN"
+
 # Write own PID so callers can stop the whole process tree reliably.
 echo $$ > "$PID_FILE"
-trap 'rm -f "$PID_FILE"' EXIT
+release_run_lock() {
+  node "$SCRIPTS/lib/run-lock.cjs" release "$NETWORK_LOCK" "$LOCK_TOKEN" >/dev/null 2>&1 || true
+  rm -f "$PID_FILE"
+}
+trap release_run_lock EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 followed() { node -e "try{process.stdout.write(String(JSON.parse(require('fs').readFileSync('$TRACKER')).followed.length))}catch(e){process.stdout.write('0')}" 2>/dev/null || echo 0; }
 
 cleanup_locks() { pkill -9 -f "user-data-dir=$PROFILE_DIR" 2>/dev/null; rm -f "$PROFILE_DIR"/Singleton* 2>/dev/null; sleep 1; }

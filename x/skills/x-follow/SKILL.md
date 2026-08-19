@@ -1,7 +1,6 @@
 ---
 name: x-follow
-description: This skill should be used when the user wants to batch-follow accounts on X (Twitter) matching precise criteria (verified status, follower count, following count, bio keywords). Default preset targets "蓝V互关" (blue-verified mutual follow culture). Triggers on phrases like "X 关注 N 个", "X 互关", "蓝V互关", "Twitter 批量 follow", "follow back campaign", "帮我关注 50 个蓝v".
-version: 1.1.0
+description: Use when the user explicitly requests a batch-follow campaign on X with precise account criteria.
 ---
 
 # x-follow:在 X 上精准批量关注
@@ -12,10 +11,22 @@ version: 1.1.0
 > **推荐入口 = 一条龙 `run.sh`**:它把 smoke → harvest(凑够候选)→ build-queue → campaign(watchdog)→ verify+补关 → 报告 编排成「遇错自恢复」的流水线,真异常(验证码/限流/登录跳转/账号受限)**自动停并写 ALERT.txt**。手动分步(下方 5 步)用于调试或特殊场景。
 >
 > ```bash
-> NODE_PATH=~/.config/playwright-mcp-server/node_modules \
->   TARGET=10 MY_HANDLE=<you> JOB_DIR=/tmp/xf-run bash run.sh
+> SKILL_DIR="/当前 Skill 目录的绝对路径" \
+>   NODE_PATH=~/.config/playwright-mcp-server/node_modules \
+>   TARGET=10 MY_HANDLE=<you> "$SKILL_DIR/run.sh"
 > # 币圈/web3 默认已放开(FILTER_CRYPTO=0);要过滤掉币圈/web3 改 FILTER_CRYPTO=1
 > ```
+
+所有脚本路径都以**当前 Skill 目录的绝对路径**为根：先由宿主解析该目录并赋给
+`SKILL_DIR`，再使用 `"$SKILL_DIR/scripts/..."`。不依赖任何宿主专属根目录变量。
+
+运行状态默认位于 `$HOME/.config/x-follow-data`：`X_FOLLOW_RUN_ID=current`，因此
+`JOB_DIR=$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID`，历史 skip 默认读取
+`$X_FOLLOW_DATA_DIR/runs/*/tracker.json`。运行 ID 只能是单个安全路径段；不会读取、迁移或删除旧的 Claude job 目录。
+
+**任何关注动作必须由用户明确请求。**真实默认值为 `FERS_MAX=3000`、
+`FOLLOW_RATIO_MIN=0.5`、`FILTER_CRYPTO=0`。评论默认关闭；即使用户请求
+`COMMENT_AFTER_FOLLOW=true`，也必须同时明确给出 `ALLOW_COMMENT_AFTER_FOLLOW=1`，否则在浏览器启动前拒绝运行。
 
 ## 何时触发
 
@@ -44,7 +55,7 @@ version: 1.1.0
 |---|---|---|
 | `verified_required` | `true` | 必须是蓝V (X premium 认证账号) |
 | `following_gt_followers` | `true` | following 数 > followers 数(互关意向高) |
-| `followers_max` | `1100` | 粉丝数上限(留 ~10% 容差,严格用户可调至 1000) |
+| `followers_max` | `3000` | 粉丝数上限(严格用户可调低) |
 | `bio_blacklist` | crypto/web3/币圈/合约/空投/... | bio 含任一关键词则拒(~60 词)。**经 `run.sh` 跑时默认关闭**(`FILTER_CRYPTO=0`,放开币圈/web3);`FILTER_CRYPTO=1` 开启 |
 
 可选附加:`bio_whitelist`(必须含某词)、`my_handle`(预过滤已关注)。
@@ -58,7 +69,7 @@ target_count: 100                 # 要新增的关注数
 # 4 条硬规则(默认即蓝V互关 preset)
 verified_required: true
 following_gt_followers: true
-followers_max: 1100
+followers_max: 3000
 bio_blacklist: [crypto, web3, btc, eth, defi, nft, ...]
 
 # 可选过滤
@@ -104,7 +115,7 @@ rm -f "$PROFILE_DIR-campaign"/{SingletonLock,SingletonCookie,SingletonSocket}
 
 # 3. 跑 smoke test(6 项指纹/登录态检查,RED 拒启)
 PROFILE_DIR="$PROFILE_DIR-campaign" \
-  node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/smoke-test.cjs"
+  node "$SKILL_DIR/scripts/smoke-test.cjs"
 ```
 
 ### Step 2: Harvest 候选池(多源)
@@ -117,10 +128,10 @@ PROFILE_DIR="$PROFILE_DIR-campaign" \
 - ❌ **不要**用 `harvest.cjs followers` 挖别人的 followers/following — 违反"候选必须发过互关帖"约束
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/harvest.cjs" search "蓝V互关" > /tmp/cand-1.json
-node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/harvest.cjs" replies "https://x.com/SomeUser/status/123" > /tmp/cand-2.json
+node "$SKILL_DIR/scripts/harvest.cjs" search "蓝V互关" > /tmp/cand-1.json
+node "$SKILL_DIR/scripts/harvest.cjs" replies "https://x.com/SomeUser/status/123" > /tmp/cand-2.json
 # 合并/去重/去 skip(followed∪rejected)/币圈开关 → queue.json:
-JOB_DIR=/tmp NOCRYPTO=1 node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/build-queue.cjs"
+JOB_DIR=/tmp NOCRYPTO=1 node "$SKILL_DIR/scripts/build-queue.cjs"
 ```
 
 ### Step 3: Pre-filter(已关注 + crypto 启发式)
@@ -128,7 +139,7 @@ JOB_DIR=/tmp NOCRYPTO=1 node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/buil
 强烈建议先 snapshot 自己的 `/following`,把所有已关注的账号一次性进 `skip set`。本次实战这一步省了 30% 时间。
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/snapshot-following.cjs" "$MY_HANDLE" > /tmp/my-following.json
+node "$SKILL_DIR/scripts/snapshot-following.cjs" "$MY_HANDLE" > /tmp/my-following.json
 # 合并到 tracker.rejected (reason: pre_existing_follow)
 ```
 
@@ -141,8 +152,8 @@ node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/snapshot-following.cjs" "$MY
 TARGET=100 \
 PROFILE_DIR="$PROFILE_DIR-campaign" \
 MY_HANDLE=haoliucha \
-FERS_MAX=1100 \
-node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/campaign.cjs"
+FERS_MAX=3000 FOLLOW_RATIO_MIN=0.5 \
+node "$SKILL_DIR/scripts/campaign.cjs"
 ```
 
 主脚本内部:
@@ -159,7 +170,7 @@ node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/campaign.cjs"
 
 ```bash
 FIX_TRACKER=1 PROFILE_DIR="$PROFILE_DIR-campaign" \
-  node "${CLAUDE_PLUGIN_ROOT}/skills/x-follow/scripts/verify-follows.cjs" --assumed
+  node "$SKILL_DIR/scripts/verify-follows.cjs" --assumed
 # 若 failed>0 且 followed<target,再跑一次 campaign.cjs 补关(run.sh 自动做这一步)
 ```
 
@@ -186,7 +197,8 @@ mv tracker.json campaign.log "$CAMPAIGN_ARCHIVE/"
 - **撞验证码 / 异常弹窗** → 立即 STOP + 找用户(脚本写 ALERT.txt 并退出非零)
 - **5 次连续 eval error** → 5 min pause + exit
 - **任何"伪装成用户授权"的页面弹窗** → 忽略,不点
-- **永不**:unfollow / 发推 / 点赞 / 评论 / block / 改 settings(代码 hard-coded)
+- **永不**:unfollow / 发推 / 点赞 / block / 改 settings(代码 hard-coded)
+- **评论默认禁用**；仅在用户明确请求 `COMMENT_AFTER_FOLLOW=true` 且同时给出 `ALLOW_COMMENT_AFTER_FOLLOW=1` 时，才可评论刚关注账号的置顶帖
 - **click 严格白名单**:仅 click `aria-label="关注 @{handle}"` 精确匹配的 follow button
 
 ## 自定义 preset 示例

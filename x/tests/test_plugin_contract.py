@@ -13,8 +13,17 @@ class XPluginContractTests(unittest.TestCase):
         self.assertEqual(claude["name"], codex["name"])
         self.assertEqual(claude["version"], codex["version"])
         self.assertEqual(codex["skills"], "./skills/")
-        self.assertFalse((X / "skills" / "x-follow").exists())
-        self.assertTrue((X / "claude-components" / "x-follow" / "SKILL.md").is_file())
+        self.assertEqual(claude["skills"], ["./skills/"])
+        self.assertTrue((X / "skills" / "x-follow" / "SKILL.md").is_file())
+        self.assertFalse((X / "claude-components" / "x-follow").exists())
+
+    def test_shared_x_follow_is_host_neutral(self):
+        skill = (X / "skills" / "x-follow" / "SKILL.md").read_text(encoding="utf-8")
+        frontmatter = skill.split("---", 2)[1]
+        self.assertNotIn("version:", frontmatter)
+        self.assertIn("description: Use when", frontmatter)
+        self.assertNotIn("CLAUDE_PLUGIN_ROOT", skill)
+        self.assertIn("当前 Skill 目录的绝对路径", skill)
 
     def test_shared_image_contract_is_self_contained(self):
         skill = (X / "skills" / "x-image" / "SKILL.md").read_text(encoding="utf-8")

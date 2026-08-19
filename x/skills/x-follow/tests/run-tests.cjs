@@ -10,12 +10,14 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 
 const SCRIPTS = path.join(__dirname, '..', 'scripts');
 const { parseCount, isCryptoHandle, backoffMs, decide, CRYPTO_TOKENS } = require(path.join(SCRIPTS, 'lib', 'filters.cjs'));
 const { buildSkipSet, classifyReason, softRejectNowPasses } = require(path.join(SCRIPTS, 'lib', 'skipset.cjs'));
 const { classifyAnomaly } = require(path.join(SCRIPTS, 'lib', 'anomaly.cjs'));
+const { resolveCommentPolicy } = require(path.join(SCRIPTS, 'lib', 'comment-policy.cjs'));
+const { acquireLock, releaseLock } = require(path.join(SCRIPTS, 'lib', 'run-lock.cjs'));
 
 let pass = 0, fail = 0;
 function test(name, fn) { try { fn(); console.log(`  ✅ ${name}`); pass++; } catch (e) { console.log(`  ❌ ${name}\n     ${e.message}`); fail++; } }
@@ -253,6 +255,97 @@ test('priority.json handles bypass the blue filter', () => {
   fs.writeFileSync(path.join(d, 'priority.json'), JSON.stringify(['vipNoBadge']));
   const got = runBuildQueueEnv(d, { NOCRYPTO: '0', DROP_NONBLUE: '1' });
   assert.ok(got.includes('vipNoBadge'), 'priority handle must survive DROP_NONBLUE');
+});
+
+// ------------------------------------------------------ shared runtime safety
+group('comment policy (explicit double authorization)');
+test('comment is disabled by default', () => assert.deepStrictEqual(resolveCommentPolicy({}), { enabled: false }));
+test('COMMENT_AFTER_FOLLOW=true needs an allow token', () => {
+  assert.throws(() => resolveCommentPolicy({ COMMENT_AFTER_FOLLOW: 'true' }), /ALLOW_COMMENT_AFTER_FOLLOW=1/);
+});
+test('COMMENT_AFTER_FOLLOW=1 with allow token enables comments', () => {
+  assert.deepStrictEqual(resolveCommentPolicy({ COMMENT_AFTER_FOLLOW: '1', ALLOW_COMMENT_AFTER_FOLLOW: '1' }), { enabled: true });
+});
+test('allow token alone does not enable comments', () => {
+  assert.deepStrictEqual(resolveCommentPolicy({ ALLOW_COMMENT_AFTER_FOLLOW: '1' }), { enabled: false });
+});
+test('invalid comment boolean fails closed', () => {
+  assert.throws(() => resolveCommentPolicy({ COMMENT_AFTER_FOLLOW: 'yes', ALLOW_COMMENT_AFTER_FOLLOW: '1' }), /must be true, false, 1, or 0/);
+});
+test('campaign direct invocation rejects an unapproved comment before browser startup', () => {
+  const result = spawnSync('node', [path.join(SCRIPTS, 'campaign.cjs')], {
+    env: { ...process.env, TARGET: '1', COMMENT_AFTER_FOLLOW: 'true', ALLOW_COMMENT_AFTER_FOLLOW: '' },
+    encoding: 'utf8',
+  });
+  assert.strictEqual(result.status, 2);
+  assert.match(result.stderr, /ALLOW_COMMENT_AFTER_FOLLOW=1/);
+});
+test('campaign direct invocation rejects an active cross-host lock before Playwright', () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-campaign-lock-'));
+  fs.writeFileSync(path.join(dataDir, 'network-run.lock'), JSON.stringify({ pid: process.pid, token: 'other-run', jobDir: '/other', startedAt: '2026-08-19T00:00:00.000Z' }));
+  const result = spawnSync('node', [path.join(SCRIPTS, 'campaign.cjs')], {
+    env: { ...process.env, TARGET: '1', X_FOLLOW_DATA_DIR: dataDir },
+    encoding: 'utf8',
+  });
+  assert.strictEqual(result.status, 2);
+  assert.match(result.stderr, /network run lock already active/);
+});
+
+group('run lock (single owner and stale recovery)');
+test('active lock rejects a concurrent run and release only removes its own token', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-'));
+  const lockPath = path.join(d, 'network-run.lock');
+  const first = acquireLock(lockPath, { pid: process.pid, token: 'first', jobDir: '/run/one', startedAt: '2026-08-19T00:00:00.000Z' });
+  assert.throws(() => acquireLock(lockPath, { pid: process.pid, token: 'second', jobDir: '/run/two' }), /already active/);
+  assert.strictEqual(releaseLock(lockPath, 'second'), false);
+  assert.ok(fs.existsSync(lockPath));
+  assert.strictEqual(releaseLock(lockPath, first.token), true);
+  assert.ok(!fs.existsSync(lockPath));
+});
+test('stale lock is recovered before acquiring', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-lock-'));
+  const lockPath = path.join(d, 'network-run.lock');
+  fs.writeFileSync(lockPath, JSON.stringify({ pid: 99999999, token: 'stale', jobDir: '/old', startedAt: '2026-08-01T00:00:00.000Z' }));
+  const lock = acquireLock(lockPath, { pid: process.pid, token: 'fresh', jobDir: '/new', startedAt: '2026-08-19T00:00:00.000Z' });
+  assert.strictEqual(lock.recovered.token, 'stale');
+  assert.strictEqual(JSON.parse(fs.readFileSync(lockPath, 'utf8')).token, 'fresh');
+  releaseLock(lockPath, lock.token);
+});
+
+group('build-queue historical skip glob');
+function historicalFixture() {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-data-'));
+  const job = path.join(dataDir, 'runs', 'current');
+  const other = path.join(dataDir, 'runs', 'previous');
+  fs.mkdirSync(job, { recursive: true });
+  fs.mkdirSync(other, { recursive: true });
+  fs.writeFileSync(path.join(job, 'tracker.json'), JSON.stringify({ followed: [], rejected: [] }));
+  fs.writeFileSync(path.join(other, 'tracker.json'), JSON.stringify({ followed: [{ handle: 'historical' }], rejected: [{ h: 'fers1100', r: 'reject:fers>1100(9000)' }] }));
+  fs.writeFileSync(path.join(job, 'cand-01.json'), JSON.stringify({ items: [{ handle: 'historical' }, { handle: 'fers1100' }, { handle: 'fresh' }] }));
+  return { dataDir, job };
+}
+test('default data-dir glob excludes another run tracker including fers>1100 fixture', () => {
+  const { dataDir, job } = historicalFixture();
+  assert.deepStrictEqual(runBuildQueueEnv(job, { NOCRYPTO: '0', X_FOLLOW_DATA_DIR: dataDir }).sort(), ['fresh']);
+});
+test('explicit skip glob overrides default data-dir glob', () => {
+  const { dataDir, job } = historicalFixture();
+  const external = path.join(dataDir, 'external');
+  fs.mkdirSync(external);
+  fs.writeFileSync(path.join(external, 'tracker.json'), JSON.stringify({ followed: [{ handle: 'fresh' }], rejected: [] }));
+  assert.deepStrictEqual(runBuildQueueEnv(job, { NOCRYPTO: '0', X_FOLLOW_DATA_DIR: dataDir, SKIP_GLOB: path.join(external, 'tracker.json') }).sort(), ['fers1100', 'historical']);
+});
+
+group('run.sh offline configuration gates');
+test('unsafe X_FOLLOW_RUN_ID exits before profile or browser handling', () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-run-state-'));
+  const result = spawnSync('bash', [path.join(__dirname, '..', 'run.sh')], {
+    env: { ...process.env, X_FOLLOW_DATA_DIR: dataDir, X_FOLLOW_RUN_ID: '../unsafe', PROFILE_DIR: path.join(dataDir, 'missing-profile') },
+    encoding: 'utf8',
+  });
+  assert.strictEqual(result.status, 2);
+  assert.match(result.stderr + result.stdout, /safe single path segment/);
+  assert.ok(!fs.existsSync(path.join(dataDir, 'network-run.lock')));
 });
 
 // ------------------------------------------------------------------- summary

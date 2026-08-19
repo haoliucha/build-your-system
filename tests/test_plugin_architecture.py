@@ -25,12 +25,14 @@ class PluginArchitectureTests(unittest.TestCase):
         self.assertIn("显式", skill)
 
     def test_x_boundaries_and_single_unfollow_source(self):
-        self.assertFalse((ROOT / "x" / "skills" / "x-follow").exists())
-        self.assertTrue((ROOT / "x" / "claude-components" / "x-follow" / "SKILL.md").is_file())
+        self.assertTrue((ROOT / "x" / "skills" / "x-follow" / "SKILL.md").is_file())
+        self.assertFalse((ROOT / "x" / "claude-components" / "x-follow").exists())
         self.assertTrue((ROOT / "x" / "skills" / "x-unfollow" / "SKILL.md").is_file())
         self.assertFalse((ROOT / "assistant" / "skills" / "x-unfollow").exists())
         codex_skills = manifest(Path("x") / ".codex-plugin" / "plugin.json")["skills"]
         self.assertEqual(codex_skills, "./skills/")
+        claude_skills = manifest(Path("x") / ".claude-plugin" / "plugin.json")["skills"]
+        self.assertEqual(claude_skills, ["./skills/"])
 
     def test_marketplaces_use_top_level_roots(self):
         codex = json.loads((ROOT / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))

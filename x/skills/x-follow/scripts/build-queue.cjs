@@ -24,8 +24,9 @@
 // flag comes from the search-result DOM badge, which is reliable for verified accounts;
 // VERIFIED_REQUIRED runs therefore lose nothing by trusting it. priority.json handles are
 // human-picked and bypass this filter.
-// Env: JOB_DIR (default cwd), NOCRYPTO (default 1; 0 KEEPs crypto handles),
-//      DROP_NONBLUE (0), SKIP_GLOB (prior trackers glob; empty = local tracker only),
+// Env: JOB_DIR (default cwd), X_FOLLOW_DATA_DIR (default ~/.config/x-follow-data),
+//      NOCRYPTO (default 1; 0 KEEPs crypto handles), DROP_NONBLUE (0),
+//      SKIP_GLOB (explicit prior trackers glob; otherwise all runs' trackers),
 //      SOFT_TTL_DAYS (30).
 
 const fs = require('fs');
@@ -43,7 +44,8 @@ function expandGlob(pattern) {
 const JOB = process.env.JOB_DIR || process.cwd();
 const NOCRYPTO = process.env.NOCRYPTO !== '0';
 const DROP_NONBLUE = process.env.DROP_NONBLUE === '1';
-const SKIP_GLOB = process.env.SKIP_GLOB || '';
+const X_FOLLOW_DATA_DIR = process.env.X_FOLLOW_DATA_DIR || path.join(process.env.HOME || '', '.config', 'x-follow-data');
+const SKIP_GLOB = process.env.SKIP_GLOB || path.join(X_FOLLOW_DATA_DIR, 'runs', '*', 'tracker.json');
 const SOFT_TTL_DAYS = parseInt(process.env.SOFT_TTL_DAYS || '30', 10);
 // Current campaign thresholds, mirrored here so the skip-set can do THRESHOLD-AWARE release:
 // accounts soft-rejected under an older, stricter FERS_MAX / ratio whose stored stats now pass
@@ -56,12 +58,10 @@ const tracker = read('tracker.json') || { followed: [], rejected: [] };
 const skipStats = {};
 const skipOpts = { softTtlDays: SOFT_TTL_DAYS, fersMax: FERS_MAX, followRatioMin: FOLLOW_RATIO_MIN, stats: skipStats };
 let skipHandles = buildSkipSet([tracker], skipOpts); // this run's own decisions
-if (SKIP_GLOB) {
-  const paths = expandGlob(SKIP_GLOB);
-  const fromGlob = buildSkipSetFromPaths(paths, skipOpts);
-  skipHandles = skipHandles.concat(fromGlob);
-  process.stderr.write(`[build-queue] skip-glob trackers=${paths.length} released=${JSON.stringify(skipStats)}\n`);
-}
+const paths = expandGlob(SKIP_GLOB);
+const fromGlob = buildSkipSetFromPaths(paths, skipOpts);
+skipHandles = skipHandles.concat(fromGlob);
+process.stderr.write(`[build-queue] skip-glob trackers=${paths.length} released=${JSON.stringify(skipStats)}\n`);
 const skip = new Set(skipHandles);
 
 const seen = new Set();

@@ -20,11 +20,12 @@
 
 const path = require('path');
 const fs = require('fs');
-const { chromium } = require('playwright');
 const { EXIT_CODES, detectAnomaly, writeAlert } = require(path.join(__dirname, 'lib', 'anomaly.cjs'));
 const { gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
 const { CRYPTO_TOKENS } = require(path.join(__dirname, 'lib', 'filters.cjs'));
 const { generateComment } = require(path.join(__dirname, 'lib', 'comment-generator.cjs'));
+const { resolveCommentPolicy } = require(path.join(__dirname, 'lib', 'comment-policy.cjs'));
+const { acquireLock, releaseLock, readLock, isPidActive } = require(path.join(__dirname, 'lib', 'run-lock.cjs'));
 
 // ============ CONFIG ============
 const CFG = {
@@ -69,8 +70,46 @@ const CFG = {
   // COMMENT_AFTER_FOLLOW: after a successful follow, reply to the target's pinned post with
   // a varied follow引流 comment hinting at reciprocal following. Only comments on pinned posts
   // (no pinned post → skip silently). Varied templates avoid spam-signal pattern repetition.
-  COMMENT_AFTER_FOLLOW: process.env.COMMENT_AFTER_FOLLOW === '1' || process.env.COMMENT_AFTER_FOLLOW === 'true',
+  COMMENT_AFTER_FOLLOW: false,
 };
+
+try {
+  CFG.COMMENT_AFTER_FOLLOW = resolveCommentPolicy(process.env).enabled;
+} catch (error) {
+  console.error(`FATAL: ${error.message}`);
+  process.exit(2);
+}
+
+let directRunLock = null;
+function ensureNetworkRunLock() {
+  const dataDir = process.env.X_FOLLOW_DATA_DIR || path.join(process.env.HOME || '', '.config', 'x-follow-data');
+  const lockPath = process.env.X_FOLLOW_NETWORK_LOCK || path.join(dataDir, 'network-run.lock');
+  const inheritedToken = process.env.X_FOLLOW_NETWORK_LOCK_TOKEN;
+  const inherited = inheritedToken && readLock(lockPath);
+  if (inherited && inherited.token === inheritedToken && isPidActive(inherited.pid)) return;
+
+  directRunLock = acquireLock(lockPath, {
+    pid: process.pid,
+    jobDir: process.env.JOB_DIR || path.dirname(CFG.TRACKER_PATH),
+  });
+  const cleanup = () => {
+    if (directRunLock) releaseLock(lockPath, directRunLock.token);
+  };
+  process.once('exit', cleanup);
+  ['SIGINT', 'SIGTERM'].forEach(signal => process.once(signal, () => {
+    cleanup();
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  }));
+}
+
+try {
+  // Direct campaign execution has no run.sh wrapper, so it acquires its own lock before
+  // Playwright is required. Wrapped execution verifies the parent run.sh token instead.
+  ensureNetworkRunLock();
+} catch (error) {
+  console.error(`FATAL: ${error.message}`);
+  process.exit(2);
+}
 
 if (!CFG.TARGET || CFG.TARGET < 1) {
   console.error('FATAL: TARGET env var required (e.g., TARGET=100)');
@@ -293,6 +332,9 @@ async function main() {
   const rejectedSet = new Set((tracker.rejected || []).map(r => r.h));
   log(`Followed: ${tracker.followed.length}/${CFG.TARGET}, Queue: ${queue.length}, FollowedSet: ${followedSet.size}, RejectedSet: ${rejectedSet.size}`);
 
+  // Require Playwright only after local policy validation has passed. This makes direct
+  // invocation fail closed before it can initialize any browser-facing dependency.
+  const { chromium } = require('playwright');
   const ctx = await chromium.launchPersistentContext(CFG.PROFILE_DIR, {
     channel: 'chrome', headless: false, chromiumSandbox: true, viewport: { width: 1280, height: 820 },
     ignoreDefaultArgs: ['--enable-automation'], args: ['--disable-blink-features=AutomationControlled'],

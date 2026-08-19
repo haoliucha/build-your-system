@@ -1,6 +1,6 @@
 ---
 description: "在 X 上启动一次精准批量关注 campaign。默认 preset 蓝V互关。参数: target / verified_required / followers_max / bio_blacklist 等。详见 skill x-follow"
-argument-hint: "target=100 [verified_required=true] [followers_max=1100] [bio_whitelist=...]"
+argument-hint: "target=100 [verified_required=true] [followers_max=3000] [bio_whitelist=...]"
 ---
 
 # /x-follow — X 精准批量关注
@@ -9,7 +9,7 @@ argument-hint: "target=100 [verified_required=true] [followers_max=1100] [bio_wh
 
 ## 执行流程
 
-1. **仅 Claude 可用**：激活 `claude-components/x-follow` skill，把上面的参数透传给它。如果当前宿主不是 Claude，明确告知该入口未安装。
+1. 激活共享的 `skills/x-follow` skill，把上面的参数透传给它。
 2. **跟用户对齐**(skill 内部):确认 target、profile_dir、异常处理偏好
 3. **跑 smoke test**(`scripts/smoke-test.cjs`)拒启不通过的环境
 4. **执行 5 步 campaign**:Setup → Harvest → Pre-filter → Verify+Follow loop → Cleanup

@@ -4,5 +4,5 @@
   "description": "X (Twitter) 工具集：x-follow 精准关注、x-unfollow 关注卫生，以及 x-image `/x:image` 封面和 article illustrations。Claude 通过 Codex Rescue 调用原生 Codex x-image，以 one-call ImageGen 生成完整图片且不做后处理。",
   "author": {"name": "haoliucha", "url": "https://github.com/haoliucha"},
   "commands": "./commands",
-  "skills": ["./skills/", "./claude-components/x-follow/"]
+  "skills": ["./skills/"]
 }

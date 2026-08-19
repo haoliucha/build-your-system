@@ -76,14 +76,13 @@ class StructureTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, text)
 
-    def test_codex_exposes_shared_skills_but_not_claude_only_follow(self):
+    def test_codex_and_claude_expose_the_same_shared_follow_skill(self):
         codex = read_json_optional(X / ".codex-plugin" / "plugin.json")
         claude = read_json_optional(X / ".claude-plugin" / "plugin.json")
         self.assertEqual(codex.get("skills"), "./skills/")
-        self.assertIn("./skills/", claude.get("skills", []))
-        self.assertIn("./claude-components/x-follow/", claude.get("skills", []))
-        self.assertFalse((X / "skills" / "x-follow").exists())
-        self.assertTrue((X / "claude-components" / "x-follow" / "SKILL.md").is_file())
+        self.assertEqual(claude.get("skills"), ["./skills/"])
+        self.assertTrue((X / "skills" / "x-follow" / "SKILL.md").is_file())
+        self.assertFalse((X / "claude-components" / "x-follow").exists())
 
     def test_x_image_assets_are_real_top_level_files_not_target_links(self):
         for directory in ("references", "styles", "previews"):
