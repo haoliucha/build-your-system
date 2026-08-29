@@ -16,6 +16,7 @@ try { Capture = require(path.join(LIB, 'capture-source.cjs')); } catch {}
 const Relationship = require(path.join(LIB, 'relationship-state.cjs'));
 const Store = require(path.join(LIB, 'current-store.cjs'));
 const Policy = require(path.join(LIB, 'rate-policy.cjs'));
+const Scan = require(path.join(LIB, 'list-scan-state.cjs'));
 
 let passed = 0;
 function test(name, fn) {
@@ -101,6 +102,31 @@ test('cursor 断链被拒绝；同 cursor 连续两次无新增才视为末页',
   assert.strictEqual(state.terminalReason, 'repeated_cursor_no_new');
   const loop = Timeline.advanceCursorState(Timeline.initialCursorState(), { requestCursor: null, bottomCursor: 'c1', userCount: 50, newUniqueCount: 50 });
   assert.throws(() => Timeline.advanceCursorState(loop, { requestCursor: 'c1', bottomCursor: 'c1', userCount: 1, newUniqueCount: 1 }), /CURSOR_LOOP/);
+});
+
+test('有未耗尽 Bottom cursor 时连续无响应必须失败而非合成成功', () => {
+  assert.strictEqual(Scan.stalledWithPendingCursor({
+    networkStarted: true,
+    cursorChainComplete: false,
+    expectedRequestCursor: 'bottom-9',
+    noResponseAttempts: 8,
+    domStableRounds: 8,
+  }), true);
+  assert.strictEqual(Scan.stalledWithPendingCursor({
+    networkStarted: true,
+    cursorChainComplete: true,
+    expectedRequestCursor: null,
+    noResponseAttempts: 8,
+    domStableRounds: 8,
+  }), false);
+  const source = fs.readFileSync(path.join(ROOT, 'scripts', 'list-snapshot.cjs'), 'utf8');
+  assert.doesNotMatch(source, /no_response_after_bottom/);
+});
+
+test('末页保留 Bottom cursor 时只接受接近上一完整基线的稳定覆盖', () => {
+  assert.strictEqual(Scan.baselineCoverageComplete({ count: 1168, expectedCount: 1170 }), true);
+  assert.strictEqual(Scan.baselineCoverageComplete({ count: 450, expectedCount: 1170 }), false);
+  assert.strictEqual(Scan.baselineCoverageComplete({ count: 1168, expectedCount: null }), false);
 });
 
 test('新限速按真实分页响应计数并使用45分钟看门狗', () => {

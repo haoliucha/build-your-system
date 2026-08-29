@@ -1,6 +1,6 @@
 {
   "name": "x",
-  "version": "4.1.2",
+  "version": "4.1.3",
   "description": "X 工作流：共享 x-follow 精准关注、x-unfollow 关注卫生与 x-image 原生图像生成。",
   "author": {"name": "haoliucha", "url": "https://github.com/haoliucha"},
   "repository": "https://github.com/haoliucha/build-your-system",

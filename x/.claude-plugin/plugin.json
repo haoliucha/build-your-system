@@ -1,6 +1,6 @@
 {
   "name": "x",
-  "version": "4.1.2",
+  "version": "4.1.3",
   "description": "X (Twitter) 工具集：共享 x-follow 精准关注、x-unfollow 关注卫生，以及 x-image `/x:image` 封面和 article illustrations。关注须明确授权；评论默认关闭，需独立双授权。Claude 通过 Codex Rescue 调用原生 Codex x-image，以 one-call ImageGen 生成完整图片且不做后处理。",
   "author": {"name": "haoliucha", "url": "https://github.com/haoliucha"},
   "commands": "./commands",

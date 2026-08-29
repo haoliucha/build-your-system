@@ -1,6 +1,6 @@
 # x — X (Twitter) 工作流
 
-`x` 是同时面向 Claude Code 与 Codex 的 X 工作流插件。当前版本为 **4.1.2**：两端共享 `x-unfollow` 关注卫生、`x-image` 图像生成与 `x-follow` 精准批量关注；账号 Skill 只允许从完整 `x` 插件运行。
+`x` 是同时面向 Claude Code 与 Codex 的 X 工作流插件。当前版本为 **4.1.3**：两端共享 `x-unfollow` 关注卫生、`x-image` 图像生成与 `x-follow` 精准批量关注；账号 Skill 只允许从完整 `x` 插件运行。
 
 ## 宿主能力
 

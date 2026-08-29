@@ -28,6 +28,10 @@ const DATA_DIR = process.env.XU_DATA_DIR || path.join(os.homedir(), '.config/x-u
 const PROFILE_DIR = process.env.PROFILE_DIR || path.join(os.homedir(), '.config/playwright-chrome-profile-campaign');
 const ALERT_PATH = process.env.ALERT_PATH || path.join(DATA_DIR, 'ALERT.txt');
 const STAGING_DIR = path.join(DATA_DIR, '.staging', RUN_ID);
+const previousMetaPath = path.join(DATA_DIR, 'current', `${LIST_TYPE}.meta.json`);
+const previousMeta = (() => { try { return JSON.parse(fs.readFileSync(previousMetaPath, 'utf8')); } catch { return null; } })();
+const previousBaselineCount = previousMeta?.complete !== false && Number.isInteger(previousMeta?.count) && previousMeta.count > 0
+  ? previousMeta.count : null;
 const WAIT_MIN = boundedInt(process.env.SCROLL_WAIT_MS, SNAPSHOT_WAIT_MIN_MS, { min: SNAPSHOT_WAIT_MIN_MS });
 const WAIT_MAX = boundedInt(process.env.SCROLL_WAIT_MAX_MS, SNAPSHOT_WAIT_MAX_MS, { min: WAIT_MIN });
 const STABLE_LIMIT = boundedInt(process.env.SCROLL_IDLE_LIMIT, 8, { min: 8 });
@@ -105,6 +109,10 @@ function responseChannel() {
 }
 
 function removeStaging() { fs.rmSync(STAGING_DIR, { recursive: true, force: true }); }
+function resetListStaging() {
+  fs.rmSync(path.join(STAGING_DIR, `${LIST_TYPE}.jsonl`), { force: true });
+  fs.rmSync(path.join(STAGING_DIR, `${LIST_TYPE}.meta.json`), { force: true });
+}
 function pageDrift(actualUrl) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   writeAlert(ALERT_PATH, {
@@ -125,7 +133,7 @@ function mergeRow(seen, row) {
 }
 
 async function scanList({ context, confirmAuthenticated }) {
-  removeStaging();
+  resetListStaging();
   fs.mkdirSync(STAGING_DIR, { recursive: true });
   const expectedUrl = `https://x.com${Scan.expectedListPath(HANDLE, LIST_TYPE)}`;
   say(`target=${LIST_TYPE} url=${expectedUrl} capture=passive-${EXPECTED_OPERATION} cadence=${WAIT_MIN}-${WAIT_MAX}ms pause=${SNAPSHOT_LONG_BREAK_MS / 1000}s/${SNAPSHOT_LONG_BREAK_EVERY}-responses watchdog=${WATCHDOG_MS / 60000}min`);
@@ -143,6 +151,8 @@ async function scanList({ context, confirmAuthenticated }) {
       if (status === 401) return channel.publish({ errorType: 'LOGIN_REDIRECT', error: `HTTP ${status} ${EXPECTED_OPERATION}` });
       if (status < 200 || status >= 300) return channel.publish({ errorType: 'COUNT_ANOMALY', error: `HTTP ${status} ${EXPECTED_OPERATION}` });
       try {
+        const finishedError = await response.finished();
+        if (finishedError) throw finishedError;
         const payload = await response.json();
         const parsed = Timeline.extractTimelineResponse(payload, { listType: LIST_TYPE });
         channel.publish({ ...parsed, requestCursor: Timeline.requestCursorFromUrl(response.url()) });
@@ -289,6 +299,8 @@ async function scanList({ context, confirmAuthenticated }) {
     }
     await page.waitForTimeout(jitterMs(WAIT_MIN, WAIT_MAX));
     await page.evaluate(scrollToTail);
+    await page.mouse.move(700, 800);
+    await page.mouse.wheel(0, 1200);
     scrollAttempts++;
 
     const event = await channel.take(RESPONSE_TIMEOUT_MS);
@@ -296,11 +308,29 @@ async function scanList({ context, confirmAuthenticated }) {
     else noResponseAttempts++;
     const dom = await collectDom();
 
-    if (networkStarted && noResponseAttempts >= 2 && domStableRounds >= 2) {
-      cursorState = { ...cursorState, cursorChainComplete: true, terminalReason: 'no_response_after_bottom' };
-      completionEvidence = 'cursor_exhausted';
-      terminalReason = cursorState.terminalReason;
-      break;
+    if (Scan.stalledWithPendingCursor({
+      networkStarted,
+      cursorChainComplete: cursorState.cursorChainComplete,
+      expectedRequestCursor: cursorState.expectedRequestCursor,
+      noResponseAttempts,
+      domStableRounds,
+      stableLimit: STABLE_LIMIT,
+    })) {
+      if (Scan.baselineCoverageComplete({ count: networkSeen.size, expectedCount: previousBaselineCount })) {
+        completionEvidence = 'baseline_coverage_stable';
+        terminalReason = 'baseline_covered_with_pending_bottom_cursor';
+        break;
+      }
+      await stopWithAlert('COUNT_ANOMALY', 'CURSOR_STALLED_WITH_BOTTOM_CURSOR', {
+        responsesSeen: cursorState.responsesSeen,
+        cursorPages: cursorState.cursorPages,
+        uniqueCount: networkSeen.size,
+        noResponseAttempts,
+        domStableRounds,
+        expectedRequestCursorPresent: true,
+        previousBaselineCount,
+        coveragePct: Scan.coveragePct(networkSeen.size, previousBaselineCount),
+      });
     }
     if (!networkStarted && dom.atBottom && domStableRounds >= STABLE_LIMIT) {
       completionEvidence = 'stable_bottom';
@@ -338,7 +368,8 @@ async function scanList({ context, confirmAuthenticated }) {
     finalUrl,
     count: rows.length,
     headerCount: null,
-    coveragePct: null,
+    previousBaselineCount,
+    coveragePct: Scan.coveragePct(rows.length, previousBaselineCount),
     captureMode: networkStarted ? 'network_response' : 'dom_fallback',
     completionEvidence,
     responsesSeen: cursorState.responsesSeen,

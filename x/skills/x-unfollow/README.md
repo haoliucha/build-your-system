@@ -29,6 +29,8 @@ X 列表页 ──页面请求──> Followers / Following 响应
 
 主路径以无 Bottom cursor，或同 cursor 连续两次无新增结束；响应完全不可见时才用主列表 DOM 稳定到底。网络响应一旦出现，最终账号只取响应集合，不合并 DOM。分页间隔 1–3 秒，每 25 个真实响应暂停 10 秒，总时长看门狗为 45 分钟。
 
+已观察到 Bottom cursor 后，如果连续 8 轮无分页响应且 DOM 无进展，只有网络集合覆盖上一完整基线至少 95%，且未超过“基线 + max(10 条, 2%)”时，扫描才使用 `baseline_coverage_stable` 完成。这不会伪称 cursor 已耗尽；覆盖不足则以 `CURSOR_STALLED_WITH_BOTTOM_CURSOR` 失败，清理 staging 并保留旧 current。
+
 ## 关键模块
 
 - `scripts/list-snapshot.cjs`：被动响应监听、页面滚动、URL/异常防护、DOM 兜底。

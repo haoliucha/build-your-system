@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.1.3 (2026-08-30)
+
+### Reliable list completion and relationship reports
+
+- 列表静默停滞不再无条件合成 `cursor_exhausted`；只有网络集合覆盖上一完整基线至少 95%，且未超过“基线 + max(10 条, 2%)”时，才使用明确的 `baseline_coverage_stable` 证据完成；否则 exit 17 并保留旧 current。
+- 分页响应在解析 JSON 前先等待 response finished，程序化触底后补一次主列表滚轮事件，降低 CDP 响应体不可读与 X 虚拟列表不继续加载的概率。
+- 同一 `relationships-report` 的第二张表不再删除第一张表的 staging 文件；整个 run 失败时仍清理全部 staging。
+
 ## 4.1.2 (2026-08-20)
 
 ### Single active plugin entry

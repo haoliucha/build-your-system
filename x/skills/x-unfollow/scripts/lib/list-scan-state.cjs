@@ -57,8 +57,33 @@ function shouldPauseAfterRound({ round, maxRounds, stopped, every = 10 }) {
 
 function executedRounds(round) { return round; }
 
+function stalledWithPendingCursor({
+  networkStarted,
+  cursorChainComplete,
+  expectedRequestCursor,
+  noResponseAttempts,
+  domStableRounds,
+  stableLimit = 8,
+}) {
+  return networkStarted === true
+    && cursorChainComplete !== true
+    && typeof expectedRequestCursor === 'string'
+    && expectedRequestCursor.length > 0
+    && Number.isInteger(noResponseAttempts)
+    && noResponseAttempts >= stableLimit
+    && Number.isInteger(domStableRounds)
+    && domStableRounds >= stableLimit;
+}
+
+function baselineCoverageComplete({ count, expectedCount, minCoveragePct = 95 }) {
+  if (!Number.isInteger(count) || count < 0 || !Number.isInteger(expectedCount) || expectedCount <= 0) return false;
+  const coverage = coveragePct(count, expectedCount);
+  const ceiling = allowedCount(expectedCount);
+  return coverage !== null && coverage >= minCoveragePct && ceiling !== null && count <= ceiling;
+}
+
 module.exports = {
   expectedListPath, isExpectedListUrl, allowedCount, coveragePct,
   initialProgress, advanceProgress, usableForNegativeDiff,
-  shouldPauseAfterRound, executedRounds,
+  shouldPauseAfterRound, executedRounds, stalledWithPendingCursor, baselineCoverageComplete,
 };
