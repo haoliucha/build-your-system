@@ -92,11 +92,14 @@ async function gotoRobust(page, url, opts = {}) {
   const base = opts.backoffBase != null ? opts.backoffBase : 20000;
   const cap = opts.backoffCap != null ? opts.backoffCap : 300000;
   const label = opts.label || url.replace(/^https:\/\/x\.com\//, '');
+  const traceFn = typeof opts.trace === 'function' ? opts.trace : null;
+  const trace = (event, data = {}) => { try { traceFn?.(event, { label, ...data }); } catch {} };
   // Jitter source — tests inject () => 0 for determinism.
   const rnd = typeof opts.randomFn === 'function' ? opts.randomFn : Math.random;
   let waitedMs = 0;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    trace('goto_attempt_start', { attempt, maxAttempts });
     let evidence = null;
     const observe = (response) => { evidence = evidence || responseEvidence(response); };
     if (typeof page.on === 'function') page.on('response', observe);
@@ -104,19 +107,21 @@ async function gotoRobust(page, url, opts = {}) {
       try {
         const navigationResponse = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
         evidence = evidence || responseEvidence(navigationResponse, { navigation: true });
+        trace('goto_document_response', { attempt, status: navigationResponse?.status?.() || null });
       } catch (e) {
         /* nav timeout under latency — treat as soft fail -> backoff */
+        trace('goto_exception', { attempt, error: e.message || String(e) });
       }
-      if (evidence) return { ok: false, attempts: attempt, waitedMs, ...evidence };
+      if (evidence) { trace('goto_attempt_end', { attempt, ok: false, reason: evidence.reason }); return { ok: false, attempts: attempt, waitedMs, ...evidence }; }
       await sleep(settle);
-      if (evidence) return { ok: false, attempts: attempt, waitedMs, ...evidence };
+      if (evidence) { trace('goto_attempt_end', { attempt, ok: false, reason: evidence.reason }); return { ok: false, attempts: attempt, waitedMs, ...evidence }; }
       if (needSel) {
         try { await page.waitForSelector(needSel, { timeout: 15000 }); } catch {}
       }
-      if (evidence) return { ok: false, attempts: attempt, waitedMs, ...evidence };
+      if (evidence) { trace('goto_attempt_end', { attempt, ok: false, reason: evidence.reason }); return { ok: false, attempts: attempt, waitedMs, ...evidence }; }
       const st = await pageState(page, needSel);
-      if (loginUrl(page.url())) return { ok: false, attempts: attempt, waitedMs, reason: 'LOGIN_REDIRECT' };
-      if (st.hasSel && !st.hasGenericError) return { ok: true, attempts: attempt, waitedMs, reason: null };
+      if (loginUrl(page.url())) { trace('goto_attempt_end', { attempt, ok: false, reason: 'LOGIN_REDIRECT' }); return { ok: false, attempts: attempt, waitedMs, reason: 'LOGIN_REDIRECT' }; }
+      if (st.hasSel && !st.hasGenericError) { trace('goto_attempt_end', { attempt, ok: true, reason: null, bodyLength: st.len }); return { ok: true, attempts: attempt, waitedMs, reason: null }; }
       if (attempt >= maxAttempts) break;
 
       const wait = backoffMs(attempt, base, cap) + Math.floor(rnd() * 5000);
@@ -124,6 +129,7 @@ async function gotoRobust(page, url, opts = {}) {
       process.stderr.write(
         `[nav] ${label}: ${st.hasGenericError ? 'generic-error-page' : 'no-content'} -> backoff ${Math.round(wait / 1000)}s (next try ${attempt + 1}/${maxAttempts})\n`
       );
+      trace('goto_backoff', { attempt, waitMs: wait, reason: st.hasGenericError ? 'GENERIC_NAV_ERROR' : 'NO_CONTENT' });
       await sleep(wait); // the WAIT is the recovery; next loop re-navigates
     } finally {
       if (typeof page.off === 'function') page.off('response', observe);
@@ -132,6 +138,7 @@ async function gotoRobust(page, url, opts = {}) {
   }
 
   const fin = await pageState(page, needSel);
+  trace('goto_end', { ok: fin.hasSel && !fin.hasGenericError, attempts: maxAttempts, reason: fin.hasGenericError ? 'GENERIC_NAV_ERROR' : 'NO_CONTENT' });
   return {
     ok: fin.hasSel && !fin.hasGenericError,
     attempts: maxAttempts,

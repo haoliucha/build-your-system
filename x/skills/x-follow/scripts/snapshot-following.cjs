@@ -10,7 +10,9 @@
 // and exclude self.
 
 const path = require('path');
+const { writeAlertWithEvidence } = require(path.join(__dirname, 'lib', 'anomaly.cjs'));
 const { captureXResponseEvidence, gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
+const { createProfilePacer } = require(path.join(__dirname, 'lib', 'profile-pacer.cjs'));
 const { prepareXFacingRuntime } = require(path.join(__dirname, 'lib', 'runtime-gate.cjs'));
 const { BrowserConfigError, withAuthenticatedContext, XAuthenticationError } = require(path.join(__dirname, 'lib', 'cdp-browser.cjs'));
 
@@ -23,6 +25,14 @@ if (!handle) {
 let RUNTIME;
 try { RUNTIME = prepareXFacingRuntime(process.env); }
 catch (error) { console.error(`FATAL: ${error.message}`); process.exit(2); }
+const PROFILE_PACER = createProfilePacer({
+  statePath: RUNTIME.state.pacingPath,
+  minIntervalMs: parseInt(process.env.PROFILE_VISIT_MIN_INTERVAL_MS || '90000', 10),
+  maxIntervalMs: parseInt(process.env.PROFILE_VISIT_MAX_INTERVAL_MS || '150000', 10),
+  maxVisitsPerHour: parseInt(process.env.MAX_PROFILE_VISITS_PER_HOUR || '30', 10),
+  rateLimitCooldownMs: parseInt(process.env.RATE_LIMIT_COOLDOWN_MS || '1800000', 10),
+  log: (message) => process.stderr.write(`[snapshot-following] ${message}\n`),
+});
 
 const EXTRACT_JS = `(async (me) => {
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -62,6 +72,7 @@ async function snapshot({ context, confirmAuthenticated }) {
   const page = context.pages()[0] || await context.newPage();
   const url = `https://x.com/${handle}/following`;
   process.stderr.write(`[snapshot-following] navigating to ${url}\n`);
+  try {
 
   // Wait for the list to actually render before scrolling (the original "returns 0" bug).
   const nav = await gotoRobust(page, url, { needSel: '[data-testid="UserCell"]', settle: 5000, retries: 4 });
@@ -70,6 +81,10 @@ async function snapshot({ context, confirmAuthenticated }) {
   await confirmAuthenticated(page, { expectedPath: `/${handle}/following` });
   if (!nav.ok) {
     process.stderr.write(`[snapshot-following] /following did not render after ${nav.attempts} attempts\n`);
+    await writeAlertWithEvidence(page, RUNTIME.state.alertPath, {
+      type: 'GENERIC_NAV_ERROR', text: `/following did not render: ${nav.reason || 'NO_CONTENT'}`,
+      handle, context: 'following_snapshot', url: page.url(), profileDir: PROFILE_DIR,
+    });
     console.log(JSON.stringify({ count: 0, handles: [], error: 'no_render' }, null, 2));
     process.exitCode = 3;
     return false;
@@ -87,9 +102,25 @@ async function snapshot({ context, confirmAuthenticated }) {
   process.stderr.write(`[snapshot-following] @${handle} follows ${result.count} accounts\n`);
   console.log(JSON.stringify(result, null, 2));
   return true;
+  } catch (error) {
+    let type = 'UNEXPECTED_ERROR';
+    if (error instanceof XAuthenticationError) type = 'LOGIN_REDIRECT';
+    else if (error.exitCode === 11 || /HTTP 429/.test(error.message || '')) type = 'RATE_LIMIT';
+    else if (error.exitCode === 18) type = 'GENERIC_NAV_ERROR';
+    let cooldown = null;
+    if (type === 'RATE_LIMIT') cooldown = PROFILE_PACER.noteRateLimit({ handle: `${handle}/following`, responseUrl: error.message });
+    await writeAlertWithEvidence(page, RUNTIME.state.alertPath, {
+      type, text: error.message || String(error), handle, context: 'following_snapshot',
+      rateLimitCooldownUntil: cooldown?.cooldownUntil || null,
+      url: (() => { try { return page.url(); } catch { return url; } })(), profileDir: PROFILE_DIR,
+    });
+    throw error;
+  }
 }
 
 async function main() {
+  await PROFILE_PACER.beforeNetwork(`following snapshot @${handle}`);
+  await PROFILE_PACER.beforeVisit(`${handle}/following`);
   await withAuthenticatedContext(
     { config: RUNTIME.browser, headless: false, width: 1280, height: 820 },
     snapshot,

@@ -34,6 +34,10 @@ node "$SKILL_DIR/scripts/configure-account.cjs" set --email=<chrome-account-emai
 默认参数：
 
 ```yaml
+profile_visit_min_interval_ms: 90000
+profile_visit_max_interval_ms: 150000
+max_profile_visits_per_hour: 30
+rate_limit_cooldown_ms: 1800000
 follow_wait_min_ms: 25000
 follow_wait_max_ms: 55000
 reject_wait_min_ms: 5000
@@ -49,11 +53,15 @@ quiet_hours: []
 
 不变量：
 
+- **主限流单位是资料页访问，不是 follow click。**任意两个候选资料页访问起点默认间隔 90-150 秒；reject、already-following、解析失败与成功关注都占用同一窗口。
+- 数据根目录的 `profile-pacing.json` 持久化最近一小时访问起点、下次最早访问时间和 429 冷却截止时间；全部 run、campaign resume、smoke、snapshot、verify 共享，不能靠重启进程或更换 run ID 清零。
+- 滚动一小时最多 30 个资料页访问。这个上限和随机间隔共同生效；两者取更长等待时间。
 - follow 间隔在配置区间内随机化；不要为了赶进度缩短。
 - 每 12 个成功关注执行长暂停。
 - 点击前滚动到目标按钮并短暂停顿。
 - 点击后等待 6 秒；未确认翻转的状态记为 `followed_assumed`，由独立验证步骤复核。
 - `MAX_FOLLOWS_PER_HOUR` 和 `QUIET_HOURS` 可进一步收紧，不用于放宽默认授权。
+- 真 HTTP 429 仍立即停止；同时记录 30 分钟冷却截止时间。再次明确授权 resume 只代表允许继续，不代表允许跳过剩余冷却。
 
 harvest 在一个有界 CDP session 中最多处理 `SESSION_SIZE=2` 个 query，query 间默认 25 秒加抖动，session 间默认冷却 75 秒。分 session 只用于限制突发量，不宣称能重置 X 配额。
 
@@ -64,6 +72,7 @@ harvest 在一个有界 CDP session 中最多处理 `SESSION_SIZE=2` 个 query�
 - 登录 URL、登录按钮、认证 Cookie 缺失，或未登录的受保护列表跳转都是 `LOGIN_REDIRECT`。
 - 已确认登录后的非预期跳转才是 `PAGE_DRIFT`。
 - 异常词匹配排除推文、bio、用户名和 UserCell，防止用户内容伪造平台告警。
+- 异常退出顺序固定为：保存 viewport PNG → 保存结构化 JSON → 更新 `ALERT.txt` → 关闭独立 CDP。截图可能显示正常 profile（后台 API 已 429），因此必须和 JSON 里的 `httpStatus=429`、`responseUrl` 一起判读。
 
 | 异常 | exit | 策略 |
 |---|---:|---|

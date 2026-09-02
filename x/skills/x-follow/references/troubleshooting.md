@@ -1,6 +1,6 @@
 # x-follow 故障排查
 
-先读 `ALERT.txt`、`status.json` 和对应 run 日志。独立 CDP Chrome 在退出时会关闭，不要寻找“仍在运行”的受控窗口，也不要关闭或修改系统 Chrome。
+先读 `ALERT.txt`、`status.json`、数据根目录的 `profile-pacing.json` 和对应 run 日志，再打开 `evidence/` 中由 `ALERT.txt` 指向的 PNG 与 JSON。独立 CDP Chrome 在留证后退出，不要寻找“仍在运行”的受控窗口，也不要关闭或修改系统 Chrome。resume 时旧 `ALERT.txt` 会先移入 `evidence/<timestamp>-previous-ALERT.txt`，避免旧异常冒充当前状态。
 
 ## `ACCOUNT_CONFIG_REQUIRED`
 
@@ -50,6 +50,18 @@ source 解析优先级：`X_CHROME_USER_DATA_DIR` → `SOURCE_PROFILE_DIR` → `
 - campaign 捕获真实 429：立即 exit 11，停止本轮所有关注。
 - harvest 捕获真实 429：中止当前轮，输出 `rateLimited:true`，由 `run.sh` 在上限内冷却。
 - 通用错误页：有界导航重试后单独记录；campaign exit 18，harvest 不设置 `rateLimited`。
+- 所有上述异常在浏览器关闭前先写 `evidence/*.png` 和同名 JSON；`ALERT.txt` 列出绝对路径。PNG 只证明当时可见页面，HTTP 429 以 JSON 中的 `httpStatus` 与 `responseUrl` 为网络证据。
+
+## 仍然出现 429
+
+默认 pacer 已把所有资料页访问（含 reject）限制为 90-150 秒一个、滚动一小时最多 30 个，并跨 resume 持久化。检查：
+
+1. `$X_FOLLOW_DATA_DIR/profile-pacing.json` 的 `profileVisitStartedAt` 是否持续增长，而不是每次重启或更换 run ID 清空；
+2. campaign 日志是否有 `PROFILE VISIT` 与 `PROFILE PACER wait`；
+3. `rateLimitCooldownUntil` 是否晚于当前时间；未到点时新进程应在启动 Chrome 前等待；
+4. 若仍有 429，优先把 `MAX_PROFILE_VISITS_PER_HOUR` 降到 20、区间改为 120000-210000；不要缩短等待或删除 `profile-pacing.json`。
+
+节流只能显著降低突发概率，不能保证 X 永不调整或收紧账号/API 配额。
 
 ## `PROFILE_LOCK_ACTIVE` / `PROFILE_LOCK_INVALID`
 
@@ -70,6 +82,10 @@ Chrome 由 CDP 模块启动，并显式使用 `--disable-blink-features=Automati
 - 所有 5 个 x-follow 浏览器入口是否仍通过 `withAuthenticatedContext`。
 
 不要改回 `launchPersistentContext`，也不要自动从一种显示模式回退到另一种模式。`x-follow` 默认可见。
+
+## `Target crashed`
+
+第一次 `page.evaluate: Target crashed` 即 exit 15，并在 `ALERT.txt` 中引用 `last-stable.png`。不要继续在该 page 上访问更多账号，也不要让 `run.sh` 自动重启。若要区分人工/自动流程，使用 `X_FOLLOW_TRACE=1 DRY_RUN=1 TRACE_PROFILE_LIMIT=5`；trace 只保存 operation、状态码、耗时、phase 和 rate-limit headers，不保存认证数据。
 
 ## `network run lock already active`
 

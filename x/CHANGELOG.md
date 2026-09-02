@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.1.4 (2026-09-02)
+
+### Evidence-led x-follow rate-limit diagnosis
+
+- 新增 Computer Use 人工基线与自动 `DRY_RUN` 的脱敏 trace，只记录语义阶段、GraphQL operation、状态码、耗时和 rate-limit headers，不保存认证信息、request body、variables 或完整查询串。
+- 自动资料页导航默认改为站内搜索精确 handle、点击结果进入 profile、使用浏览器 Back 返回；5-profile 对比中 `UsersByRestIds` 从 direct 模式的 30 次降到 10 次，随后 5-follow canary 完成且未出现 HTTP 429。
+- 所有资料页访问统一进入跨 run 持久化 pacer；真实 HTTP 429 保存全局冷却截止时间，普通错误页继续与 `RATE_LIMIT` 分开分类。
+- 异常首次出现即保存页面截图和结构化现场；`Target crashed` 立即 exit 15，`run.sh` 不自动重启，实时截图失败时引用最后健康的 `last-stable.png`。
+- `X_FOLLOW_TRACE=1 DRY_RUN=1 TRACE_PROFILE_LIMIT=5` 不修改 tracker；新增人工/自动 phase 对齐、trace 脱敏、rate headers、崩溃留证和硬停止回归测试。
+
 ## 4.1.3 (2026-08-30)
 
 ### Reliable list completion and relationship reports

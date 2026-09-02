@@ -16,7 +16,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const { writeAlertWithEvidence } = require(path.join(__dirname, 'lib', 'anomaly.cjs'));
 const { captureXResponseEvidence, gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
+const { createProfilePacer } = require(path.join(__dirname, 'lib', 'profile-pacer.cjs'));
 const { prepareXFacingRuntime } = require(path.join(__dirname, 'lib', 'runtime-gate.cjs'));
 const { BrowserConfigError, withAuthenticatedContext, XAuthenticationError } = require(path.join(__dirname, 'lib', 'cdp-browser.cjs'));
 
@@ -27,6 +29,14 @@ catch (error) { console.error(`FATAL: ${error.message}`); process.exit(2); }
 const TRACKER_PATH = RUNTIME.state.trackerPath;
 const FIX_TRACKER = process.env.FIX_TRACKER === '1';
 const argv = process.argv.slice(2);
+const PROFILE_PACER = createProfilePacer({
+  statePath: RUNTIME.state.pacingPath,
+  minIntervalMs: parseInt(process.env.PROFILE_VISIT_MIN_INTERVAL_MS || '90000', 10),
+  maxIntervalMs: parseInt(process.env.PROFILE_VISIT_MAX_INTERVAL_MS || '150000', 10),
+  maxVisitsPerHour: parseInt(process.env.MAX_PROFILE_VISITS_PER_HOUR || '30', 10),
+  rateLimitCooldownMs: parseInt(process.env.RATE_LIMIT_COOLDOWN_MS || '1800000', 10),
+  log: (message) => process.stderr.write(`[verify] ${message}\n`),
+});
 
 function loadTracker() { try { return JSON.parse(fs.readFileSync(TRACKER_PATH, 'utf8')); } catch { return null; } }
 
@@ -56,7 +66,11 @@ async function verify({ context, confirmAuthenticated }) {
   const page = context.pages()[0] || await context.newPage();
   const confirmed = [], failed = [];
   let authenticationConfirmed = false;
+  let currentHandle = null;
+  try {
   for (const h of handles) {
+    currentHandle = h;
+    await PROFILE_PACER.beforeVisit(h);
     const nav = await gotoRobust(page, `https://x.com/${h}`, { needSel: 'div[data-testid="UserName"]', settle: 3500, retries: 3 });
     if (nav.reason === 'RATE_LIMIT') throw Object.assign(new Error(`HTTP 429 ${nav.responseUrl || h}`), { exitCode: 11 });
     if (nav.reason === 'LOGIN_REDIRECT') throw new XAuthenticationError(`follow verification requires login: ${page.url()}`, nav);
@@ -93,6 +107,26 @@ async function verify({ context, confirmAuthenticated }) {
     }
   }
   console.log(JSON.stringify({ confirmed, failed, checked: handles.length }, null, 2));
+  } catch (error) {
+    let type = 'UNEXPECTED_ERROR';
+    if (error instanceof XAuthenticationError) type = 'LOGIN_REDIRECT';
+    else if (error.exitCode === 11 || /HTTP 429/.test(error.message || '')) type = 'RATE_LIMIT';
+    else if (error.exitCode === 18) type = 'GENERIC_NAV_ERROR';
+    let rateLimitCooldownUntil = null;
+    if (type === 'RATE_LIMIT') {
+      rateLimitCooldownUntil = PROFILE_PACER.noteRateLimit({ handle: currentHandle, responseUrl: error.message });
+    }
+    await writeAlertWithEvidence(page, RUNTIME.state.alertPath, {
+      type,
+      text: error.message || String(error),
+      handle: currentHandle,
+      url: (() => { try { return page.url(); } catch { return null; } })(),
+      profileDir: PROFILE_DIR,
+      trackerPath: TRACKER_PATH,
+      rateLimitCooldownUntil: rateLimitCooldownUntil?.cooldownUntil || null,
+    });
+    throw error;
+  }
 }
 
 async function main() {
@@ -100,6 +134,7 @@ async function main() {
     console.log(JSON.stringify({ confirmed: [], failed: [], checked: 0 }, null, 2));
     return;
   }
+  await PROFILE_PACER.beforeNetwork('follow verification');
   await withAuthenticatedContext(
     { config: RUNTIME.browser, headless: false, width: 1280, height: 820 },
     verify,

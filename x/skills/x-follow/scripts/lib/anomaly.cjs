@@ -16,6 +16,7 @@
 // same logic (patterns injected from the shared constants below).
 
 const fs = require('fs');
+const path = require('path');
 
 const RL_PATTERNS = [
   'rate limit', 'rate-limit', 'rate_limit',
@@ -129,6 +130,11 @@ function writeAlert(alertPath, info) {
     `Handle (if any): ${info.handle || 'N/A'}`,
     `URL: ${info.url || 'N/A'}`,
     `Exit Code: ${EXIT_CODES[info.type] || 99}`,
+    `Screenshot: ${info.screenshotPath || 'N/A'}`,
+    `Fallback Screenshot: ${info.fallbackScreenshotPath || 'N/A'}`,
+    `Evidence JSON: ${info.evidencePath || 'N/A'}`,
+    `Capture Error: ${info.captureError || 'N/A'}`,
+    `Rate-limit cooldown until: ${info.rateLimitCooldownUntil || 'N/A'}`,
     ``,
     `=== ACTION REQUIRED ===`,
     `1. Inspect this alert and the run log; the dedicated CDP Chrome child has been closed`,
@@ -147,7 +153,105 @@ function writeAlert(alertPath, info) {
   fs.writeFileSync(alertPath, lines.join('\n') + '\n');
 }
 
+function safeSegment(value, fallback) {
+  const normalized = String(value || '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  return normalized || fallback;
+}
+
+function writeJsonAtomic(filePath, value) {
+  const temporaryPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.tmp`);
+  fs.writeFileSync(temporaryPath, JSON.stringify(value, null, 2), { mode: 0o600 });
+  fs.renameSync(temporaryPath, filePath);
+  try { fs.chmodSync(filePath, 0o600); } catch {}
+}
+
+// Capture the visible browser state BEFORE the CDP context closes. A background API 429
+// may leave the visible profile looking normal, so the PNG is paired with structured
+// network evidence, the current URL/title, viewport, and a bounded page-text excerpt.
+async function captureFailureEvidence(page, alertPath, info = {}) {
+  const timestamp = new Date().toISOString();
+  const evidenceDir = path.join(path.dirname(alertPath), 'evidence');
+  fs.mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(evidenceDir, 0o700); } catch {}
+  const stem = [
+    timestamp.replace(/[:.]/g, '-'),
+    safeSegment(info.type, 'ERROR'),
+    safeSegment(info.handle, 'page'),
+  ].join('-');
+  const screenshotPath = path.join(evidenceDir, `${stem}.png`);
+  const evidencePath = path.join(evidenceDir, `${stem}.json`);
+  const captureErrors = [];
+
+  let pageState = {};
+  try {
+    pageState = await page.evaluate(() => ({
+      url: window.location.href,
+      title: document.title || '',
+      bodyText: ((document.body && document.body.innerText) || '').slice(0, 5000),
+      viewport: { width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio },
+    }));
+  } catch (error) {
+    captureErrors.push(`page-state: ${error.message}`);
+    try { pageState.url = page.url(); } catch {}
+  }
+
+  let savedScreenshotPath = null;
+  let fallbackScreenshotPath = null;
+  try {
+    await page.screenshot({ path: screenshotPath, fullPage: false, animations: 'disabled', timeout: 10000 });
+    try { fs.chmodSync(screenshotPath, 0o600); } catch {}
+    savedScreenshotPath = screenshotPath;
+  } catch (error) {
+    captureErrors.push(`screenshot: ${error.message}`);
+    if (info.lastStablePath && fs.existsSync(info.lastStablePath)) fallbackScreenshotPath = info.lastStablePath;
+  }
+
+  const evidence = {
+    schemaVersion: 1,
+    capturedAt: timestamp,
+    anomaly: {
+      type: info.type || 'UNKNOWN',
+      text: info.text || '',
+      handle: info.handle || null,
+      context: info.context || null,
+      httpStatus: info.httpStatus || null,
+      responseUrl: info.responseUrl || null,
+      rateLimitCooldownUntil: info.rateLimitCooldownUntil || null,
+    },
+    page: pageState,
+    screenshotPath: savedScreenshotPath,
+    fallbackScreenshotPath,
+    captureErrors,
+  };
+  let savedEvidencePath = null;
+  try {
+    writeJsonAtomic(evidencePath, evidence);
+    savedEvidencePath = evidencePath;
+  } catch (error) {
+    captureErrors.push(`evidence-json: ${error.message}`);
+  }
+  return {
+    screenshotPath: savedScreenshotPath,
+    fallbackScreenshotPath,
+    evidencePath: savedEvidencePath,
+    captureError: captureErrors.length ? captureErrors.join(' | ') : null,
+    pageTitle: pageState.title || null,
+    url: pageState.url || info.url || null,
+  };
+}
+
+async function writeAlertWithEvidence(page, alertPath, info) {
+  let evidence;
+  try { evidence = await captureFailureEvidence(page, alertPath, info); }
+  catch (error) { evidence = { screenshotPath: null, evidencePath: null, captureError: error.message }; }
+  const merged = { ...info, ...evidence };
+  fs.mkdirSync(path.dirname(alertPath), { recursive: true, mode: 0o700 });
+  writeAlert(alertPath, merged);
+  return merged;
+}
+
 module.exports = {
   RL_PATTERNS, LOCK_PATTERNS, EXIT_CODES,
-  classifyAnomaly, ANOMALY_DETECTOR_JS, detectAnomaly, writeAlert,
+  classifyAnomaly, ANOMALY_DETECTOR_JS, detectAnomaly,
+  captureFailureEvidence, writeAlert, writeAlertWithEvidence,
 };

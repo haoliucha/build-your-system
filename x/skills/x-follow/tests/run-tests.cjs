@@ -16,6 +16,9 @@ const SCRIPTS = path.join(__dirname, '..', 'scripts');
 const { parseCount, isCryptoHandle, backoffMs, decide, CRYPTO_TOKENS } = require(path.join(SCRIPTS, 'lib', 'filters.cjs'));
 const { buildSkipSet, classifyReason, softRejectNowPasses } = require(path.join(SCRIPTS, 'lib', 'skipset.cjs'));
 const { classifyAnomaly } = require(path.join(SCRIPTS, 'lib', 'anomaly.cjs'));
+const { computeWaitPlan, createProfilePacer, normalizePacerConfig } = require(path.join(SCRIPTS, 'lib', 'profile-pacer.cjs'));
+const { normalizeXUrl, pickRateLimitHeaders } = require(path.join(SCRIPTS, 'lib', 'trace-recorder.cjs'));
+const { summarize } = require(path.join(SCRIPTS, 'compare-traces.cjs'));
 const { resolveCommentPolicy } = require(path.join(SCRIPTS, 'lib', 'comment-policy.cjs'));
 const CdpBrowser = require(path.join(SCRIPTS, 'lib', 'cdp-browser.cjs'));
 const runLock = require(path.join(SCRIPTS, 'lib', 'run-lock.cjs'));
@@ -233,6 +236,164 @@ test('empty page -> EMPTY_PAGE', () =>
   assert.strictEqual(classifyAnomaly({ bodyText: 'short', path: '/home', webdriver: false }).type, 'EMPTY_PAGE'));
 test('healthy page -> null', () =>
   assert.strictEqual(classifyAnomaly({ bodyText: 'a normal logged-in home timeline with lots of content' + PAD, path: '/home', webdriver: false }), null));
+
+// -------------------------------------------------------- minimal trace recorder
+group('minimal page/network trace');
+test('GraphQL URL normalization drops variables and keeps operation only', () => {
+  assert.deepStrictEqual(
+    normalizeXUrl('https://x.com/i/api/graphql/hash123/UsersByRestIds?variables=%7B%22secret%22%3A1%7D'),
+    { host: 'x.com', path: '/i/api/graphql/hash123/UsersByRestIds', operation: 'UsersByRestIds', endpointKey: 'graphql:UsersByRestIds' },
+  );
+  assert.strictEqual(normalizeXUrl('https://example.com/i/api/graphql/hash/Other'), null);
+});
+test('rate-limit header selection excludes cookies and auth', () => {
+  assert.deepStrictEqual(pickRateLimitHeaders({
+    'X-Rate-Limit-Limit': '100', 'x-rate-limit-remaining': '42', 'x-rate-limit-reset': '1234',
+    'set-cookie': 'secret', authorization: 'bearer secret',
+  }), { 'x-rate-limit-limit': '100', 'x-rate-limit-remaining': '42', 'x-rate-limit-reset': '1234' });
+});
+test('trace summary groups endpoint calls by operation and phase', () => {
+  const summary = summarize([
+    { event: 'network_response', correlationId: 'profile-1', operation: 'UsersByRestIds', endpointKey: 'graphql:UsersByRestIds', status: 200, phase: 'hydrate', durationMs: 10, rateLimit: {} },
+    { event: 'network_response', correlationId: 'profile-2', operation: 'UsersByRestIds', endpointKey: 'graphql:UsersByRestIds', status: 429, phase: 'evaluate', durationMs: 20, rateLimit: { 'x-rate-limit-remaining': '0' } },
+  ]);
+  assert.strictEqual(summary.profileCount, 2);
+  assert.strictEqual(summary.operations.UsersByRestIds.count, 2);
+  assert.deepStrictEqual(summary.operations.UsersByRestIds.statuses, { 200: 1, 429: 1 });
+  assert.strictEqual(summary.operations.UsersByRestIds.rateHeaders, 1);
+});
+test('trace summary aligns manual and automatic profile correlation IDs', () => {
+  const summary = summarize([
+    { event: 'profile_loaded', correlationId: 'manual-profile-1', handle: 'alice', phase: 'hydrate' },
+    { event: 'network_response', correlationId: 'manual-profile-1', operation: 'UserByScreenName', status: 200, phase: 'profile_1_hydrate' },
+    { event: 'profile_loaded', correlationId: 'manual-profile-2', handle: 'bob', phase: 'hydrate' },
+  ]);
+  assert.strictEqual(summary.profileCount, 2);
+});
+test('trace recorder correlates network response without persisting secrets', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-trace-'));
+  const helperPath = path.join(SCRIPTS, 'lib', 'trace-recorder.cjs');
+  const child = `
+    const { EventEmitter } = require('events');
+    const { createTraceRecorder } = require(process.argv[1]);
+    const root = process.argv[2];
+    const page = new EventEmitter();
+    page.screenshot = async () => {};
+    const request = { url: () => 'https://x.com/i/api/graphql/hash/UsersByRestIds?variables=SECRET', method: () => 'GET', resourceType: () => 'xhr', failure: () => null };
+    const response = { url: request.url, request: () => request, status: () => 200, allHeaders: async () => ({ 'x-rate-limit-remaining': '7', 'set-cookie': 'SECRET' }) };
+    const trace = createTraceRecorder({ enabled: true, traceDir: root, source: 'auto', nowFn: (() => { let n=0; return () => 1000 + ++n; })() });
+    trace.setContext({ correlationId: 'profile-1', handle: 'alice', phase: 'hydrate' });
+    trace.attach(page); page.emit('request', request); page.emit('response', response);
+    trace.flush().then(async () => { await trace.detach(); process.stdout.write(trace.flowPath); });
+  `;
+  const result = spawnSync(process.execPath, ['-e', child, helperPath, root], { encoding: 'utf8' });
+  assert.strictEqual(result.status, 0, result.stderr);
+  const text = fs.readFileSync(result.stdout, 'utf8');
+  assert.match(text, /"operation":"UsersByRestIds"/);
+  assert.match(text, /"correlationId":"profile-1"/);
+  assert.match(text, /"x-rate-limit-remaining":"7"/);
+  assert.doesNotMatch(text, /SECRET|set-cookie|authorization/i);
+});
+
+// -------------------------------------------------------- persistent profile pacer
+group('profile pacer (all profile visits, persisted across resumes)');
+const PACER_CFG = { minIntervalMs: 90000, maxIntervalMs: 150000, maxVisitsPerHour: 30, rateLimitCooldownMs: 1800000 };
+test('profile interval blocks the next navigation start', () => {
+  const now = Date.parse('2026-09-02T00:00:00Z');
+  const plan = computeWaitPlan({ nextVisitNotBefore: now + 12345 }, PACER_CFG, now);
+  assert.strictEqual(plan.waitMs, 12345);
+  assert.deepStrictEqual(plan.reasons, ['profile_interval']);
+});
+test('rolling profile cap counts rejects and follows alike', () => {
+  const now = Date.parse('2026-09-02T01:00:00Z');
+  const visits = Array.from({ length: 30 }, (_, index) => now - 3500000 + index * 1000);
+  const plan = computeWaitPlan({ profileVisitStartedAt: visits }, PACER_CFG, now);
+  assert.strictEqual(plan.waitMs, visits[0] + 3600000 - now + 5000);
+  assert.deepStrictEqual(plan.reasons, ['hourly_profile_cap']);
+});
+test('persisted rate-limit cooldown dominates a shorter interval', () => {
+  const now = Date.parse('2026-09-02T02:00:00Z');
+  const plan = computeWaitPlan({ nextVisitNotBefore: now + 1000, rateLimitCooldownUntil: now + 500000 }, PACER_CFG, now);
+  assert.strictEqual(plan.waitMs, 500000);
+  assert.deepStrictEqual(plan.reasons, ['rate_limit_cooldown']);
+});
+test('invalid pacer ranges fail closed', () => {
+  assert.throws(
+    () => normalizePacerConfig({ minIntervalMs: 10, maxIntervalMs: 5, maxVisitsPerHour: 30, rateLimitCooldownMs: 1 }),
+    /must be >=/,
+  );
+});
+test('rate-limit state survives a new pacer instance', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-pacer-'));
+  const statePath = path.join(root, 'pacing.json');
+  const now = Date.parse('2026-09-02T03:00:00Z');
+  const first = createProfilePacer({ statePath, ...PACER_CFG, nowFn: () => now });
+  const note = first.noteRateLimit({ handle: 'limited', responseUrl: 'https://x.com/i/api/graphql/test' });
+  assert.strictEqual(Date.parse(note.cooldownUntil), now + PACER_CFG.rateLimitCooldownMs);
+  const persisted = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  const resumedPlan = computeWaitPlan(persisted, PACER_CFG, now + 60000);
+  assert.strictEqual(resumedPlan.waitMs, PACER_CFG.rateLimitCooldownMs - 60000);
+  assert.strictEqual(fs.statSync(statePath).mode & 0o777, 0o600);
+});
+test('campaign paces before every profile navigation', () => {
+  const source = fs.readFileSync(path.join(SCRIPTS, 'campaign.cjs'), 'utf8');
+  const paceAt = source.indexOf('await PROFILE_PACER.beforeVisit(handle)');
+  const navigateAt = source.indexOf('gotoRobust(page, `https://x.com/${handle}`');
+  assert.ok(paceAt >= 0 && navigateAt > paceAt);
+  assert.match(source, /PROFILE_NAV_MODE:\s*process\.env\.PROFILE_NAV_MODE\s*\|\|\s*'search-click'/);
+  assert.match(source, /from:\$\{handle\}/);
+  assert.match(source, /page\.goBack/);
+});
+
+test('failure evidence writes screenshot, JSON, and ALERT paths before exit', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-evidence-'));
+  const alertPath = path.join(root, 'ALERT.txt');
+  const helperPath = path.join(SCRIPTS, 'lib', 'anomaly.cjs');
+  const child = `
+    const fs = require('fs');
+    const { writeAlertWithEvidence } = require(process.argv[1]);
+    const alertPath = process.argv[2];
+    const page = {
+      evaluate: async () => ({ url: 'https://x.com/limited', title: 'Limited profile', bodyText: 'visible page state', viewport: { width: 1280, height: 820, devicePixelRatio: 2 } }),
+      screenshot: async ({ path }) => fs.writeFileSync(path, 'PNG-EVIDENCE'),
+      url: () => 'https://x.com/limited',
+    };
+    writeAlertWithEvidence(page, alertPath, { type: 'RATE_LIMIT', text: 'HTTP 429', handle: 'limited', httpStatus: 429, responseUrl: 'https://x.com/i/api/graphql/test' })
+      .then((result) => process.stdout.write(JSON.stringify(result)))
+      .catch((error) => { console.error(error); process.exit(1); });
+  `;
+  const result = spawnSync(process.execPath, ['-e', child, helperPath, alertPath], { encoding: 'utf8' });
+  assert.strictEqual(result.status, 0, result.stderr);
+  const evidence = JSON.parse(result.stdout);
+  assert.ok(fs.existsSync(evidence.screenshotPath));
+  assert.ok(fs.existsSync(evidence.evidencePath));
+  assert.strictEqual(fs.statSync(evidence.screenshotPath).mode & 0o777, 0o600);
+  const alert = fs.readFileSync(alertPath, 'utf8');
+  assert.match(alert, /Screenshot: .*\.png/);
+  assert.match(alert, /Evidence JSON: .*\.json/);
+  const json = JSON.parse(fs.readFileSync(evidence.evidencePath, 'utf8'));
+  assert.strictEqual(json.anomaly.httpStatus, 429);
+  assert.strictEqual(json.page.title, 'Limited profile');
+});
+test('crashed target alert falls back to last stable screenshot', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xf-evidence-fallback-'));
+  const alertPath = path.join(root, 'ALERT.txt');
+  const lastStablePath = path.join(root, 'last-stable.png');
+  fs.writeFileSync(lastStablePath, 'STABLE-PNG');
+  const helperPath = path.join(SCRIPTS, 'lib', 'anomaly.cjs');
+  const child = `
+    const { writeAlertWithEvidence } = require(process.argv[1]);
+    const page = { evaluate: async () => { throw new Error('Target crashed'); }, screenshot: async () => { throw new Error('Target crashed'); }, url: () => 'https://x.com/crashed' };
+    writeAlertWithEvidence(page, process.argv[2], { type: 'CONSECUTIVE_ERRORS', text: 'Target crashed', handle: 'crashed', lastStablePath: process.argv[3] })
+      .then((result) => process.stdout.write(JSON.stringify(result))).catch((error) => { console.error(error); process.exit(1); });
+  `;
+  const result = spawnSync(process.execPath, ['-e', child, helperPath, alertPath, lastStablePath], { encoding: 'utf8' });
+  assert.strictEqual(result.status, 0, result.stderr);
+  const evidence = JSON.parse(result.stdout);
+  assert.strictEqual(evidence.screenshotPath, null);
+  assert.strictEqual(evidence.fallbackScreenshotPath, lastStablePath);
+  assert.match(fs.readFileSync(alertPath, 'utf8'), /Fallback Screenshot: .*last-stable\.png/);
+});
 
 // ------------------------------------------------------- build-queue (E2E-ish)
 group('build-queue.cjs integration (followed-skip + crypto toggle)');
@@ -1237,15 +1398,20 @@ test('runtime state defaults under the x-follow data directory', () => {
     dataDir: '/home/test/.config/x-follow-data', runId: 'current', jobDir: '/home/test/.config/x-follow-data/runs/current',
     queuePath: '/home/test/.config/x-follow-data/runs/current/queue.json', trackerPath: '/home/test/.config/x-follow-data/runs/current/tracker.json',
     logPath: '/home/test/.config/x-follow-data/runs/current/campaign.log', alertPath: '/home/test/.config/x-follow-data/runs/current/ALERT.txt',
-    statusPath: '/home/test/.config/x-follow-data/runs/current/status.json', skipGlob: '/home/test/.config/x-follow-data/runs/*/tracker.json',
+    statusPath: '/home/test/.config/x-follow-data/runs/current/status.json', pacingPath: '/home/test/.config/x-follow-data/profile-pacing.json',
+    traceDir: '/home/test/.config/x-follow-data/runs/current/trace', lastStablePath: '/home/test/.config/x-follow-data/runs/current/last-stable.png',
+    skipGlob: '/home/test/.config/x-follow-data/runs/*/tracker.json',
     lockPath: '/home/test/.config/x-follow-data/network-run.lock',
   });
 });
 test('runtime state preserves explicit JOB_DIR and file paths', () => {
-  const state = resolveRuntimeState({ HOME: '/home/test', X_FOLLOW_DATA_DIR: '/data', X_FOLLOW_RUN_ID: 'ignored', JOB_DIR: '/job', QUEUE_PATH: '/queue', TRACKER_PATH: '/tracker', LOG_PATH: '/log', ALERT_PATH: '/alert', STATUS_PATH: '/status', SKIP_GLOB: '/skip/*.json' });
+  const state = resolveRuntimeState({ HOME: '/home/test', X_FOLLOW_DATA_DIR: '/data', X_FOLLOW_RUN_ID: 'ignored', JOB_DIR: '/job', QUEUE_PATH: '/queue', TRACKER_PATH: '/tracker', LOG_PATH: '/log', ALERT_PATH: '/alert', STATUS_PATH: '/status', PACING_PATH: '/pacing', TRACE_DIR: '/trace', LAST_STABLE_PATH: '/stable', SKIP_GLOB: '/skip/*.json' });
   assert.strictEqual(state.jobDir, '/job');
   assert.strictEqual(state.queuePath, '/queue');
   assert.strictEqual(state.trackerPath, '/tracker');
+  assert.strictEqual(state.pacingPath, '/pacing');
+  assert.strictEqual(state.traceDir, '/trace');
+  assert.strictEqual(state.lastStablePath, '/stable');
   assert.strictEqual(state.skipGlob, '/skip/*.json');
 });
 test('runtime state rejects unsafe run ids', () => {
@@ -1370,6 +1536,12 @@ test('both Skills vendor the same selective CDP module and all seven browser ent
   }
   for (const file of ['campaign.cjs', 'harvest.cjs', 'snapshot-following.cjs', 'verify-follows.cjs']) {
     assert.match(fs.readFileSync(path.join(SCRIPTS, file), 'utf8'), /captureXResponseEvidence/, file);
+  }
+  for (const file of ['campaign.cjs', 'smoke-test.cjs', 'harvest.cjs', 'snapshot-following.cjs', 'verify-follows.cjs']) {
+    assert.match(fs.readFileSync(path.join(SCRIPTS, file), 'utf8'), /writeAlertWithEvidence/, `${file} must capture error evidence before CDP close`);
+  }
+  for (const file of ['campaign.cjs', 'smoke-test.cjs', 'snapshot-following.cjs', 'verify-follows.cjs']) {
+    assert.match(fs.readFileSync(path.join(SCRIPTS, file), 'utf8'), /createProfilePacer/, `${file} must share persistent profile pacing`);
   }
   assert.match(
     fs.readFileSync(path.join(SCRIPTS, '..', '..', 'x-unfollow', 'scripts', 'unfollow.cjs'), 'utf8'),
@@ -1607,9 +1779,13 @@ test('run.sh missing account config fails before state, network lock, Playwright
 test('run.sh contains no broad Chrome cleanup or Singleton deletion', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'run.sh'), 'utf8');
   assert.doesNotMatch(source, /pkill\s+-f|Singleton/);
+  assert.match(source, /previous-ALERT\.txt/);
+  assert.match(source, /PACING_PATH/);
+  assert.ok(source.indexOf('run-lock.cjs" acquire') < source.indexOf('previous-ALERT.txt'), 'old alert may only move after the network lock is owned');
   assert.match(source, /local hcode=\$\?[\s\S]*HARVEST ANOMALY[\s\S]*exit "\$hcode"/);
   assert.match(source, /vcode=\$\?[\s\S]*VERIFY ANOMALY[\s\S]*exit "\$vcode"/);
-  assert.match(source, /10\|11\|12\|13\|14\|18\).*during verify top-up/);
+  assert.match(source, /10\|11\|12\|13\|14\|15\|18\).*during verify top-up/);
+  assert.match(source, /10\|11\|12\|13\|14\|15\|18\)[\s\S]*Not operating the account further/);
   assert.match(source, /2\).*configuration gate failed.*HALT without retry/);
 });
 test("run.sh supports a JOB_DIR containing a single quote without injecting it into node -e", () => {
@@ -1667,7 +1843,7 @@ test('README stop and empty BIO_BLACKLIST guidance matches safe runtime behavior
 });
 test('README reports the final offline test count', () => {
   const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
-  assert.match(readme, /纯逻辑 \+ 离线集成，172 项，无需浏览器/);
+  assert.match(readme, /纯逻辑 \+ 离线集成，185 项，无需浏览器/);
 });
 
 group('Skill manual workflow static contract');

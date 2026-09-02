@@ -9,7 +9,7 @@ class CodexPluginTests(unittest.TestCase):
     def test_manifest_contract_uses_the_unified_x_identity(self):
         manifest = read_json_optional(X / ".codex-plugin" / "plugin.json")
         self.assertEqual(manifest.get("name"), "x")
-        self.assertEqual(manifest.get("version"), "4.1.3")
+        self.assertEqual(manifest.get("version"), "4.1.4")
         self.assertEqual(manifest.get("skills"), "./skills/")
         self.assertEqual(manifest.get("author", {}).get("name"), "haoliucha")
         self.assertIn(

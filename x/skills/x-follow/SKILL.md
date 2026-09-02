@@ -104,6 +104,10 @@ mine_followers_of: []             # 额外挖某些小账号的 followers/follow
 profile_dir: ~/.config/playwright-chrome-profile-campaign
 
 # 风控节奏(已实战调优,谨慎修改)
+profile_visit_min_interval_ms: 90000 # 任意两个资料页访问起点至少间隔 90-150s
+profile_visit_max_interval_ms: 150000
+max_profile_visits_per_hour: 30      # 成功关注与拒绝都计入，状态跨 resume 保留
+rate_limit_cooldown_ms: 1800000      # 真 429 后保存 30min 冷却截止时间
 follow_wait_min_ms: 25000
 follow_wait_max_ms: 55000
 reject_wait_min_ms: 5000
@@ -117,6 +121,10 @@ post_click_settle_ms: 6000          # 高延迟下让按钮可靠翻成「正在
 # ULTRA-SAFE 选项(默认关)
 max_follows_per_hour: 0           # 0=不限,30 是安全值
 quiet_hours: []                   # [2,7] = 凌晨 2-7 点暂停
+
+# 诊断模式（必须配 DRY_RUN=1；不改 tracker）
+x_follow_trace: 0                 # 1=记录脱敏页面阶段与 X API/GraphQL 元数据
+trace_profile_limit: 5            # 到数即停；人工/自动基线使用 5
 ```
 
 ## 5 步工作流
@@ -191,9 +199,14 @@ node "$SKILL_DIR/scripts/campaign.cjs"
 
 主脚本内部:
 - 加载 `queue.json` + `tracker.json`(支持热加 queue.json,每 N follow 后 reload)
-- 对每个候选：`gotoRobust` profile（延迟容错；只有真实 HTTP 429 才记限流）→ 等齐 UserName + button → 4 条规则验证 → click follow → verify → 写盘
-- 节奏:每 follow 后 25-55s 随机;每 12 follow 后 long break 3 min
-- 异常感知：CAPTCHA / 真实 HTTP `RATE_LIMIT` / `LOGIN_REDIRECT` / `ACCOUNT_RESTRICTED` / `GENERIC_NAV_ERROR` → exit + `ALERT.txt`；通用“出错了”页面不冒充 429
+- 每次打开候选资料页前先走**持久化 profile pacer**：访问起点随机间隔 90-150s，滚动 1 小时最多 30 个；成功关注与拒绝都计数，数据根目录的 `profile-pacing.json` 让 resume 或新 run 都不会忘掉上一进程的请求历史
+- 对每个候选：pacer → `gotoRobust` profile（延迟容错；只有真实 HTTP 429 才记限流）→ 等齐 UserName + button → 4 条规则验证 → click follow → verify → 写盘
+- follow 后 25-55s、reject 后 5-12s 仍保留作页面/动作停顿，但它们不再承担主限流职责；每 12 follow 另有 3min long break
+- 异常感知：CAPTCHA / 真实 HTTP `RATE_LIMIT` / `LOGIN_REDIRECT` / `ACCOUNT_RESTRICTED` / `GENERIC_NAV_ERROR` → **先保存当前 viewport PNG + 页面/HTTP JSON，再写 `ALERT.txt`，最后退出**；通用“出错了”页面不冒充 429
+- 真 429 会把 30min 冷却截止时间写进全局 `profile-pacing.json`；用户明确 resume 或新建 run 也必须先等待剩余冷却。该机制降低突发请求风险，但不承诺平台永不返回 429
+- `X_FOLLOW_TRACE=1 DRY_RUN=1 TRACE_PROFILE_LIMIT=5` 只记录 5 个资料页，不点击关注、不写 tracker；产物在 `JOB_DIR/trace/auto-flow.jsonl`
+- 资料页导航默认复刻已验证的人工语义流程：站内搜索精确 handle → 点击结果进入资料页 → Back 返回；`PROFILE_NAV_MODE=direct` 仅作为显式回退
+- 第一次 `Target crashed` 立即 exit 15；`run.sh` 把 15 当硬停止，不在已崩溃 page 上继续或自动重启
 
 详见 `references/verify-logic.md` 和 `references/pacing-anti-detection.md`。
 
@@ -276,5 +289,6 @@ FIX_TRACKER=1 PROFILE_DIR="$PROFILE_DIR" \
 - `scripts/verify-follows.cjs` — 复核 followed_assumed 是否真「正在关注」,可踢回重关
 - `scripts/snapshot-following.cjs` — 抓自己 /following 进 skip set(UserCell 等待 + avatar 提取)
 - `scripts/smoke-test.cjs` — 启动前 6 项体检
-- `scripts/lib/` — 共享纯逻辑:`nav-helper`(gotoRobust)/`anomaly`/`filters`/`skipset`
+- `scripts/compare-traces.cjs` — 对比 Computer Use 人工 trace 与自动 DRY_RUN trace
+- `scripts/lib/` — 共享纯逻辑:`nav-helper`/`trace-recorder`/`anomaly`/`filters`/`skipset`
 - `tests/run-tests.cjs` — 零依赖单测/集成测试(`node tests/run-tests.cjs`)

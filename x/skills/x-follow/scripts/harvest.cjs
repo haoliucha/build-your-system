@@ -19,7 +19,9 @@
 //   5. a real 429 aborts the round for the orchestrator's bounded cooldown policy.
 
 const path = require('path');
+const { writeAlertWithEvidence } = require(path.join(__dirname, 'lib', 'anomaly.cjs'));
 const { captureXResponseEvidence, gotoRobust, sleep } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
+const { createProfilePacer } = require(path.join(__dirname, 'lib', 'profile-pacer.cjs'));
 const { prepareXFacingRuntime } = require(path.join(__dirname, 'lib', 'runtime-gate.cjs'));
 const { BrowserConfigError, withAuthenticatedContext, XAuthenticationError } = require(path.join(__dirname, 'lib', 'cdp-browser.cjs'));
 
@@ -34,6 +36,14 @@ if (!['search', 'search-multi', 'replies', 'followers'].includes(mode)) {
 let RUNTIME;
 try { RUNTIME = prepareXFacingRuntime(process.env); }
 catch (error) { console.error(`FATAL: ${error.message}`); process.exit(2); }
+const NETWORK_PACER = createProfilePacer({
+  statePath: RUNTIME.state.pacingPath,
+  minIntervalMs: parseInt(process.env.PROFILE_VISIT_MIN_INTERVAL_MS || '90000', 10),
+  maxIntervalMs: parseInt(process.env.PROFILE_VISIT_MAX_INTERVAL_MS || '150000', 10),
+  maxVisitsPerHour: parseInt(process.env.MAX_PROFILE_VISITS_PER_HOUR || '30', 10),
+  rateLimitCooldownMs: parseInt(process.env.RATE_LIMIT_COOLDOWN_MS || '1800000', 10),
+  log: (message) => process.stderr.write(`[harvest] ${message}\n`),
+});
 
 // ---- build the list of navigation targets (one per query / status / list) ----
 const ARTICLE_SEL = 'article[role="article"]';
@@ -134,18 +144,40 @@ async function harvestOne(page, target, confirmAuthentication) {
   if (nav.reason === 'RATE_LIMIT') {
     await confirmAuthentication(page, { expectedPath: new URL(target.url).pathname });
     process.stderr.write(`[harvest] HTTP 429 evidence (${target.label}): ${nav.responseUrl || target.url}\n`);
+    const cooldown = NETWORK_PACER.noteRateLimit({ handle: target.label, responseUrl: nav.responseUrl || target.url });
+    await writeAlertWithEvidence(page, RUNTIME.state.alertPath, {
+      type: 'RATE_LIMIT', text: `HTTP 429 ${nav.responseUrl || target.url}`, handle: target.label,
+      context: 'harvest_navigation', httpStatus: nav.httpStatus, responseUrl: nav.responseUrl,
+      rateLimitCooldownUntil: cooldown.cooldownUntil, url: page.url(), profileDir: PROFILE_DIR,
+    });
     return { ok: false, items: [], rl: true, reason: 'RATE_LIMIT' };
   }
-  if (nav.reason === 'LOGIN_REDIRECT') throw new XAuthenticationError(`harvest requires login: ${page.url()}`, nav);
+  if (nav.reason === 'LOGIN_REDIRECT') {
+    await writeAlertWithEvidence(page, RUNTIME.state.alertPath, {
+      type: 'LOGIN_REDIRECT', text: `harvest requires login: ${page.url()}`, handle: target.label,
+      context: 'harvest_navigation', url: page.url(), profileDir: PROFILE_DIR,
+    });
+    throw new XAuthenticationError(`harvest requires login: ${page.url()}`, nav);
+  }
   await confirmAuthentication(page, { expectedPath: new URL(target.url).pathname });
   if (!nav.ok) {
     process.stderr.write(`[harvest] ${nav.reason || 'navigation failure'} after ${nav.attempts} attempts (${target.label}); no HTTP 429 observed\n`);
+    await writeAlertWithEvidence(page, RUNTIME.state.alertPath, {
+      type: 'GENERIC_NAV_ERROR', text: `${nav.reason || 'navigation failure'} at ${target.label}`,
+      handle: target.label, context: 'harvest_navigation', url: page.url(), profileDir: PROFILE_DIR,
+    });
     return { ok: false, items: [], rl: false, reason: nav.reason || 'NO_CONTENT' };
   }
   await page.waitForTimeout(1500);
   const observed = await captureXResponseEvidence(page, () => page.evaluate(EXTRACT_JS));
   if (observed.evidence?.reason === 'RATE_LIMIT') {
     process.stderr.write(`[harvest] HTTP 429 evidence while scrolling (${target.label}): ${observed.evidence.responseUrl}\n`);
+    const cooldown = NETWORK_PACER.noteRateLimit({ handle: target.label, responseUrl: observed.evidence.responseUrl });
+    await writeAlertWithEvidence(page, RUNTIME.state.alertPath, {
+      type: 'RATE_LIMIT', text: `HTTP 429 ${observed.evidence.responseUrl}`, handle: target.label,
+      context: 'harvest_scroll', httpStatus: observed.evidence.httpStatus, responseUrl: observed.evidence.responseUrl,
+      rateLimitCooldownUntil: cooldown.cooldownUntil, url: page.url(), profileDir: PROFILE_DIR,
+    });
     return { ok: false, items: [], rl: true, reason: 'RATE_LIMIT' };
   }
   if (observed.evidence?.reason === 'LOGIN_REDIRECT') {
@@ -191,6 +223,7 @@ async function main() {
   let aborted = false;
   for (let offset = 0; offset < targets.length && !aborted; offset += batchSize) {
     const sessionTargets = targets.slice(offset, offset + batchSize);
+    await NETWORK_PACER.beforeNetwork(`harvest session: ${sessionTargets.map((target) => target.label).join(',')}`);
     const sessionResults = await withAuthenticatedContext(
       { config: RUNTIME.browser, headless: false, width: 1280, height: 820 },
       (api) => runSession(api, sessionTargets, PACING_MS, PACING_JITTER),

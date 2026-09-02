@@ -28,6 +28,9 @@ function resolveRuntimeState(env = process.env) {
     logPath: env.LOG_PATH || path.join(jobDir, 'campaign.log'),
     alertPath: env.ALERT_PATH || path.join(jobDir, 'ALERT.txt'),
     statusPath: env.STATUS_PATH || path.join(jobDir, 'status.json'),
+    pacingPath: env.PACING_PATH || path.join(dataDir, 'profile-pacing.json'),
+    traceDir: env.TRACE_DIR || path.join(jobDir, 'trace'),
+    lastStablePath: env.LAST_STABLE_PATH || path.join(jobDir, 'last-stable.png'),
     skipGlob: env.SKIP_GLOB || path.join(dataDir, 'runs', '*', 'tracker.json'),
     lockPath: path.join(dataDir, 'network-run.lock'),
   };

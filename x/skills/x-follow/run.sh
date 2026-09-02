@@ -22,6 +22,8 @@
 #   NOCRYPTO is an explicit compatibility override; prefer FILTER_CRYPTO.
 #   SKIP_GLOB="$X_FOLLOW_DATA_DIR/runs/*/tracker.json"   (prior trackers -> skip-set)
 #   FERS_MAX=3000 FOLLOW_RATIO_MIN=0.5 FILTER_CRYPTO=0    HARVEST_SCROLLS=18
+#   PROFILE_VISIT_MIN_INTERVAL_MS=90000 PROFILE_VISIT_MAX_INTERVAL_MS=150000
+#   MAX_PROFILE_VISITS_PER_HOUR=30 RATE_LIMIT_COOLDOWN_MS=1800000
 #   COMMENT_AFTER_FOLLOW=true ALLOW_COMMENT_AFTER_FOLLOW=1   (both required to comment)
 #   NODE_PATH must point at a node_modules with playwright (set by caller).
 
@@ -127,7 +129,9 @@ LOG="$JOB_DIR/campaign.log"
 ALERT="$JOB_DIR/ALERT.txt"
 PID_FILE="$JOB_DIR/run.pid"
 STATUS="$JOB_DIR/status.json"
-export PROFILE_DIR TRACKER_PATH="$TRACKER" QUEUE_PATH="$QUEUE" LOG_PATH="$LOG" ALERT_PATH="$ALERT" STATUS_PATH="$STATUS" JOB_DIR
+PACING="$X_FOLLOW_DATA_DIR/profile-pacing.json"
+EVIDENCE_DIR="$JOB_DIR/evidence"
+export PROFILE_DIR TRACKER_PATH="$TRACKER" QUEUE_PATH="$QUEUE" LOG_PATH="$LOG" ALERT_PATH="$ALERT" STATUS_PATH="$STATUS" PACING_PATH="$PACING" JOB_DIR
 say() { echo "[run $(date +%H:%M:%S)] $*"; }
 # Single-line progress the human (and Claude) can read any time without tailing logs.
 # campaign.cjs writes the same file per-account; run.sh writes it at phase boundaries.
@@ -148,6 +152,15 @@ LOCK_TOKEN=$(node "$SCRIPTS/lib/run-lock.cjs" acquire "$NETWORK_LOCK" "$JOB_DIR"
 LOCK_CODE=$?
 if [ "$LOCK_CODE" -ne 0 ]; then exit "$LOCK_CODE"; fi
 export X_FOLLOW_NETWORK_LOCK="$NETWORK_LOCK" X_FOLLOW_NETWORK_LOCK_TOKEN="$LOCK_TOKEN"
+
+# ALERT.txt is the latest-run pointer. Preserve an older stop only after this run owns
+# the network lock, so a concurrent loser cannot move evidence belonging to the owner.
+if [ -f "$ALERT" ]; then
+  mkdir -p "$EVIDENCE_DIR"
+  chmod 700 "$EVIDENCE_DIR" 2>/dev/null || true
+  ALERT_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+  mv "$ALERT" "$EVIDENCE_DIR/${ALERT_STAMP}-previous-ALERT.txt"
+fi
 
 # Write own PID so callers can stop the whole process tree reliably.
 echo $$ > "$PID_FILE"
@@ -320,7 +333,7 @@ harvest_round() {
     local hcode=$?
     case $hcode in
       0) ;;
-      10|11|12|13|14|18)
+      10|11|12|13|14|15|18)
         rm -f -- "$out"
         say "!!! HARVEST ANOMALY (exit $hcode) — HALT. See $JOB_DIR/harvest.err."
         exit "$hcode" ;;
@@ -392,7 +405,7 @@ while [ "$(followed)" -lt "$TARGET" ]; do
   case $code in
     0) : ;;  # clean exit — either target reached or queue exhausted; loop re-checks/harvests
     2) say "campaign browser/configuration gate failed — HALT without retry. See $JOB_DIR/campaign.stdout.log."; exit 2 ;;
-    10|11|12|13|14|18)
+    10|11|12|13|14|15|18)
       say "!!! ANOMALY (exit $code) — HALT. See $ALERT. Not operating the account further."
       exit "$code" ;;
     *) say "transient exit=$code — pausing 20s then retrying"; run_x_worker sleep 20 ;;
@@ -408,7 +421,7 @@ for vpass in 1 2 3; do
   vcode=$?
   case $vcode in
     0) ;;
-    10|11|12|13|14|18) say "!!! VERIFY ANOMALY (exit $vcode) — HALT. See $JOB_DIR/verify.err."; exit "$vcode" ;;
+    10|11|12|13|14|15|18) say "!!! VERIFY ANOMALY (exit $vcode) — HALT. See $JOB_DIR/verify.err."; exit "$vcode" ;;
     *) say "verify failed (exit $vcode) — refusing to continue or top up"; exit "$vcode" ;;
   esac
   FAILED=$(node -e 'try { console.log((JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).failed || []).length); } catch { console.log(0); }' "$JOB_DIR/verify-$vpass.json")
@@ -423,7 +436,7 @@ for vpass in 1 2 3; do
     tcode=$?
     # SAFETY: a real anomaly during the verify top-up must HALT too (not just the main loop).
     case $tcode in
-      10|11|12|13|14|18) say "!!! ANOMALY (exit $tcode) during verify top-up — HALT. See $ALERT."; exit "$tcode" ;;
+      10|11|12|13|14|15|18) say "!!! ANOMALY (exit $tcode) during verify top-up — HALT. See $ALERT."; exit "$tcode" ;;
       0) ;;
       *) say "top-up campaign failed (exit $tcode) — refusing another mutation attempt"; exit "$tcode" ;;
     esac

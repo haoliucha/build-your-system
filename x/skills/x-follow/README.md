@@ -73,13 +73,18 @@ run.sh
 ```text
 ~/.config/x-follow-data/
 ├── network-run.lock
+├── profile-pacing.json            # 全部 run 共享的资料页窗口 + 429 冷却截止时间
 └── runs/
     └── current/
         ├── queue.json
         ├── tracker.json
         ├── campaign.log
         ├── status.json
-        └── ALERT.txt
+        ├── ALERT.txt                # 只指向本次/最新异常
+        └── evidence/
+            ├── <timestamp>-<type>-<handle>.png
+            ├── <timestamp>-<type>-<handle>.json
+            └── <timestamp>-previous-ALERT.txt
 ```
 
 `X_FOLLOW_RUN_ID=current`，所以默认 `JOB_DIR=$X_FOLLOW_DATA_DIR/runs/$X_FOLLOW_RUN_ID`；显式 `JOB_DIR` 优先。历史 skip-set 从 `$X_FOLLOW_DATA_DIR/runs/*/tracker.json` 聚合，不读取或迁移 `~/.claude/jobs/x-follow-*`。
@@ -97,6 +102,8 @@ run.sh
 | `CAPTCHA` / `ACCOUNT_RESTRICTED` / `WEBDRIVER_DETECTED` | 对应页面或浏览器证据 | exit 10/13/14 | 停止 |
 
 `gotoRobust` 对高延迟、无内容和通用错误页使用有界重试；一旦观察到真实 HTTP 429，不再执行指数退避重放。文本模式只在页面 chrome 中匹配并排除推文、bio、用户名和列表行，避免用户内容制造异常误报。
+
+campaign、smoke、snapshot 与 verify 在 X 请求前共享数据根目录的 `profile-pacing.json`。资料页访问默认按起点间隔 90-150 秒，并用持久化滑动窗口限制为每小时最多 30 个；因此 reject-heavy 队列、进程 resume 和更换 run ID 都不能绕开节流。真 429 会额外写入 30 分钟冷却截止时间，后续进程在启动 Chrome 前先等待剩余冷却。异常发生时，页面仍打开着就先保存 viewport 截图和 JSON（HTTP 状态/响应 URL、当前 URL/标题、页面文本摘要），再写 `ALERT.txt` 并关闭独立 CDP 浏览器。
 
 ## 使用
 
@@ -123,6 +130,12 @@ NODE_PATH=~/.config/playwright-mcp-server/node_modules \
 | `FERS_MAX` | 3000 | 粉丝数上限 |
 | `FOLLOW_RATIO_MIN` | 0.5 | 关注数/粉丝数下限 |
 | `FILTER_CRYPTO` | 0 | `1` 才启用 crypto/web3 过滤 |
+| `PROFILE_VISIT_MIN_INTERVAL_MS` / `PROFILE_VISIT_MAX_INTERVAL_MS` | 90000 / 150000 | 所有候选资料页访问起点的随机间隔；成功与拒绝一视同仁 |
+| `MAX_PROFILE_VISITS_PER_HOUR` | 30 | 持久化滑动窗口；0 才关闭，不建议放宽 |
+| `RATE_LIMIT_COOLDOWN_MS` | 1800000 | 真 429 后写入全局 `profile-pacing.json` 的冷却时长；任何 run 都必须等完剩余时间 |
+| `X_FOLLOW_TRACE` | 0 | `1` 记录脱敏页面阶段与 X API/GraphQL 元数据；不记录 Cookie、认证 header、body、variables |
+| `TRACE_PROFILE_LIMIT` | 0 | trace 最多访问多少个新候选；人工/自动基线设为 5 |
+| `PROFILE_NAV_MODE` | search-click | 默认从站内搜索结果点击进入资料页并用 Back 返回；必要时可显式设为 `direct` 回退 |
 | `QUERIES_PER_ROUND` | 4 | 每轮轮换搜索词数量 |
 | `SESSION_SIZE` | 2 | 每个有界 harvest CDP session 的 query 数 |
 | `QUERY_PACING_MS` | 25000 | 同 session query 间隔，另加抖动 |
@@ -147,10 +160,23 @@ NODE_PATH=~/.config/playwright-mcp-server/node_modules \
 ## 测试
 
 ```bash
-node tests/run-tests.cjs      # 纯逻辑 + 离线集成，172 项，无需浏览器或 X
+node tests/run-tests.cjs      # 纯逻辑 + 离线集成，185 项，无需浏览器或 X
 ```
 
-覆盖默认筛选、候选/skip-set、评论双授权、run-id/JOB_DIR、跨进程 network lock、信号清理、账号配置权限与优先级、邮箱 0/1/多 profile 匹配、CDP 参数、跨 Skill profile 锁、选择性认证复制与回滚、真实 HTTP 429/通用错误分类，以及所有 7 个浏览器入口不再使用 `launchPersistentContext`。
+覆盖默认筛选、候选/skip-set、评论双授权、脱敏 trace/correlation/rate headers、人工/自动 phase 对齐、持久化资料页节流与 429 冷却、异常截图/JSON 留证、run-id/JOB_DIR、跨进程 network lock、信号清理、账号配置权限与优先级、邮箱 0/1/多 profile 匹配、CDP 参数、跨 Skill profile 锁、选择性认证复制与回滚、真实 HTTP 429/通用错误分类，以及所有 7 个浏览器入口不再使用 `launchPersistentContext`。
+
+只读自动基线示例（使用独立 `JOB_DIR`，运行前准备 5 个候选的 queue；tracker 前后必须字节一致）：
+
+```bash
+X_FOLLOW_TRACE=1 TRACE_PROFILE_LIMIT=5 DRY_RUN=1 TARGET=999 \
+  node scripts/campaign.cjs
+```
+
+trace 只写 `trace/auto-flow.jsonl` 和步骤截图。人工基线写 `trace/manual-flow.jsonl`，之后运行：
+
+```bash
+node scripts/compare-traces.cjs trace/manual-flow.jsonl trace/auto-flow.jsonl trace/comparison.md
+```
 
 ## 文件清单
 

@@ -14,18 +14,22 @@
 //   MY_HANDLE                     QUEUE_PATH / TRACKER_PATH / LOG_PATH / ALERT_PATH (resolved from shared JOB_DIR)
 //   VERIFIED_REQUIRED (true)      FOLLOWING_GT_FOLLOWERS (true)        FERS_MAX (3000)
 //   FILTER_CRYPTO (0=default)    BIO_BLACKLIST (explicit override)     BIO_WHITELIST (空)
+//   PROFILE_VISIT_MIN/MAX_INTERVAL_MS (90000/150000) MAX_PROFILE_VISITS_PER_HOUR (30)
 //   FOLLOW_WAIT_MIN/MAX_MS (25000/55000)   REJECT_WAIT_MIN/MAX_MS (5000/12000)
 //   LONG_BREAK_EVERY/MS (12/180000)        POST_CLICK_SETTLE_MS (6000)
-//   MAX_FOLLOWS_PER_HOUR (0=off) QUIET_HOURS ("2,7")  DRY_RUN (1)  RELOAD_QUEUE_EVERY (20)
+//   RATE_LIMIT_COOLDOWN_MS (1800000)       MAX_FOLLOWS_PER_HOUR (0=off)
+//   QUIET_HOURS ("2,7")  DRY_RUN (1)  RELOAD_QUEUE_EVERY (20)
 
 const path = require('path');
 const fs = require('fs');
-const { EXIT_CODES, detectAnomaly, writeAlert } = require(path.join(__dirname, 'lib', 'anomaly.cjs'));
+const { EXIT_CODES, detectAnomaly, writeAlert, writeAlertWithEvidence } = require(path.join(__dirname, 'lib', 'anomaly.cjs'));
 const { captureXResponseEvidence, gotoRobust } = require(path.join(__dirname, 'lib', 'nav-helper.cjs'));
 const { generateComment } = require(path.join(__dirname, 'lib', 'comment-generator.cjs'));
 const { resolveCommentPolicy } = require(path.join(__dirname, 'lib', 'comment-policy.cjs'));
 const { prepareXFacingRuntime } = require(path.join(__dirname, 'lib', 'runtime-gate.cjs'));
 const { resolveFilterPolicy } = require(path.join(__dirname, 'lib', 'runtime-state.cjs'));
+const { createProfilePacer } = require(path.join(__dirname, 'lib', 'profile-pacer.cjs'));
+const { createTraceRecorder } = require(path.join(__dirname, 'lib', 'trace-recorder.cjs'));
 const { BrowserConfigError, withAuthenticatedContext, XAuthenticationError } = require(path.join(__dirname, 'lib', 'cdp-browser.cjs'));
 
 let RUNTIME;
@@ -52,6 +56,9 @@ const CFG = {
   LOG_PATH: RUNTIME.state.logPath,
   ALERT_PATH: RUNTIME.state.alertPath,
   STATUS_PATH: RUNTIME.state.statusPath,
+  PACING_PATH: RUNTIME.state.pacingPath,
+  TRACE_DIR: RUNTIME.state.traceDir,
+  LAST_STABLE_PATH: RUNTIME.state.lastStablePath,
 
   VERIFIED_REQUIRED: process.env.VERIFIED_REQUIRED !== 'false',
   FOLLOWING_GT_FOLLOWERS: process.env.FOLLOWING_GT_FOLLOWERS !== 'false',
@@ -70,6 +77,13 @@ const CFG = {
   FOLLOW_WAIT_MAX_MS: parseInt(process.env.FOLLOW_WAIT_MAX_MS || '55000', 10),
   REJECT_WAIT_MIN_MS: parseInt(process.env.REJECT_WAIT_MIN_MS || '5000', 10),
   REJECT_WAIT_MAX_MS: parseInt(process.env.REJECT_WAIT_MAX_MS || '12000', 10),
+  // Every profile visit produces profile GraphQL traffic, even when the account is
+  // rejected without a click. These controls pace navigation starts and persist across
+  // process resumes, closing the old reject-heavy burst path.
+  PROFILE_VISIT_MIN_INTERVAL_MS: parseInt(process.env.PROFILE_VISIT_MIN_INTERVAL_MS || '90000', 10),
+  PROFILE_VISIT_MAX_INTERVAL_MS: parseInt(process.env.PROFILE_VISIT_MAX_INTERVAL_MS || '150000', 10),
+  MAX_PROFILE_VISITS_PER_HOUR: parseInt(process.env.MAX_PROFILE_VISITS_PER_HOUR || '30', 10),
+  RATE_LIMIT_COOLDOWN_MS: parseInt(process.env.RATE_LIMIT_COOLDOWN_MS || '1800000', 10),
   LONG_BREAK_EVERY: parseInt(process.env.LONG_BREAK_EVERY || '12', 10),
   LONG_BREAK_MS: parseInt(process.env.LONG_BREAK_MS || '180000', 10),
   // 6000 (was 2500): gives the follow button time to flip to 正在关注 under VPN latency,
@@ -80,6 +94,11 @@ const CFG = {
   QUIET_HOURS: (process.env.QUIET_HOURS || '').split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n)),
 
   DRY_RUN: process.env.DRY_RUN === '1',
+  TRACE_ENABLED: process.env.X_FOLLOW_TRACE === '1',
+  TRACE_PROFILE_LIMIT: parseInt(process.env.TRACE_PROFILE_LIMIT || '0', 10),
+  // Mirror the verified manual flow by entering profiles from search results and
+  // returning with Back. Direct profile goto remains available as an explicit fallback.
+  PROFILE_NAV_MODE: process.env.PROFILE_NAV_MODE || 'search-click',
   RELOAD_QUEUE_EVERY: parseInt(process.env.RELOAD_QUEUE_EVERY || '20', 10),
   // COMMENT_AFTER_FOLLOW: after a successful follow, reply to the target's pinned post with
   // a varied follow引流 comment hinting at reciprocal following. Only comments on pinned posts
@@ -89,6 +108,10 @@ const CFG = {
 
 if (!CFG.TARGET || CFG.TARGET < 1) {
   console.error('FATAL: TARGET env var required (e.g., TARGET=100)');
+  process.exit(2);
+}
+if (!['direct', 'search-click'].includes(CFG.PROFILE_NAV_MODE)) {
+  console.error('FATAL: PROFILE_NAV_MODE must be direct or search-click');
   process.exit(2);
 }
 
@@ -110,6 +133,97 @@ function writeStatus(obj) {
 }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const rand = (min, max) => min + Math.floor(Math.random() * (max - min));
+let alertWrittenThisRun = false;
+let PROFILE_PACER;
+let TRACE;
+try {
+  PROFILE_PACER = createProfilePacer({
+    statePath: CFG.PACING_PATH,
+    minIntervalMs: CFG.PROFILE_VISIT_MIN_INTERVAL_MS,
+    maxIntervalMs: CFG.PROFILE_VISIT_MAX_INTERVAL_MS,
+    maxVisitsPerHour: CFG.MAX_PROFILE_VISITS_PER_HOUR,
+    rateLimitCooldownMs: CFG.RATE_LIMIT_COOLDOWN_MS,
+    log,
+  });
+  TRACE = createTraceRecorder({
+    enabled: CFG.TRACE_ENABLED,
+    traceDir: CFG.TRACE_DIR,
+    lastStablePath: CFG.LAST_STABLE_PATH,
+    source: 'auto',
+  });
+} catch (error) {
+  console.error(`FATAL: ${error.message}`);
+  process.exit(2);
+}
+
+async function recordFailure(page, info) {
+  await TRACE?.flush?.();
+  if (info.type === 'RATE_LIMIT') {
+    const cooldown = PROFILE_PACER.noteRateLimit(info);
+    info = { ...info, rateLimitCooldownUntil: cooldown.cooldownUntil };
+  }
+  const evidence = await writeAlertWithEvidence(page, CFG.ALERT_PATH, {
+    profileDir: CFG.PROFILE_DIR,
+    trackerPath: CFG.TRACKER_PATH,
+    lastStablePath: CFG.LAST_STABLE_PATH,
+    ...info,
+  });
+  alertWrittenThisRun = true;
+  log(`EVIDENCE ${info.type}: screenshot=${evidence.screenshotPath || 'unavailable'} json=${evidence.evidencePath || 'unavailable'}`);
+  return evidence;
+}
+
+async function navigateProfileViaSearch(page, handle) {
+  const inputSelector = 'input[data-testid="SearchBox_Search_Input"]';
+  const query = `from:${handle}`;
+  TRACE.setContext({ phase: 'search_profile' });
+  TRACE.mark('search_profile_start', { queryType: 'from_handle' });
+
+  if (!/\/search(?:\?|$)/.test(page.url())) {
+    const searchUrl = `https://x.com/search?q=${encodeURIComponent(query)}&src=typed_query&f=live`;
+    const nav = await gotoRobust(page, searchUrl, {
+      needSel: inputSelector, settle: 2500, retries: 3,
+      trace: (event, data) => TRACE.mark(event, data),
+    });
+    if (!nav.ok) return nav;
+  } else {
+    const searchObserved = await captureXResponseEvidence(page, async () => {
+      const input = page.locator(inputSelector);
+      await input.waitFor({ state: 'visible', timeout: 15000 });
+      await input.fill(query);
+      await input.press('Enter');
+      await page.waitForTimeout(2000);
+    });
+    if (searchObserved.evidence) return { ok: false, attempts: 1, waitedMs: 0, ...searchObserved.evidence };
+  }
+
+  const link = page.locator(`a[href="/${handle}" i]`).first();
+  try { await link.waitFor({ state: 'visible', timeout: 15000 }); }
+  catch { return { ok: false, attempts: 1, waitedMs: 0, reason: 'PROFILE_LINK_NOT_FOUND' }; }
+  const clickObserved = await captureXResponseEvidence(page, async () => {
+    await link.click();
+    await page.waitForURL(new RegExp(`https://x\\.com/${handle}(?:/)?(?:\\?.*)?$`, 'i'), { timeout: 15000 });
+    await page.waitForSelector('div[data-testid="UserName"]', { timeout: 15000 });
+  });
+  if (clickObserved.evidence) return { ok: false, attempts: 1, waitedMs: 0, ...clickObserved.evidence };
+  TRACE.mark('search_profile_end', { ok: true });
+  return { ok: true, attempts: 1, waitedMs: 0, reason: null };
+}
+
+async function returnToSearchResults(page, handle) {
+  if (CFG.PROFILE_NAV_MODE !== 'search-click') return;
+  TRACE.setContext({ phase: 'back_to_search' });
+  TRACE.mark('back_to_search_start');
+  const observed = await captureXResponseEvidence(page, async () => {
+    await page.goBack({ waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForSelector('input[data-testid="SearchBox_Search_Input"]', { timeout: 15000 });
+  });
+  if (observed.evidence?.reason === 'RATE_LIMIT') {
+    await recordFailure(page, { type: 'RATE_LIMIT', text: `HTTP 429 ${observed.evidence.responseUrl}`, httpStatus: observed.evidence.httpStatus, responseUrl: observed.evidence.responseUrl, handle, url: page.url(), context: 'back_to_search' });
+    throw new CampaignExitError('RATE_LIMIT', `HTTP 429 returning from @${handle}`, EXIT_CODES.RATE_LIMIT);
+  }
+  TRACE.mark('back_to_search_end');
+}
 
 class CampaignExitError extends Error {
   constructor(type, message, exitCode) {
@@ -132,7 +246,10 @@ function buildVerifyJs(cfg) {
   return `(async () => {
     const H = window.location.pathname.slice(1).split('/')[0];
     const s = (ms) => new Promise(r => setTimeout(r, ms));
+    const trace = [];
+    const mark = (phase) => trace.push({ phase, at: Date.now() });
 
+    mark('dom_wait_start');
     for (let i = 0; i < 12; i++) { if (document.querySelector('div[data-testid="UserName"]')) break; await s(500); }
     for (let i = 0; i < 10; i++) {
       const hasBtn = document.querySelector('button[data-testid$="-follow"], button[data-testid$="-unfollow"]');
@@ -140,12 +257,13 @@ function buildVerifyJs(cfg) {
       if (hasBtn || hasBadge) break;
       await s(500);
     }
+    mark('dom_wait_end');
 
     const UN = document.querySelector('div[data-testid="UserName"]');
     const UD = document.querySelector('div[data-testid="UserDescription"]');
     if (!UN) {
       const err = document.querySelector('div[data-testid="empty_state_header_text"]');
-      return { handle: H, error: err ? 'profile_unavailable' : 'no_username' };
+      return { handle: H, error: err ? 'profile_unavailable' : 'no_username', trace };
     }
 
     const blue = !!UN.querySelector('svg[aria-label="认证账号"]');
@@ -206,17 +324,21 @@ function buildVerifyJs(cfg) {
     else if (cryptoMatch) d = \`reject:blacklist(\${cryptoMatch})\`;
     else if (whitelistFail) d = 'reject:not_in_whitelist';
 
-    const r = { handle: H, bio: bio.slice(0, 200), blue, gold, fN, fgN, cryptoMatch, decision: d, action: 'none' };
+    mark('decision_ready');
+    const r = { handle: H, bio: bio.slice(0, 200), blue, gold, fN, fgN, cryptoMatch, decision: d, action: 'none', trace };
 
     const DRY_RUN = ${cfg.DRY_RUN};
     if (d === 'pass' && !DRY_RUN) {
       if (!fB || (fB.getAttribute('aria-label') !== \`关注 @\${H}\` && fB.getAttribute('aria-label') !== \`Follow @\${H}\`)) {
         r.action = 'safety_abort_btn_mismatch';
       } else {
+        mark('scroll_follow_button');
         fB.scrollIntoView({ block: 'center' });
         await s(${Math.round(cfg.POST_CLICK_SETTLE_MS / 8 + 300)} + Math.random() * 400);
+        mark('follow_click');
         fB.click();
         await s(${cfg.POST_CLICK_SETTLE_MS});
+        mark('follow_verify');
         const u1 = document.querySelector(\`button[data-testid$="-unfollow"][aria-label*="@\${H}"]\`);
         if (u1) { r.action = 'followed'; }
         else {
@@ -304,6 +426,9 @@ async function commentOnPinnedPost(page, handle, cfg) {
 async function runCampaign({ context, confirmAuthenticated, disableAuthRefresh }) {
   log(`=== CAMPAIGN START ===`);
   log(`Config: TARGET=${CFG.TARGET}, FERS_MAX=${CFG.FERS_MAX}, SETTLE=${CFG.POST_CLICK_SETTLE_MS}ms, DRY_RUN=${CFG.DRY_RUN}, COMMENT=${CFG.COMMENT_AFTER_FOLLOW}`);
+  log(`Profile pacer: interval=${CFG.PROFILE_VISIT_MIN_INTERVAL_MS}-${CFG.PROFILE_VISIT_MAX_INTERVAL_MS}ms, cap=${CFG.MAX_PROFILE_VISITS_PER_HOUR}/h, persisted=${CFG.PACING_PATH}`);
+  log(`Trace: enabled=${CFG.TRACE_ENABLED}, profileLimit=${CFG.TRACE_PROFILE_LIMIT || 'none'}, dir=${CFG.TRACE_DIR}`);
+  log(`Profile navigation mode: ${CFG.PROFILE_NAV_MODE}`);
   log(`SAFETY MANIFEST:`);
   log(`  - Will only click follow buttons matching 'aria-label="关注 @{handle}"' (or "Follow @{handle}")`);
   log(`  - Will NEVER click unfollow / block / report / like / dm`);
@@ -319,15 +444,23 @@ async function runCampaign({ context, confirmAuthenticated, disableAuthRefresh }
 
   const ctx = context;
   let page = ctx.pages()[0] || await ctx.newPage();
+  let currentHandle = null;
+  let tracedProfiles = 0;
+  TRACE.attach(page);
+  TRACE.setContext({ correlationId: 'session', handle: null, phase: 'startup' });
+  TRACE.mark('session_start', { dryRun: CFG.DRY_RUN, target: CFG.TARGET });
+
+  try {
 
   // Startup login gate — gotoRobust waits for a logged-in element (not a fixed timer);
   // EMPTY_PAGE is excluded because the /home SPA shell is briefly <50 chars under latency.
   const nav = await gotoRobust(page, 'https://x.com/home', {
     needSel: 'a[data-testid="SideNav_NewTweet_Button"], [data-testid="AppTabBar_Home_Link"], [data-testid="primaryColumn"]',
     settle: 5000, retries: 4,
+    trace: (event, data) => TRACE.mark(event, data),
   });
   if (nav.reason === 'RATE_LIMIT') {
-    writeAlert(CFG.ALERT_PATH, { type: 'RATE_LIMIT', text: `HTTP 429 ${nav.responseUrl || '/home'}`, profileDir: CFG.PROFILE_DIR, url: page.url() });
+    await recordFailure(page, { type: 'RATE_LIMIT', text: `HTTP 429 ${nav.responseUrl || '/home'}`, httpStatus: nav.httpStatus, responseUrl: nav.responseUrl, url: page.url() });
     throw new CampaignExitError('RATE_LIMIT', 'HTTP 429 during startup navigation', EXIT_CODES.RATE_LIMIT);
   }
   if (nav.reason === 'LOGIN_REDIRECT') throw new XAuthenticationError(`campaign startup requires login: ${page.url()}`, nav);
@@ -335,14 +468,14 @@ async function runCampaign({ context, confirmAuthenticated, disableAuthRefresh }
   if (initialAnomaly && initialAnomaly.type !== 'EVAL_ERROR' && initialAnomaly.type !== 'EMPTY_PAGE') {
     if (initialAnomaly.type === 'LOGIN_REDIRECT') throw new XAuthenticationError(initialAnomaly.text, { url: page.url() });
     log(`FATAL: anomaly on /home: ${JSON.stringify(initialAnomaly)}`);
-    writeAlert(CFG.ALERT_PATH, { ...initialAnomaly, profileDir: CFG.PROFILE_DIR, url: page.url() });
+    await recordFailure(page, { ...initialAnomaly, url: page.url() });
     throw new CampaignExitError(initialAnomaly.type, initialAnomaly.text, EXIT_CODES[initialAnomaly.type] || 99);
   }
   await confirmAuthenticated(page, { expectedPath: '/home' });
   if (!nav.ok) {
     const type = nav.reason === 'GENERIC_NAV_ERROR' ? 'GENERIC_NAV_ERROR' : 'LOGIN_REDIRECT';
     if (type === 'LOGIN_REDIRECT') throw new XAuthenticationError('home content missing', { url: page.url(), nav });
-    writeAlert(CFG.ALERT_PATH, { type, text: 'generic X navigation error page after bounded retries', profileDir: CFG.PROFILE_DIR, url: page.url() });
+    await recordFailure(page, { type, text: 'generic X navigation error page after bounded retries', url: page.url() });
     throw new CampaignExitError(type, 'generic X navigation error page after bounded retries', EXIT_CODES[type]);
   }
   log(`Logged in OK: ${page.url()}`);
@@ -373,8 +506,17 @@ async function runCampaign({ context, confirmAuthenticated, disableAuthRefresh }
     processedSinceReload++;
 
     const handle = queue[i];
+    currentHandle = handle;
     if (followedSet.has(handle)) { log(`SKIP ${handle}: already followed`); continue; }
     if (rejectedSet.has(handle)) { log(`SKIP ${handle}: already rejected`); continue; }
+    if (CFG.TRACE_ENABLED && CFG.TRACE_PROFILE_LIMIT > 0 && tracedProfiles >= CFG.TRACE_PROFILE_LIMIT) {
+      log(`TRACE PROFILE LIMIT REACHED: ${tracedProfiles}/${CFG.TRACE_PROFILE_LIMIT}`);
+      TRACE.mark('trace_limit_reached', { tracedProfiles, limit: CFG.TRACE_PROFILE_LIMIT });
+      break;
+    }
+    tracedProfiles++;
+    TRACE.setContext({ correlationId: `profile-${tracedProfiles}`, handle, phase: 'profile_start' });
+    TRACE.mark('profile_iteration_start', { queueIndex: i, tracedProfileIndex: tracedProfiles });
 
     while (inQuietHours()) { log(`Quiet hours [${CFG.QUIET_HOURS.join(',')}], sleeping 10 min...`); await sleep(600_000); }
 
@@ -388,34 +530,67 @@ async function runCampaign({ context, confirmAuthenticated, disableAuthRefresh }
       }
     }
 
+    TRACE.setContext({ phase: 'pacer_wait' });
+    TRACE.mark('pacer_wait_start');
+    const pacing = await PROFILE_PACER.beforeVisit(handle);
+    TRACE.mark('pacer_wait_end', pacing);
+    log(`PROFILE VISIT @${handle}: ${pacing.visitsLastHour}/${CFG.MAX_PROFILE_VISITS_PER_HOUR || 'unlimited'} in rolling hour; next interval ${Math.round(pacing.intervalMs / 1000)}s`);
+
     let result;
     try {
-      const profileNav = await gotoRobust(page, `https://x.com/${handle}`, { needSel: 'div[data-testid="UserName"]', settle: 4000, retries: 3 });
+      TRACE.setContext({ phase: 'goto_profile' });
+      const profileNav = CFG.PROFILE_NAV_MODE === 'search-click'
+        ? await navigateProfileViaSearch(page, handle)
+        : await gotoRobust(page, `https://x.com/${handle}`, {
+          needSel: 'div[data-testid="UserName"]', settle: 4000, retries: 3,
+          trace: (event, data) => TRACE.mark(event, data),
+        });
       if (profileNav.reason === 'RATE_LIMIT') {
-        writeAlert(CFG.ALERT_PATH, { type: 'RATE_LIMIT', text: `HTTP 429 ${profileNav.responseUrl || handle}`, handle, url: page.url(), profileDir: CFG.PROFILE_DIR });
+        await recordFailure(page, { type: 'RATE_LIMIT', text: `HTTP 429 ${profileNav.responseUrl || handle}`, httpStatus: profileNav.httpStatus, responseUrl: profileNav.responseUrl, handle, url: page.url() });
         throw new CampaignExitError('RATE_LIMIT', `HTTP 429 at @${handle}`, EXIT_CODES.RATE_LIMIT);
       }
       if (profileNav.reason === 'LOGIN_REDIRECT') throw new XAuthenticationError(`campaign requires login at @${handle}`, { handle, url: page.url() });
       if (!profileNav.ok) {
-        writeAlert(CFG.ALERT_PATH, { type: 'GENERIC_NAV_ERROR', text: `${profileNav.reason} at @${handle}`, handle, url: page.url(), profileDir: CFG.PROFILE_DIR });
+        await recordFailure(page, { type: 'GENERIC_NAV_ERROR', text: `${profileNav.reason} at @${handle}`, handle, url: page.url() });
         throw new CampaignExitError('GENERIC_NAV_ERROR', `profile navigation failed at @${handle}: ${profileNav.reason}`, EXIT_CODES.GENERIC_NAV_ERROR);
       }
+      TRACE.setContext({ phase: 'hydrate' });
+      TRACE.mark('hydrate_wait_start');
       await page.waitForTimeout(1500);
+      TRACE.mark('hydrate_wait_end');
+      try {
+        const checkpointPath = await TRACE.checkpoint(page, { handle, phase: 'hydrated' });
+        if (checkpointPath) TRACE.mark('last_stable_updated', { screenshotPath: checkpointPath });
+      } catch (checkpointError) {
+        TRACE.mark('checkpoint_failed', { error: checkpointError.message || String(checkpointError) });
+      }
+      TRACE.setContext({ phase: 'evaluate' });
+      TRACE.mark('evaluate_start');
       const observed = await captureXResponseEvidence(page, () => page.evaluate(VERIFY_JS));
+      TRACE.mark('evaluate_end', { evidenceReason: observed.evidence?.reason || null });
       if (observed.evidence?.reason === 'RATE_LIMIT') {
-        writeAlert(CFG.ALERT_PATH, { type: 'RATE_LIMIT', text: `HTTP 429 ${observed.evidence.responseUrl}`, handle, url: page.url(), profileDir: CFG.PROFILE_DIR });
+        await recordFailure(page, { type: 'RATE_LIMIT', text: `HTTP 429 ${observed.evidence.responseUrl}`, httpStatus: observed.evidence.httpStatus, responseUrl: observed.evidence.responseUrl, handle, url: page.url() });
         throw new CampaignExitError('RATE_LIMIT', `HTTP 429 during follow action at @${handle}`, EXIT_CODES.RATE_LIMIT);
       }
       if (observed.evidence?.reason === 'LOGIN_REDIRECT') {
         throw new XAuthenticationError(`follow action lost authentication at @${handle}`, { handle, url: page.url(), evidence: observed.evidence });
       }
       result = observed.value;
+      for (const browserEvent of (Array.isArray(result?.trace) ? result.trace : [])) {
+        TRACE.mark(`browser_${browserEvent.phase}`, { browserAt: browserEvent.at });
+      }
     } catch (e) {
       if (e instanceof CampaignExitError || e instanceof XAuthenticationError) throw e;
       log(`ERROR ${handle}: ${e.message}`);
+      if (/Target crashed/i.test(e.message || '')) {
+        TRACE.mark('target_crashed', { error: e.message || String(e) });
+        await TRACE.flush();
+        await recordFailure(page, { type: 'CONSECUTIVE_ERRORS', text: 'Target crashed', handle, url: page.url() });
+        throw new CampaignExitError('CONSECUTIVE_ERRORS', 'Target crashed', EXIT_CODES.CONSECUTIVE_ERRORS);
+      }
       if (++consecutiveErrors >= 5) {
         log(`FATAL: ${consecutiveErrors} consecutive errors. Pausing 5 min and exiting.`);
-        writeAlert(CFG.ALERT_PATH, { type: 'CONSECUTIVE_ERRORS', text: '5+ errors', handle, url: page.url(), profileDir: CFG.PROFILE_DIR });
+        await recordFailure(page, { type: 'CONSECUTIVE_ERRORS', text: '5+ errors', handle, url: page.url() });
         await sleep(300_000);
         throw new CampaignExitError('CONSECUTIVE_ERRORS', '5+ errors', EXIT_CODES.CONSECUTIVE_ERRORS);
       }
@@ -423,40 +598,55 @@ async function runCampaign({ context, confirmAuthenticated, disableAuthRefresh }
     }
     consecutiveErrors = 0;
 
-    if (!result || typeof result !== 'object') { log(`WARN ${handle}: evaluate returned ${result}, skipping`); await sleep(8000); continue; }
+    if (!result || typeof result !== 'object') {
+      log(`WARN ${handle}: evaluate returned ${result}, skipping`);
+      await returnToSearchResults(page, handle);
+      await sleep(8000); continue;
+    }
     if (result.error) {
       log(`${handle} -> ERROR ${result.error}`);
-      tracker.rejected = tracker.rejected || [];
-      // `at` lets lib/skipset apply TTL/transient release later. eval_error is a transient
-      // tier (released next run), so this account gets re-evaluated rather than blacklisted.
-      tracker.rejected.push({ h: handle, r: 'eval_error:' + result.error, at: new Date().toISOString() });
-      rejectedSet.add(handle); saveJSON(CFG.TRACKER_PATH, tracker);
+      if (!(CFG.TRACE_ENABLED && CFG.DRY_RUN)) {
+        tracker.rejected = tracker.rejected || [];
+        // `at` lets lib/skipset apply TTL/transient release later. eval_error is a transient
+        // tier (released next run), so this account gets re-evaluated rather than blacklisted.
+        tracker.rejected.push({ h: handle, r: 'eval_error:' + result.error, at: new Date().toISOString() });
+        rejectedSet.add(handle); saveJSON(CFG.TRACKER_PATH, tracker);
+      } else {
+        TRACE.mark('diagnostic_error', { error: result.error });
+      }
+      await returnToSearchResults(page, handle);
       await sleep(rand(CFG.REJECT_WAIT_MIN_MS, CFG.REJECT_WAIT_MAX_MS)); continue;
     }
 
     log(`${handle} -> ${result.decision} | bio=${(result.bio||'').slice(0,80).replace(/\n/g,' ')}`);
-    tracker.stats.profiles_checked = (tracker.stats.profiles_checked || 0) + 1;
+    const diagnosticNoMutation = CFG.TRACE_ENABLED && CFG.DRY_RUN;
+    if (!diagnosticNoMutation) {
+      tracker.stats.profiles_checked = (tracker.stats.profiles_checked || 0) + 1;
 
-    if (isFollowAction(result.action)) {
-      tracker.followed.push({ handle: result.handle, bio: result.bio, fers: result.fN, fing: result.fgN, action: result.action, at: new Date().toISOString() });
-      tracker.stats.follow_success = (tracker.stats.follow_success || 0) + 1;
-      followedSet.add(handle); followTimestamps.push(Date.now());
-      log(`✅ FOLLOW #${tracker.followed.length}: ${handle} (${result.action})`);
-    } else if (result.decision && result.decision.startsWith('reject')) {
-      tracker.rejected = tracker.rejected || [];
-      tracker.rejected.push({ h: handle, r: result.decision, at: new Date().toISOString() });
-      rejectedSet.add(handle);
+      if (isFollowAction(result.action)) {
+        tracker.followed.push({ handle: result.handle, bio: result.bio, fers: result.fN, fing: result.fgN, action: result.action, at: new Date().toISOString() });
+        tracker.stats.follow_success = (tracker.stats.follow_success || 0) + 1;
+        followedSet.add(handle); followTimestamps.push(Date.now());
+        log(`✅ FOLLOW #${tracker.followed.length}: ${handle} (${result.action})`);
+      } else if (result.decision && result.decision.startsWith('reject')) {
+        tracker.rejected = tracker.rejected || [];
+        tracker.rejected.push({ h: handle, r: result.decision, at: new Date().toISOString() });
+        rejectedSet.add(handle);
+      }
+      saveJSON(CFG.TRACKER_PATH, tracker);
+    } else {
+      TRACE.mark('diagnostic_decision', { decision: result.decision, action: result.action, fN: result.fN, fgN: result.fgN });
     }
-    saveJSON(CFG.TRACKER_PATH, tracker);
     writeStatus({ phase: 'campaign', followed: tracker.followed.length, target: CFG.TARGET,
-      queue_total: queue.length, processed: i + 1, last: { handle, decision: result.decision || result.action } });
+      queue_total: queue.length, processed: i + 1, diagnostic_processed: tracedProfiles,
+      last: { handle, decision: result.decision || result.action } });
 
     // Anomaly check AFTER action (esp. after a follow). EMPTY_PAGE excluded (latency artifact).
     const anomaly = await detectAnomaly(page);
     if (anomaly && anomaly.type !== 'EVAL_ERROR' && anomaly.type !== 'EMPTY_PAGE') {
       if (anomaly.type === 'LOGIN_REDIRECT') throw new XAuthenticationError(anomaly.text, { handle, url: page.url() });
       log(`!!! ANOMALY DETECTED: ${anomaly.type} - ${anomaly.text}`);
-      writeAlert(CFG.ALERT_PATH, { ...anomaly, handle, url: page.url(), profileDir: CFG.PROFILE_DIR, trackerPath: CFG.TRACKER_PATH });
+      await recordFailure(page, { ...anomaly, handle, url: page.url() });
       throw new CampaignExitError(anomaly.type, anomaly.text, EXIT_CODES[anomaly.type] || 99);
     }
 
@@ -465,7 +655,7 @@ async function runCampaign({ context, confirmAuthenticated, disableAuthRefresh }
       await page.waitForTimeout(1500 + Math.floor(Math.random() * 1000));
       const observedComment = await captureXResponseEvidence(page, () => commentOnPinnedPost(page, handle, CFG));
       if (observedComment.evidence?.reason === 'RATE_LIMIT') {
-        writeAlert(CFG.ALERT_PATH, { type: 'RATE_LIMIT', text: `HTTP 429 ${observedComment.evidence.responseUrl}`, handle, url: page.url(), context: 'after_comment', profileDir: CFG.PROFILE_DIR });
+        await recordFailure(page, { type: 'RATE_LIMIT', text: `HTTP 429 ${observedComment.evidence.responseUrl}`, httpStatus: observedComment.evidence.httpStatus, responseUrl: observedComment.evidence.responseUrl, handle, url: page.url(), context: 'after_comment' });
         throw new CampaignExitError('RATE_LIMIT', `HTTP 429 during comment action at @${handle}`, EXIT_CODES.RATE_LIMIT);
       }
       if (observedComment.evidence?.reason === 'LOGIN_REDIRECT') {
@@ -480,11 +670,13 @@ async function runCampaign({ context, confirmAuthenticated, disableAuthRefresh }
         if (ca && ca.type !== 'EVAL_ERROR' && ca.type !== 'EMPTY_PAGE') {
           if (ca.type === 'LOGIN_REDIRECT') throw new XAuthenticationError(ca.text, { handle, url: page.url() });
           log(`!!! ANOMALY AFTER COMMENT: ${ca.type} - ${ca.text}`);
-          writeAlert(CFG.ALERT_PATH, { ...ca, handle, url: page.url(), context: 'after_comment', profileDir: CFG.PROFILE_DIR });
+          await recordFailure(page, { ...ca, handle, url: page.url(), context: 'after_comment' });
           throw new CampaignExitError(ca.type, ca.text, EXIT_CODES[ca.type] || 99);
         }
       }
     }
+
+    await returnToSearchResults(page, handle);
 
     // Pace
     if (isFollowAction(result.action)) {
@@ -500,9 +692,27 @@ async function runCampaign({ context, confirmAuthenticated, disableAuthRefresh }
   }
 
   log(`=== CAMPAIGN END === Total follows: ${tracker.followed.length}/${CFG.TARGET}`);
+  } catch (error) {
+    if (!alertWrittenThisRun) {
+      const type = error instanceof XAuthenticationError
+        ? 'LOGIN_REDIRECT'
+        : (error instanceof CampaignExitError ? error.type : 'UNEXPECTED_ERROR');
+      await recordFailure(page, {
+        type,
+        text: error.message || String(error),
+        handle: currentHandle,
+        url: (() => { try { return page.url(); } catch { return null; } })(),
+      });
+    }
+    throw error;
+  } finally {
+    TRACE.mark('session_end', { followed: tracker.followed.length, tracedProfiles });
+    await TRACE.detach();
+  }
 }
 
 async function main() {
+  await PROFILE_PACER.beforeNetwork('campaign startup /home');
   await withAuthenticatedContext(
     { config: RUNTIME.browser, headless: false, width: 1280, height: 820 },
     runCampaign,
@@ -516,7 +726,7 @@ main().catch((error) => {
     return;
   }
   if (error instanceof XAuthenticationError) {
-    writeAlert(CFG.ALERT_PATH, { type: 'LOGIN_REDIRECT', text: error.message, url: error.details?.url, profileDir: CFG.PROFILE_DIR });
+    if (!alertWrittenThisRun) writeAlert(CFG.ALERT_PATH, { type: 'LOGIN_REDIRECT', text: error.message, url: error.details?.url, profileDir: CFG.PROFILE_DIR });
     log(`FATAL LOGIN_REDIRECT: ${error.message}`);
     process.exitCode = EXIT_CODES.LOGIN_REDIRECT;
     return;
