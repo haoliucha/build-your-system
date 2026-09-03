@@ -75,6 +75,42 @@ class ClaudeCollectorTests(unittest.TestCase):
             self.assertFalse(any("task-notification" in event.content for event in report.timeline))
             self.assertFalse(any(event.content == "真实用户输入 #tasks" and event.sidechain for event in report.timeline))
 
+    def test_deduplicates_same_session_records_across_files_by_minute_and_content(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "claude"
+            first = home / "projects/-tmp-vault/session-1.jsonl"
+            second = home / "projects/-tmp-vault/session-1-fork.jsonl"
+            common = {"sessionId": "session-1", "cwd": "/tmp/vault", "timestamp": "2026-04-08T07:00:42Z"}
+            write_jsonl(first, [
+                {**common, "type": "user", "uuid": "main-command", "message": {"content": "<command-name>/assistant:a-setup</command-name>"}},
+            ])
+            write_jsonl(second, [
+                {**common, "type": "user", "uuid": "fork-command", "isSidechain": True, "message": {"content": "<command-name>/assistant:a-setup</command-name>"}},
+                {**common, "type": "user", "uuid": "fork-prompt", "message": {"content": "这是另一条真实输入"}},
+            ])
+
+            report = collect(date(2026, 4, 8), home=home, vault=home)
+
+            command_events = [event for event in report.timeline if event.command == "assistant:a-setup"]
+            self.assertEqual(len(command_events), 1)
+            self.assertEqual(len(report.timeline), 2)
+            self.assertTrue(any(event.content == "这是另一条真实输入" for event in report.timeline))
+
+    def test_deduplicates_forked_session_copy_with_rewritten_session_id(self):
+        # /fork 会整份复制 transcript：uuid、timestamp 相同，但 sessionId 改写成新文件名
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "claude"
+            main = home / "projects/-tmp-vault/session-1.jsonl"
+            fork = home / "projects/-tmp-vault/session-2.jsonl"
+            record = {"type": "user", "cwd": "/tmp/vault", "uuid": "shared-uuid", "timestamp": "2026-04-08T07:00:42Z", "message": {"content": "<command-name>/assistant:a-setup</command-name>"}}
+            write_jsonl(main, [{**record, "sessionId": "session-1"}])
+            write_jsonl(fork, [{**record, "sessionId": "session-2"}])
+
+            report = collect(date(2026, 4, 8), home=home, vault=home)
+
+            self.assertEqual(len(report.timeline), 1)
+            self.assertEqual(report.timeline[0].command, "assistant:a-setup")
+
 
 if __name__ == "__main__":
     unittest.main()

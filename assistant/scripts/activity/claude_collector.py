@@ -128,6 +128,7 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
             if record.get("type") != "user" or record.get("isMeta"):
                 continue
             local = to_local(record.get("timestamp"))
+            timestamp_key = local.strftime("%Y-%m-%dT%H:%M") if local else str(record.get("timestamp") or "")
             if not local or local.date() != target_date:
                 continue
             text = _content(record)
@@ -148,17 +149,8 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
                 session_id,
             )
             candidates.append({
-                "dedup_key": (
-                    session_id,
-                    "uuid",
-                    str(record["uuid"]),
-                ) if record.get("uuid") else (
-                    session_id,
-                    "fallback",
-                    record.get("timestamp"),
-                    text[:80],
-                ),
-                "content_key": " ".join(text.split()),
+                "dedup_key": (session_id, timestamp_key, text[:80]),
+                "uuid": str(record.get("uuid") or ""),
                 "time": local.strftime("%H:%M"),
                 "ts": record.get("timestamp"),
                 "session_id": session_id,
@@ -173,15 +165,22 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
                 "files": touched,
             })
 
-    primary_content = {
-        (candidate["session_id"], candidate["content_key"])
-        for candidate in candidates
-        if not candidate["sidechain"]
-    }
-    deduplicated: dict[tuple, dict] = {}
+    # 第一层：同 uuid 必是同一条记录（fork 会话会整份复制 transcript 并改写 sessionId）。
+    by_uuid: dict[str, dict] = {}
+    unique_candidates: list[dict] = []
     for candidate in candidates:
-        if candidate["sidechain"] and (candidate["session_id"], candidate["content_key"]) in primary_content:
+        if not candidate["uuid"]:
+            unique_candidates.append(candidate)
             continue
+        existing = by_uuid.get(candidate["uuid"])
+        if existing is None:
+            by_uuid[candidate["uuid"]] = candidate
+            unique_candidates.append(candidate)
+        elif existing["sidechain"] and not candidate["sidechain"]:
+            existing.update(candidate)
+    # 第二层：同 session 内同一分钟、同内容前 80 字视为重复（子代理 transcript 的 uuid 不同）。
+    deduplicated: dict[tuple, dict] = {}
+    for candidate in unique_candidates:
         existing = deduplicated.get(candidate["dedup_key"])
         if existing is None or (existing["sidechain"] and not candidate["sidechain"]):
             deduplicated[candidate["dedup_key"]] = candidate
