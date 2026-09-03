@@ -6,7 +6,7 @@
 
 | 插件 | Claude | Codex | 说明 |
 |---|---:|---:|---|
-| `assistant` | ✓ | ✓ | 共享 19 个 Skill；Claude commands 为薄入口 |
+| `assistant` | ✓ | ✓ | 共享 14 个 Skill；Claude commands 为薄入口；SessionStart hook |
 | `bid` | ✓ | ✓ | 共享业务实现 |
 | `coding-anywhere` | ✓ | ✓ | 共享远程开发与 dropfile |
 | `insights` | — | ✓ | Codex `$insights`，Claude 使用原生 `/insights` |
@@ -27,6 +27,7 @@
 
 ```bash
 python3 -m unittest discover -s insights/tests -p 'test_*.py' -v
+python3 -m unittest discover -s assistant/tests -v
 python3 "$HOME/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py" assistant
 python3 "$HOME/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py" insights
 python3 "$HOME/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py" coding-anywhere

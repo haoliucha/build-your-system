@@ -1,111 +1,49 @@
 ---
 name: o-tasks
-description: This skill should be used when the user request matches the former assistant workflow `o-tasks`. [Organize] 任务概览 - 显示当前任务状态和智能建议
+description: 查看当前任务、MIT、等待事项和到期任务，并用健康检查结果给出简短建议。
 ---
 
-# Codex 适配说明
+> 宿主适配契约见 vault-structure/references/host-adaptation.md；当前目录即 Vault 根目录。
 
-- 这是原 Claude assistant 命令 `o-tasks` 的 Codex skill 版本。
-- 文中旧的斜杠命令现在都表示对应 skill，而不是可直接输入的 slash command。
-- 如果需要用户做选择，优先使用当前环境支持的选项式提问；若不支持，就给出简短可直接选择的选项。
-- 遇到 Claude 专属语法时，使用 Codex 等价方式完成，不要照搬旧工具名。
-- 在 Vault 场景下默认当前工作目录就是 Vault 根目录；若不是，先确认路径。
+# 任务概览
 
-显示任务概览并提供智能建议。
+当前目录即 Vault 根目录，读取 `50-GTD/active.md`、`waiting.md`、`someday.md` 和 `00-Inbox/capture.md`。
 
-**当前目录就是 Vault**，使用相对路径。
+## 时段提示
 
-## 执行步骤
+调用 o-schedule 的时段判断，只输出一行；不要在本 skill 复制时段逻辑或作息配置规则。
 
-### 0. 时段提示（置顶）
+## 展示内容
 
-**必须最先执行**，在输出任何内容之前：
+按以下顺序输出：
 
-1. 获取当前时间（GMT+8）
-2. 读取 `60-Memory/preferences.md` 获取用户作息配置
-3. 根据时间和用户配置判断当前时段，在概览最开头显示：
+1. Inbox 待分发条目，最多 5 条；
+2. `## 今日重点 (MIT)` 中的任务；
+3. 等待中的事项；
+4. 未来 3 天内到期的任务；
+5. 活跃项目任务的简短分组。
 
-```
-⏰ {HH:MM} | 当前时段：{时段名}
-```
+## 健康概览
 
-4. **深度工作时段保护**：如果当前处于用户配置的深度工作时段，额外显示：
+运行：
 
-```
-🛡️ 深度工作时段
-这是你最重要的创作时间！
+```bash
+python3 "$ASSISTANT_PLUGIN_ROOT/scripts/vault-health.py"
 ```
 
-5. **晚间提醒**：如果当前时间超过用户配置的结束时间，显示：
+`ASSISTANT_PLUGIN_ROOT` 由宿主提供，见 vault-structure/references/host-adaptation.md。读取 JSON 中的 inbox 积压、MIT 年龄、逾期数、复盘间隔和记忆卫生，展示为一行健康概览；健康检查失败时不阻断任务概览。
 
-```
-🌙 已过结束时间，请尽快休息
-```
-
----
-
-### 1. 读取任务文件
-
-读取以下文件：
-- `00-Inbox/capture.md` - 待处理捕获
-- `50-GTD/active.md` - 活跃任务
-- `50-GTD/waiting.md` - 等待中任务
-
-### 2. 解析任务
-
-识别 Obsidian Tasks 格式的任务（参考 vault-structure skill）：
-- `- [ ]` 未完成
-- `- [x]` 已完成
-- `📅 YYYY-MM-DD` 到期日期
-- `⏫` 高优先级 / `🔼` 中优先级 / `🔽` 低优先级
-
-### 3. 生成概览
-
-读取 `20-Areas/` 子目录列表，动态生成任务分类。
-
-```
-=== 任务概览 ===
-
-📥 Inbox ({数量}个待处理)
-{列出 capture.md 中的条目，最多显示 5 个}
-
-🎯 今日重点 (MIT)
-{列出 active.md 中"今日重点"部分的任务}
-
-⏳ 等待中
-{列出 waiting.md 中的等待事项}
-
-⏰ 即将到期
-{列出 3 天内到期的任务}
-
-📊 统计
-- Inbox: X 个
-- 活跃: X 个
-- 等待中: X 个
-- 本周到期: X 个
+```text
+健康概览：Inbox {N} | MIT 年龄 {N} 天 | 逾期 {N} | 距上次复盘 {N} 天 | 记忆 active {N}
 ```
 
-### 4. 智能建议
+## 建议
 
-根据任务状态提供 1-2 条建议：
+根据健康 JSON 给出 1–2 条可执行建议：积压达到阈值时建议运行 o-review，有逾期时建议调整或执行，缺少 MIT 时建议从 active 或 Inbox 选择 1–3 项。不要替用户改动任务。
 
-- 如果 inbox 超过 5 个：建议整理，移动到 active 或 someday
-- 如果今日无重点任务：建议从 inbox/active 中选择 1-3 个 MIT
-- 如果有逾期任务：提醒处理或调整日期
-- 如果任务较少：鼓励用户，询问是否需要规划新任务
+## 快捷操作
 
-### 5. 快捷操作提示
-
-```
----
-💡 快捷操作：
-- `c-capture` <内容> - 添加新捕获
-- `o-review` - 进行每日回顾
-```
-
-## 注意事项
-
-- 保持输出简洁，不要太长
-- 重点突出今日 MIT 和即将到期的任务
-- 建议要具体可行
-- 时区统一使用 GMT+8
+- c-capture：添加捕获；
+- o-review：完成每日回顾；
+- o-schedule：查看当前时段；
+- cc-activity：查看某日合并活动。

@@ -40,6 +40,11 @@ for plugin_dir in "$MARKETPLACE_DIR"/*/; do
         skipped=$((skipped + 1))
         continue
     fi
+    if [ -f "$cache_dir/.orphaned_at" ]; then
+        echo "[!] $plugin_name v$version: cache marked orphaned, skipping"
+        skipped=$((skipped + 1))
+        continue
+    fi
 
     # Preserve .in_use/<PID> markers across rsync --delete
     in_use_backup=""

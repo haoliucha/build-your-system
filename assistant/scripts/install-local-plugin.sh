@@ -4,10 +4,10 @@ set -euo pipefail
 
 PLUGIN_NAME="assistant"
 MARKETPLACE_NAME="local-build-your-system"
-EXPECTED_VERSION="2.0.0"
-PLUGIN_VERSION="${EXPECTED_VERSION}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 TARGET_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+EXPECTED_VERSION="$(/usr/bin/python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "${TARGET_ROOT}/.codex-plugin/plugin.json")"
+PLUGIN_VERSION="${EXPECTED_VERSION}"
 SOURCE_ROOT="${HOME}/plugins/${PLUGIN_NAME}"
 MARKETPLACE_FILE="${HOME}/.agents/plugins/marketplace.json"
 CACHE_ROOT="${HOME}/.codex/plugins/cache/${MARKETPLACE_NAME}/${PLUGIN_NAME}/${PLUGIN_VERSION}"
@@ -15,7 +15,7 @@ CACHE_ROOT="${HOME}/.codex/plugins/cache/${MARKETPLACE_NAME}/${PLUGIN_NAME}/${PL
 mkdir -p "${HOME}/plugins" "${HOME}/.agents/plugins"
 ln -sfn "${TARGET_ROOT}" "${SOURCE_ROOT}"
 
-MARKETPLACE_FILE="${MARKETPLACE_FILE}" python3 <<'PY'
+MARKETPLACE_FILE="${MARKETPLACE_FILE}" MARKETPLACE_NAME="${MARKETPLACE_NAME}" python3 <<'PY'
 import json
 import os
 from pathlib import Path
@@ -31,7 +31,10 @@ entry = {
 if marketplace_file.exists():
     data = json.loads(marketplace_file.read_text(encoding="utf-8"))
 else:
-    data = {"plugins": []}
+    data = {"name": os.environ["MARKETPLACE_NAME"], "plugins": []}
+
+if "name" not in data:
+    data["name"] = os.environ["MARKETPLACE_NAME"]
 
 plugins = [plugin for plugin in data.get("plugins", []) if plugin.get("name") != entry["name"]]
 plugins.append(entry)

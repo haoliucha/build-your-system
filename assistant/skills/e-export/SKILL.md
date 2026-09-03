@@ -1,156 +1,64 @@
 ---
 name: e-export
-description: This skill should be used when the user request matches the former assistant workflow `e-export`. [Express] 导出对话 - 将对话转为 Obsidian 知识笔记
+description: 将当前对话整理成 Vault 中的知识笔记和完整对话记录，并保持宿主来源标识一致。
 ---
 
-# Codex 适配说明
+> 宿主适配契约见 vault-structure/references/host-adaptation.md；当前目录即 Vault 根目录。
 
-- 这是原 Claude assistant 命令 `e-export` 的 Codex skill 版本。
-- 文中旧的斜杠命令现在都表示对应 skill，而不是可直接输入的 slash command。
-- 如果需要用户做选择，优先使用当前环境支持的选项式提问；若不支持，就给出简短可直接选择的选项。
-- 遇到 Claude 专属语法时，使用 Codex 等价方式完成，不要照搬旧工具名。
-- 在 Vault 场景下默认当前工作目录就是 Vault 根目录；若不是，先确认路径。
+# 导出对话
 
-# 导出对话到 Obsidian
+将当前对话保存为一份知识笔记和一份完整记录，路径均相对于 Vault 根目录。
 
-将当前对话整理成**可分享的知识笔记**和**完整对话记录**，保存到当前 Vault。
+## 宿主标识
 
-## 执行步骤
+先判断当前宿主，只允许 `claude-code` 或 `codex`。知识笔记和完整对话记录的 frontmatter 中，`source` 与 `tags` 必须使用同一个宿主标识；不得一个写 `claude-code`、另一个写 `codex`。
 
-### 1. 分析对话内容
+例如当前宿主为 `codex` 时，两份文件都使用：
 
-回顾当前对话，提取：
-- **主题**：用 3-8 个字概括（如"实现用户认证"、"修复分页问题"）
-- **领域标签**：从 `#outsourcing`、`#indie`、`#media`、`#life`、`#learning` 中选择
-- **关键知识点**：解决了什么问题、用了什么技术
-
-### 2. 生成文件名
-
-格式：`YYYYMMDD-<主题>`
-- 日期使用当前日期
-- 主题用中文，简洁明了
-
-示例：`20241223-创建Claude-Code导出命令`
-
-### 3. 生成知识笔记
-
-**保存路径**: `00-Inbox/YYYYMMDD-<主题>.md`
-
-**模板**（严格遵循此格式）：
-
-```markdown
----
-date: YYYY-MM-DD HH:mm
-source: claude-code
-type: knowledge
-tags: [claude-code, <领域标签>]
----
-
-# <主题标题>
-
-## 背景
-
-<1-3 句话说清楚要解决什么问题>
-
-## 前置条件
-
-- 环境：<如 macOS、Node.js 版本等>
-- 工具：<需要安装的工具>
-- 知识：<需要了解的概念，可选>
-
-## 实现步骤
-
-### 步骤 1：<描述>
-
-```bash
-# 具体命令，可直接复制执行
-```
-
-预期结果：<说明执行后应该看到什么>
-
-### 步骤 2：<描述>
-
-<代码或操作>
-
-预期结果：<说明>
-
-（继续添加步骤...）
-
-## 完整代码/配置
-
-<如果有完整文件，贴出完整内容，标注文件路径>
-
-## 常见问题
-
-### 问题 1：<描述>
-
-解决方法：<具体步骤>
-
-（如果没有常见问题，可省略此部分）
-
-## 要点总结
-
-- 要点 1
-- 要点 2
-- ...
-
-## 参考资料
-
-- [[30-Resources/conversations/YYYYMMDD-<主题>-对话]] - 完整对话记录
-```
-
-### 4. 生成完整对话记录
-
-**保存路径**: `30-Resources/conversations/YYYYMMDD-<主题>-对话.md`
-
-**模板**：
-
-```markdown
----
-date: YYYY-MM-DD HH:mm
+```yaml
 source: codex
-type: conversation
-tags: [codex, raw]
-related: [[00-Inbox/YYYYMMDD-<主题>]]
----
-
-# <主题标题> - 完整对话
-
-## 对话内容
-
-### User
-<用户消息 1>
-
-### Assistant
-<AI 回复 1>
-
-### User
-<用户消息 2>
-
-### Assistant
-<AI 回复 2>
-
-...
-
-（保留完整对话，包括代码块和工具输出的关键部分）
+tags: [codex, ...]
 ```
 
-### 5. 保存文件
+## 文件
 
-使用 Write 工具将两个文件保存到对应路径。
+文件名为 `YYYYMMDD-{主题}`。
 
-## 注意事项
+### 知识笔记
 
-1. **可实操性优先**：步骤要详细到小白照做就能复现
-2. **代码可复制**：所有命令和代码块要完整，可直接复制执行
-3. **预期结果明确**：每个步骤说明执行后应该看到什么
-4. **双向链接**：两个文件互相引用
-5. **时区**：使用 GMT+8 时区
-6. **当前目录就是 Vault**：直接使用相对路径
+保存到 `00-Inbox/YYYYMMDD-{主题}.md`，保留以下 frontmatter 字段：
 
-## 输出确认
+```yaml
+---
+date: YYYY-MM-DD HH:mm
+source: {宿主标识}
+type: knowledge
+tags: [{宿主标识}, {领域标签}]
+---
+```
 
-完成后告知用户：
-- 知识笔记路径
-- 完整对话路径
-- 笔记主题和标签
+正文包括背景、前置条件、实现步骤、完整代码或配置、常见问题、要点总结和指向完整记录的链接。领域标签从 `60-Memory/tag-mapping.md` 选择。
+
+### 完整记录
+
+保存到 `30-Resources/conversations/YYYYMMDD-{主题}-对话.md`：
+
+```yaml
+---
+date: YYYY-MM-DD HH:mm
+source: {宿主标识}
+type: conversation
+tags: [{宿主标识}, raw]
+related: [[00-Inbox/YYYYMMDD-{主题}]]
+---
+```
+
+保留完整用户消息、助手回复、关键工具输出和代码块，并链接回知识笔记。
+
+## 保存检查
+
+- 两个文件的 `source` 完全一致；
+- 两个文件的 `tags` 都包含相同宿主标识；
+- 使用 GMT+8 日期时间；
+- 两个文件互相可追溯；
+- 不把未确认推测包装成事实。

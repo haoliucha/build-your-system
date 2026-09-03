@@ -1,8 +1,9 @@
 {
   "name": "assistant",
-  "version": "2.0.0",
-  "description": "个人 AI 助手 - 任务管理、知识管理、每日回顾。基于 Obsidian Vault 的统一收集和智能分发系统。",
+  "version": "3.0.0",
+  "description": "个人 AI 助手 3.0 - 11 个命令 + 14 个 skills + SessionStart 上下文注入 + 活动/健康脚本；CODE 循环与记忆消融",
   "author": {"name": "haoliucha", "url": "https://github.com/haoliucha"},
   "commands": "./commands",
-  "skills": "./skills"
+  "skills": "./skills",
+  "hooks": "./hooks/hooks.json"
 }

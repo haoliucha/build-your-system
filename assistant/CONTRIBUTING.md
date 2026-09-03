@@ -10,7 +10,7 @@
 - Obsidian (可选，用于测试)
 - Python 3.8+ (用于活动分析脚本)
 
-### 本地开发
+### 本地开发：Claude Code
 
 1. Clone 仓库
    ```bash
@@ -18,16 +18,27 @@
    cd build-your-system
    ```
 
-2. 链接到对应宿主的插件目录
+2. 链接到 Claude 的本地插件目录
    ```bash
-   ln -s "$(pwd)/assistant" "$HOME/plugins/assistant-dev"
+   ln -s "$(pwd)/assistant" "$HOME/plugins/assistant"
    ```
 
 3. 在 Obsidian Vault 中测试
    ```bash
    cd /path/to/your/vault
-   # Claude：/assistant:a-setup；Codex：$a-setup
+   # Claude：/assistant:a-setup
    ```
+
+### 本地开发：Codex
+
+在仓库根目录运行安装脚本。脚本会把 `assistant/` 链接到 `~/plugins/assistant`，按 manifest 读取版本，刷新本地 marketplace 和 Codex cache。
+
+```bash
+cd /path/to/build-your-system
+./assistant/scripts/install-local-plugin.sh
+```
+
+进入 Vault 后用自然语言触发同名 skill，例如“运行 a-setup”或“做一次 o-review”。
 
 ## 项目结构
 
@@ -37,7 +48,6 @@ assistant/
 ├── skills/            # 知识库
 ├── hooks/             # 自动触发
 ├── scripts/           # Python/Bash 脚本
-├── DESIGN.md          # 设计文档
 └── CONTRIBUTING.md    # 本文件
 ```
 
@@ -52,33 +62,11 @@ assistant/
 - `e-*.md` — Express 输出
 - `a-*.md` — Admin 管理
 
-### 命令模板
-
-```markdown
----
-description: "[类别] 简短描述"
-argument-hint: "[可选参数]"
----
-
-# 命令名称
-
-**参数**：说明
-
-## 执行流程
-
-### Phase 1: 第一阶段
-...
-
-### Phase 2: 第二阶段
-**交互**：⭐ 暂停等用户回答
-```
-
 ### 设计原则
 
-1. **精简优先** — 命令模板控制在 100 行以内
-2. **明确交互点** — 用 `⭐` 标记必须暂停的地方
+1. **精简优先** — 命令只做宿主入口和参数透传
+2. **明确交互点** — 需要用户确认的步骤由共享 skill 标出
 3. **引用 Skill** — 详细规则放在 skills/ 中，命令中引用
-4. **强制执行** — 关键步骤用 `!` 语法确保执行
 
 ## Skill 开发规范
 
@@ -98,7 +86,6 @@ skills/
 ---
 name: Skill Name
 description: 触发条件描述
-version: 1.0.0
 ---
 
 # 技能内容
@@ -160,5 +147,11 @@ feat(o-review): add activity timeline display
 - 标注 Claude Code 版本
 
 ---
+
+## 测试
+
+```bash
+python3 -m unittest discover -s assistant/tests -v
+```
 
 再次感谢你的贡献！

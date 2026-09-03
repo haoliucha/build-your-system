@@ -140,6 +140,6 @@ Hook: [震惊事实]
 
 ## 保存位置
 
-`03-Areas/media/逐字稿/YYYYMMDD-{选题名称}.md`
+`20-Areas/media/逐字稿/YYYYMMDD-{选题名称}.md`
 
 保存后更新选题文件 status → scripted

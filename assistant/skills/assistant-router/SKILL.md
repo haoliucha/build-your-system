@@ -1,50 +1,33 @@
 ---
 name: assistant-router
-description: "Use when the user wants the personal Obsidian Vault assistant workflow in Codex for capture, inbox dispatch, daily review, weekly summary, timeline, task overview, or conversation export."
+description: 在个人 Vault 中路由捕获、复盘、任务、作息、活动分析、选题挖矿、导出和周报请求。
 ---
 
-# Build Your System Assistant
+# Personal Assistant 总入口
 
-Codex 版个人助手总入口。
+优先遵守当前 Vault 的 `AGENTS.md` / `AGENTS.override.md`。当前目录即 Vault 根目录；需要写文件时使用相对路径。
 
-## 何时使用
+## 工作流 skill
 
-- 用户说“记一下 / 捕获 / 放进 inbox / 加个任务”
-- 用户说“今天回顾 / 每日回顾 / 周回顾 / 周报 / 时间线”
-- 用户说“帮我总结 / 提炼 / 导出这次对话”
-- 用户希望 AI 在 Obsidian Vault 里按 CODE+ / PARA / GTD 协作
+以下 11 个工作流 skill 与 `commands/` 同名：
 
-## 工作原则
+- `a-setup`：初始化目录、文件和用户配置；
+- `c-capture`：捕获内容并识别标签；
+- `c-dump`：自由倾倒脑暴并提取行动项；
+- `c-pause`：记录任务转换点的间隙日志；
+- `cc-activity`：合并 Claude、Codex 和间隙记录的当日活动；
+- `d-mine`：从近期材料挖掘选题素材；
+- `e-export`：导出知识笔记和完整对话；
+- `o-review`：每日分发、复盘和明日规划；
+- `o-schedule`：判断作息、发布间隔和惩罚；
+- `o-tasks`：查看任务和健康概览；
+- `o-weekly`：生成周报并执行记忆消融。
 
-- 优先遵守当前 Vault 的 `AGENTS.md` / `AGENTS.override.md`
-- 默认当前工作目录就是 Vault 根目录；如果不是，先确认再写文件
-- 优先复用本插件已有 sub-skills，不重复发明流程
-- 需要用户做选择时，优先给出简短可直接选择的选项
+## 规则 skill
 
-## 子技能映射
+- `capture-rules`：唯一的捕获、标签、间隙记录和置信度规则真源；
+- `vault-structure`：Vault 路径、模板、记忆层和宿主契约。
 
-- 捕获与收集：`c-capture`、`c-pause`、`c-dump`
-- 组织与复盘：`o-tasks`、`o-review`、`o-timeline`、`o-weekly`、`o-dashboard`、`o-schedule`
-- 提炼与输出：`d-distill`、`d-mine`、`e-export`、`e-director`
-- 规则与结构：`capture-rules`、`interstitial-journaling`、`vault-structure`
-- 活动分析：`cc-activity`
+## 脚本与宿主
 
-## Codex 约束
-
-- 不依赖 Claude slash command
-- 不依赖 `CLAUDE_PLUGIN_ROOT`
-- 涉及活动分析时，使用：
-
-```bash
-python3 "${ASSISTANT_PLUGIN_ROOT:-$HOME/plugins/assistant}/scripts/analyze-codex-activity.py" [YYYY-MM-DD] [--json-only]
-```
-
-## 默认路由
-
-- 捕获内容或加任务：先走 `c-capture`
-- 间隙记录或任务切换：先走 `c-pause`
-- 查看当前任务状态：先走 `o-tasks`
-- 做当日回顾：先走 `o-review`
-- 看某天时间线：先走 `o-timeline`
-- 做每周整合：先走 `o-weekly`
-- 导出当前对话：先走 `e-export`
+脚本入口、`ASSISTANT_PLUGIN_ROOT`、活动来源和宿主交互见 `vault-structure/references/host-adaptation.md`。需要活动数据时使用 `analyze-activity.py`，需要健康数据时使用 `vault-health.py`，需要会话注入时使用 `session-context.py`。

@@ -1,114 +1,92 @@
 ---
 name: vault-structure
-description: This skill should be used when the user asks about "Obsidian Vault paths", "file locations", "task format", "frontmatter templates", or needs to navigate the personal knowledge base structure.
+description: This skill should be used when the user asks about Vault paths, file locations, task formats, frontmatter templates, memory layers, or how to navigate the personal knowledge base.
 ---
 
-# Vault 结构导航 (CODE+ / PARA + GTD)
+# Vault 结构导航（PARA + GTD + 记忆层）
 
-## Vault 根路径
+## Vault 根目录与路径原则
 
-**当前工作目录即为 Vault 根目录。**
-
-所有工作流默认使用相对路径，用户可以在不同的 Vault 目录运行 Codex。
+当前宿主提供的 Vault 根目录是所有相对路径的基准。共享 skill 只使用相对路径，不把宿主、机器或会话的绝对路径写入 Vault。宿主入口、活动分析和上下文注入的差异见 references/host-adaptation.md。
 
 ## 目录结构
 
-```
-📁 Vault/
-├── 00-Inbox/                    # 统一收集箱 + 日志
-│   ├── capture.md               # 所有捕获内容的统一入口
-│   └── {YYYY-MM-DD}.md          # 日志 + 复盘（#record 归档位置）
-│
-├── 10-Projects/                 # PARA: 短期项目（有截止日期）
-│   ├── {项目名}.md              # 项目文件（单文件项目）
-│   └── {项目名}/                # 项目目录（复杂项目）
-│       └── README.md            # 项目主文件
-│
-├── 20-Areas/                    # PARA: 长期责任领域
-│   ├── media/                   # 自媒体
-│   │   ├── topics/              # #topic 选题独立文件
-│   │   ├── 逐字稿/              # 逐字稿文件
-│   │   └── 方法论库/            # 方法论文件
-│   ├── indie/                   # 独立开发
-│   │   └── ideas/               # #idea 产品想法文件
-│   └── outsourcing/             # 外包
-│
-├── 30-Resources/                # PARA: 知识资源
-│
-├── 40-Archives/                 # PARA: 归档（不活跃内容）
-│
-├── 50-GTD/                      # GTD 任务管理
-│   ├── active.md                # #task 归档位置（含 MIT）
-│   ├── waiting.md               # #waiting 等待中（GTD Waiting For）
-│   ├── someday.md               # 将来/也许
-│   └── done.md                  # 已完成归档
-│
-└── 60-Memory/                   # AI 记忆层
-    ├── profile.md               # 用户画像
-    ├── preferences.md           # 偏好配置（含作息）
-    ├── patterns.md              # #insight 归档位置
-    └── weekly-summary/          # 周报
-```
+~~~text
+Vault/
+├── 00-Inbox/
+│   ├── {YYYY-MM-DD}.md       # 当日日记、间隙日志与复盘
+│   ├── {Y}/{Y-M}/            # 历史日记归档位置
+│   └── capture.md            # 待分发捕获内容
+├── 10-Projects/
+│   ├── {项目名}.md            # 单文件项目
+│   └── {项目名}/README.md     # 复杂项目
+├── 20-Areas/
+│   ├── media/
+│   │   ├── topics/            # 选题
+│   │   ├── 逐字稿/             # 逐字稿
+│   │   └── 方法论库/           # 方法论
+│   └── indie/ideas/           # 产品想法
+├── 30-Resources/
+│   ├── conversations/         # 对话资料
+│   └── summaries/             # 摘要资料
+├── 40-Archives/               # 不活跃内容
+├── Clippings/                 # 外部剪藏
+├── 50-GTD/
+│   ├── active.md              # 活跃任务与 MIT
+│   ├── waiting.md             # 等待中
+│   ├── someday.md              # 将来/也许
+│   └── done.md                 # 已完成任务
+└── 60-Memory/
+    ├── profile.md             # L0 稳定画像
+    ├── now.md                 # L1 当前状态
+    ├── preferences.md         # L2 配置
+    ├── patterns.md            # L3 模式日志
+    ├── patterns-digest.md     # L4 精华模式
+    ├── tag-mapping.md         # 领域标签映射
+    ├── weekly-summary/        # 周报与记忆消融记录
+    └── archive/               # 迁移或过期的记忆
+~~~
 
-## 目录编号说明
+目录编号固定为 00-Inbox、10-Projects、20-Areas、30-Resources、40-Archives、50-GTD、60-Memory。历史日记使用 00-Inbox/{Y}/{Y-M}/，不要把新日记直接写入历史归档目录。
 
-| 编号 | 目录 | 说明 |
-|------|------|------|
-| 00 | Inbox | 统一入口 |
-| 10 | Projects | 短期项目 |
-| 20 | Areas | 长期领域 |
-| 30 | Resources | 知识资源 |
-| 40 | Archives | 归档 |
-| 50 | GTD | 任务管理 |
-| 60 | Memory | AI 记忆 |
+脚本层检查的标准文件路径为：`60-Memory/profile.md`、`60-Memory/now.md`、`60-Memory/preferences.md`、`60-Memory/patterns.md`、`60-Memory/patterns-digest.md`、`60-Memory/tag-mapping.md`、`50-GTD/active.md`、`50-GTD/waiting.md`、`50-GTD/someday.md`、`50-GTD/done.md`、`00-Inbox/capture.md`。
 
 ## Obsidian Tasks 格式
 
-```markdown
+~~~markdown
 - [ ] 任务描述 [[项目名]] #领域 📅 YYYY-MM-DD ⏫
-```
-
-### 任务格式组成
+~~~
 
 | 部分 | 格式 | 必选 | 说明 |
-|------|------|------|------|
-| 复选框 | `- [ ]` / `- [x]` | ✓ | 任务状态 |
-| 描述 | 文本 | ✓ | 任务内容 |
-| 项目关联 | `[[项目名]]` | 可选 | 链接到 10-Projects |
-| 领域标签 | `#media` / `#indie` 等 | 可选 | 分类用途 |
-| 截止日期 | `📅 YYYY-MM-DD` | 可选 | Obsidian Tasks 识别 |
-| 优先级 | `⏫` / `🔼` / `🔽` | 可选 | 排序用途 |
+|---|---|---|---|
+| 复选框 | - [ ] / - [x] | 是 | 任务状态 |
+| 描述 | 文本 | 是 | 可执行的任务描述 |
+| 项目关联 | [[项目名]] | 否 | 关联 10-Projects/ 中的项目 |
+| 领域标签 | #media / #indie 等 | 否 | 分类用途，来自 tag-mapping |
+| 截止日期 | 📅 YYYY-MM-DD | 否 | Obsidian Tasks 识别的 due date |
+| 优先级 | ⏫ / 🔼 / 🔽 | 否 | 排序用途 |
 
 ### Emoji 含义
 
 | Emoji | 含义 |
-|-------|------|
-| 📅 | 截止日期 (due) |
-| ⏳ | 计划日期 (scheduled) |
-| 🛫 | 开始日期 (start) |
+|---|---|
+| 📅 | 截止日期（due） |
+| ⏳ | 计划日期（scheduled） |
+| 🛫 | 开始日期（start） |
 | ⏫ | 高优先级 |
 | 🔼 | 中优先级 |
 | 🔽 | 低优先级 |
 | 🔁 | 循环任务 |
 | ✅ | 完成日期 |
 
-## 项目文件格式
+## 文件格式索引
 
-**Frontmatter**：
+项目、选题、产品想法、日记、GTD、记忆层和周报模板统一见 references/file-templates.md。项目 frontmatter 也以该文件为准，不在本入口重复定义，避免出现多个规范。
 
-```yaml
----
-status: active | paused | completed
-created: YYYY-MM-DD
-target: YYYY-MM-DD  # 可选
-area: indie | media | outsourcing  # 关联领域
----
-```
+## 记忆层索引
 
-**状态流**：`active → paused → completed → 移动到 40-Archives/`
+60-Memory/ 按 L0–L4 分层：稳定画像、当前状态、配置、模式日志和精华模式；周报负责消融记录，archive 只保存迁移或过期内容。完整的写入方、读取方、注入边界、条目格式、prepend 和 bootstrap 规则见 references/memory-model.md。
 
-详见 `references/file-templates.md`
+## 宿主适配
 
-## Frontmatter 模板
-
-详见 `references/file-templates.md`
+宿主适配见 references/host-adaptation.md；记忆层规范见 references/memory-model.md。

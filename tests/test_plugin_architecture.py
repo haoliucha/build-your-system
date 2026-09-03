@@ -11,10 +11,10 @@ def manifest(path):
 
 class PluginArchitectureTests(unittest.TestCase):
     def test_current_roots_and_versions(self):
-        expected = {"assistant": "2.0.0", "insights": "0.4.0", "x": "4.1.4", "coding-anywhere": "1.4.0", "bid": "0.1.0", "media": "1.1.0"}
+        expected = {"assistant": "3.0.0", "insights": "0.4.0", "x": "4.1.4", "coding-anywhere": "1.4.0", "bid": "0.1.0", "media": "1.1.1"}
         for name, version in expected.items():
             self.assertEqual(manifest(Path(name) / ".codex-plugin" / "plugin.json")["version"], version)
-        self.assertEqual(manifest(Path("media") / ".claude-plugin" / "plugin.json")["version"], "1.1.0")
+        self.assertEqual(manifest(Path("media") / ".claude-plugin" / "plugin.json")["version"], "1.1.1")
         self.assertFalse((ROOT / "targets").exists())
 
     def test_insights_is_codex_only_and_explicit(self):

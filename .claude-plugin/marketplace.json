@@ -9,8 +9,8 @@
     {
       "name": "assistant",
       "source": "./assistant",
-      "description": "个人 AI 助手 - 任务捕获、每日回顾、知识分发。10 个命令 + 2 个 skills + SessionStart 自动加载上下文。",
-      "version": "2.0.0",
+      "description": "个人 AI 助手 3.0 - 11 个命令 + 14 个 skills + SessionStart 上下文注入 + 活动/健康脚本；CODE 循环与记忆消融",
+      "version": "3.0.0",
       "category": "productivity",
       "homepage": "https://github.com/haoliucha/build-your-system"
     },
@@ -18,7 +18,7 @@
       "name": "media",
       "source": "./media",
       "description": "短视频创作助手 - 共享选题、Hook、结构、逐字稿、标题与发布工作流；Claude 命令为薄入口。",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "category": "productivity",
       "homepage": "https://github.com/haoliucha/build-your-system"
     },

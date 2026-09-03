@@ -1,6 +1,6 @@
 # Media 创作助手
 
-`media/` 是 Claude Code 与 Codex 共用的短视频创作插件，版本 `1.1.0`。业务流程只有一份：`skills/` 下的选题评估、热点、关键词、Hook、结构、逐字稿、标题、发布检查，以及 Jenny Hoyos、字幕清理和 YouTube 字幕方法论。
+`media/` 是 Claude Code 与 Codex 共用的短视频创作插件，版本 `1.1.1`。业务流程只有一份：`skills/` 下的选题评估、热点、关键词、Hook、结构、逐字稿、标题、发布检查，以及 Jenny Hoyos、字幕清理和 YouTube 字幕方法论。
 
 宿主入口：
 

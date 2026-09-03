@@ -6,12 +6,12 @@
 
 | 插件 | 宿主 | 版本 | 说明 |
 |---|---|---:|---|
-| `assistant/` | Claude + Codex | 2.0.0 | 19 个 Vault 捕获、回顾、任务、时间线、周报与导出 Skill；Claude 命令为薄入口 |
+| `assistant/` | Claude + Codex | 3.0.0 | 14 个 Vault Skill、11 个命令、SessionStart 上下文注入与活动/健康脚本；Claude 命令为薄入口 |
 | `insights/` | Codex-only | 0.4.0 | `$insights` 可恢复 `codex exec` Runner、200 会话 facet、七视角、独立总览和离线 HTML 报告 |
 | `x/` | Claude + Codex | 4.1.4 | 共享 `x-unfollow`、`x-image` 与 `x-follow`；账号 Skill 只允许插件命名空间入口 |
 | `coding-anywhere/` | Claude + Codex | 1.4.0 | mosh、tmux、SSH 中继、DDNS 与 dropfile |
 | `bid/` | Claude + Codex | 0.1.0 | To-B 投标与交付物方法论 |
-| `media/` | Claude + Codex | 1.1.0 | 共享选题、Hook、结构、逐字稿、标题与发布工作流；Claude 命令为薄入口 |
+| `media/` | Claude + Codex | 1.1.1 | 共享选题、Hook、结构、逐字稿、标题与发布工作流；Claude 命令为薄入口 |
 | `goal-creator/` | Claude-only | 0.1.0 | 依赖 Claude `/goal` evaluator |
 | `claude-notify/` | Claude-only | 1.0.0 | 依赖 Claude hooks |
 
