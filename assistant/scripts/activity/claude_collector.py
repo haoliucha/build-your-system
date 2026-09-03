@@ -24,6 +24,14 @@ COMMAND_GOALS = {
 }
 IGNORED_COMMANDS = {"clear", "help", "exit", "quit", "rename", "compact", "model", "mcp"}
 COMMAND_RE = re.compile(r"<command-name>/(?:(?P<plugin>[\w-]+):)?(?P<cmd>[\w-]+)</command-name>")
+COMMAND_ARGS_RE = re.compile(r"<command-args>(?P<args>.*?)</command-args>", re.DOTALL)
+SYSTEM_PREFIXES = (
+    "<task-notification>",
+    "<system-reminder>",
+    "<local-command-stdout>",
+    "<local-command-caveat>",
+)
+CONTINUED_SUMMARY = "This session is being continued from a previous conversation"
 
 
 def _content(record: dict) -> str:
@@ -54,13 +62,40 @@ def _session_name(custom_title: str | None, slug: str | None, session_id: str) -
     return (custom_title or slug or session_id[:12]).strip()
 
 
+def _command(text: str) -> tuple[str | None, str | None]:
+    """Return the normalized command and the useful command content."""
+    match = COMMAND_RE.search(text)
+    if not match:
+        return None, None
+    plugin = match.group("plugin")
+    command = f"{plugin}:{match.group('cmd')}" if plugin else match.group("cmd")
+    args_match = COMMAND_ARGS_RE.search(text)
+    args = args_match.group("args").strip() if args_match else ""
+    return command, args or f"/{command}"
+
+
+def _is_system_record(record: dict, text: str, command: str | None) -> bool:
+    """Exclude Claude's injected/continuation records, but keep real commands."""
+    if record.get("isCompactSummary"):
+        return True
+    stripped = text.lstrip()
+    if stripped.startswith(SYSTEM_PREFIXES) or CONTINUED_SUMMARY in text:
+        return True
+    if command is None and (
+        "<command-message>" in text or "<local-command-stdout>" in text
+    ):
+        return True
+    return "[Request interrupted" in text
+
+
 def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Report:
     start, _ = local_day_bounds(target_date)
     cutoff = start - timedelta(days=1)
-    events: list[Event] = []
-    session_data: dict[str, dict] = {}
     projects_root = home / "projects"
     paths = sorted(path for path in projects_root.glob("*/*.jsonl") if path.is_file()) if projects_root.is_dir() else []
+    file_data: list[tuple[Path, list[dict], str, str | None, str | None, str, str]] = []
+    session_meta: dict[str, dict[str, str | None]] = {}
+
     for path in paths:
         try:
             if to_local(path.stat().st_mtime) is None or to_local(path.stat().st_mtime) < cutoff:
@@ -75,12 +110,19 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
         rows = list(iter_jsonl(path) or ())
         for record in rows:
             if record.get("type") == "custom-title":
-                custom_title = record.get("customTitle") or custom_title
+                custom_title = record.get("customTitle") or record.get("title") or custom_title
             if record.get("type") == "user":
                 session_id = record.get("sessionId") or session_id
                 slug = record.get("slug") or slug
                 cwd = record.get("cwd") or cwd
-        name = _session_name(custom_title, slug, session_id)
+        file_data.append((path, rows, fallback_id, custom_title, slug, session_id, cwd))
+        metadata = session_meta.setdefault(session_id, {"custom_title": None, "slug": None, "cwd": ""})
+        metadata["custom_title"] = metadata["custom_title"] or custom_title
+        metadata["slug"] = metadata["slug"] or slug
+        metadata["cwd"] = metadata["cwd"] or cwd
+
+    candidates: list[dict] = []
+    for path, rows, fallback_id, custom_title, slug, file_session_id, file_cwd in file_data:
         touched: set[str] = set()
         for record in rows:
             if record.get("type") != "user" or record.get("isMeta"):
@@ -89,34 +131,88 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
             if not local or local.date() != target_date:
                 continue
             text = _content(record)
-            if not text or any(marker in text for marker in ("<local-command-stdout>", "<command-message>", "[Request interrupted")):
+            if not text:
+                continue
+            command, command_content = _command(text)
+            if _is_system_record(record, text, command):
+                continue
+            if command and (command in IGNORED_COMMANDS or command.rsplit(":", 1)[-1] in IGNORED_COMMANDS):
                 continue
             touched.update(_file_paths(record.get("toolUseResult")))
-            command = None
-            command_match = COMMAND_RE.search(text)
-            if command_match:
-                plugin = command_match.group("plugin")
-                command = f"{plugin}:{command_match.group('cmd')}" if plugin else command_match.group("cmd")
-                if command in IGNORED_COMMANDS or command.rsplit(":", 1)[-1] in IGNORED_COMMANDS:
-                    continue
-            event = Event(
-                time=local.strftime("%H:%M"),
-                ts=record.get("timestamp"),
-                origin="claude-local",
-                session_id=session_id,
-                session_name=name,
-                project=Path(cwd).name if cwd else "",
-                cwd=cwd,
-                content=clean_excerpt(text),
-                kind="command" if command else "prompt",
-                command=command,
-                domain=detect_domain(text, [cwd, *touched]),
-                sidechain=bool(record.get("isSidechain")),
+            session_id = str(record.get("sessionId") or file_session_id or fallback_id)
+            metadata = session_meta.setdefault(session_id, {"custom_title": None, "slug": None, "cwd": ""})
+            cwd = str(record.get("cwd") or metadata["cwd"] or file_cwd or "")
+            name = _session_name(
+                metadata["custom_title"] or custom_title,
+                metadata["slug"] or slug,
+                session_id,
             )
-            events.append(event)
-            session_data.setdefault(session_id, {"events": [], "files": set(), "name": name, "project": event.project, "cwd": cwd})
-            session_data[session_id]["events"].append(event)
-            session_data[session_id]["files"].update(touched)
+            candidates.append({
+                "dedup_key": (
+                    session_id,
+                    "uuid",
+                    str(record["uuid"]),
+                ) if record.get("uuid") else (
+                    session_id,
+                    "fallback",
+                    record.get("timestamp"),
+                    text[:80],
+                ),
+                "content_key": " ".join(text.split()),
+                "time": local.strftime("%H:%M"),
+                "ts": record.get("timestamp"),
+                "session_id": session_id,
+                "session_name": name,
+                "project": Path(cwd).name if cwd else "",
+                "cwd": cwd,
+                "text": command_content if command else text,
+                "kind": "command" if command else "prompt",
+                "command": command,
+                "domain": detect_domain(text, [cwd, *touched]),
+                "sidechain": bool(record.get("isSidechain")),
+                "files": touched,
+            })
+
+    primary_content = {
+        (candidate["session_id"], candidate["content_key"])
+        for candidate in candidates
+        if not candidate["sidechain"]
+    }
+    deduplicated: dict[tuple, dict] = {}
+    for candidate in candidates:
+        if candidate["sidechain"] and (candidate["session_id"], candidate["content_key"]) in primary_content:
+            continue
+        existing = deduplicated.get(candidate["dedup_key"])
+        if existing is None or (existing["sidechain"] and not candidate["sidechain"]):
+            deduplicated[candidate["dedup_key"]] = candidate
+
+    events: list[Event] = []
+    session_data: dict[str, dict] = {}
+    for candidate in deduplicated.values():
+        event = Event(
+            time=candidate["time"],
+            ts=candidate["ts"],
+            origin="claude-local",
+            session_id=candidate["session_id"],
+            session_name=candidate["session_name"],
+            project=candidate["project"],
+            cwd=candidate["cwd"],
+            content=clean_excerpt(candidate["text"]),
+            kind=candidate["kind"],
+            command=candidate["command"],
+            domain=candidate["domain"],
+            sidechain=candidate["sidechain"],
+        )
+        events.append(event)
+        data = session_data.setdefault(candidate["session_id"], {
+            "events": [],
+            "files": set(),
+            "name": candidate["session_name"],
+            "project": candidate["project"],
+            "cwd": candidate["cwd"],
+        })
+        data["events"].append(event)
+        data["files"].update(candidate["files"])
 
     events.sort(key=lambda event: (event.ts or "", event.time))
     sessions = []
