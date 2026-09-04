@@ -48,30 +48,89 @@ case "$terminal_type" in
             open -b com.anthropic.claudefordesktop 2>/dev/null
             exit 0
         fi
-        # claude://code/continue is the app's own deep link (its Spotlight entries
-        # and Dock menu use it), and it needs no AppleScript or accessibility
-        # permission. But it sits behind a server-side feature gate: while the gate
-        # is off the app logs "code entry deep link gated off" and does not
-        # navigate. Fire it regardless — it starts working the moment the gate
-        # rolls out — then confirm against the app's own store, and fall back to
-        # app-level focus when it did not land.
-        if ! open "claude://code/continue?session=$desktop_session_id" 2>/dev/null; then
+
+        # Single-flight. A global hotkey invites repeated presses, and each run
+        # blocks for its verification budget; without this they stack up and each
+        # one fires its own deep link.
+        jump_lock=/tmp/claude-notify-jump.lock
+        if ! mkdir "$jump_lock" 2>/dev/null; then
+            if [ -n "$(find "$jump_lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+                rm -rf "$jump_lock"
+                mkdir "$jump_lock" 2>/dev/null || exit 0
+            else
+                log INFO "jump: another jump already in flight, skipping"
+                exit 0
+            fi
+        fi
+        trap 'rmdir "$jump_lock" 2>/dev/null' EXIT
+
+        session_state=$(desktop_session_state "$desktop_session_id")
+        if [ "$session_state" = "missing" ]; then
+            # Also covers an account switch and pruned/unreadable store files. The
+            # app is fine in all of those, so stay quiet and just bring it forward.
+            log WARN "jump: session not in the app's store, falling back to app-level focus (session=$desktop_session_id)"
+            open -b com.anthropic.claudefordesktop 2>/dev/null
+            exit 0
+        fi
+
+        app_was_running=false
+        desktop_app_running && app_was_running=true
+        pre_ts=$(desktop_session_focus_ts "$desktop_session_id")
+        pre_top=$(desktop_focused_session_id)
+        log_offset=$(wc -c < "$CLAUDE_DESKTOP_LOG" 2>/dev/null | tr -d ' ')
+
+        # Exactly ONE url per jump, never two.
+        #
+        # claude://code/continue is the app's own supported deep link, but it sits
+        # behind a server-side gate; while that gate is off it logs "code entry deep
+        # link gated off" and does not navigate. Its handler resolves the session to
+        # getSessionRoute(id) === /epitaxy/<id> and dispatches that — which is also
+        # exactly what the app's own notification click dispatches, and that route is
+        # reachable by url with no gate. So we ask the gate cache which one is live
+        # and fire that one.
+        #
+        # Firing both would be actively worse than firing one: while the window is
+        # still booting, app.on("open-url") parks the pending url in a SINGLE slot,
+        # so a second url overwrites the first instead of backing it up.
+        if desktop_supported_route_live; then
+            jump_url="claude://code/continue?session=$desktop_session_id"
+            jump_via="code/continue"
+        else
+            jump_url="claude://claude.ai/epitaxy/$desktop_session_id"
+            jump_via="epitaxy"
+        fi
+        if ! open "$jump_url" 2>/dev/null; then
             notify_error "Claude 桌面版未响应" "无法打开 claude:// 深链，桌面版可能未安装"
             exit 1
         fi
-        landed=false
-        for _ in 1 2 3 4 5 6; do
-            sleep 0.3
-            if [ "$(desktop_focused_session_id)" = "$desktop_session_id" ]; then
-                landed=true
-                break
-            fi
-        done
-        if [ "$landed" = true ]; then
-            log INFO "jump: claude-desktop complete (session=$desktop_session_id)"
+
+        # Confirmation comes from the app's own store. Pick the predicate that can
+        # actually prove something in this situation, and say so honestly when none can.
+        if [ "$session_state" = "archived" ]; then
+            # desktop_focused_session_id skips archived sessions by design, so no
+            # amount of polling can confirm this one. Don't burn the budget.
+            log INFO "jump: claude-desktop fired ($jump_via), target archived — landing cannot be confirmed"
+            exit 0
+        elif [ "$app_was_running" = false ]; then
+            # lastFocusedAt is persisted and survives a quit, so a plain "is it on
+            # top" test would match instantly against a stamp written before the app
+            # was closed. Require this session's own stamp to move instead — a cold
+            # boot re-stamps on mount. Budget covers app launch.
+            wait_mode=advance
+            wait_budget=15
+        elif [ "$pre_top" = "$desktop_session_id" ]; then
+            log INFO "jump: claude-desktop fired ($jump_via), target was already the app's newest-focused session — landing not independently verifiable"
+            exit 0
+        else
+            wait_mode=max
+            wait_budget=6
+        fi
+
+        if desktop_wait_for_focus "$desktop_session_id" "$wait_budget" "$wait_mode" "$pre_ts"; then
+            log INFO "jump: claude-desktop complete ($jump_via/$wait_mode, session=$desktop_session_id)"
         else
             open -b com.anthropic.claudefordesktop 2>/dev/null
-            log WARN "jump: deep link did not navigate (feature gate off?), fell back to app-level focus (session=$desktop_session_id)"
+            log WARN "jump: $jump_via did not land within ${wait_budget}s, fell back to app-level focus (session=$desktop_session_id)$(desktop_log_hint "$log_offset")"
         fi
         ;;
 
