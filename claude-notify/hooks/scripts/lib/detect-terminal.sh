@@ -1,6 +1,11 @@
 #!/bin/bash
 # Terminal-type detection from environment variables.
-# Sets globals: terminal_type, claude_session_id
+# Sets globals: terminal_type, claude_session_id, desktop_session_id
+#
+# The Claude desktop app (Code tab) is checked first: it is the most specific
+# signal (entrypoint/bundle id AND a well-formed host session id) and it sets
+# none of the terminal variables the other branches look at, so it cannot
+# shadow them.
 #
 # When inside tmux, the script additionally walks the tmux client's
 # process ancestry to identify the host GUI app (iTerm2 / Cursor / VS Code)
@@ -11,8 +16,11 @@
 detect_terminal() {
     terminal_type=""
     claude_session_id=""
+    desktop_session_id=""
 
-    if [ -n "$TMUX" ] && [ -n "$TMUX_PANE" ]; then
+    if _detect_claude_desktop; then
+        terminal_type="claude-desktop"
+    elif [ -n "$TMUX" ] && [ -n "$TMUX_PANE" ]; then
         local host
         host=$(_detect_tmux_host)
         case "$host" in
@@ -33,6 +41,24 @@ detect_terminal() {
     else
         terminal_type="unknown"
     fi
+}
+
+# Claude desktop app (Code tab) detection.
+# Sets desktop_session_id and returns 0 when the hook is running inside a
+# desktop-hosted Claude Code session.
+#
+# The host injects CLAUDE_CODE_HOST_SESSION_ID (its own session id, distinct
+# from CLAUDE_CODE_SESSION_ID which is the CLI's). It is what the
+# claude://code/continue deep link expects, so an id that fails the app's own
+# regex is useless to us — in that case we report "not desktop" and let the
+# remaining branches run rather than producing a terminal_type we cannot act on.
+_detect_claude_desktop() {
+    [ "$CLAUDE_CODE_ENTRYPOINT" = "claude-desktop" ] \
+        || [ "$__CFBundleIdentifier" = "com.anthropic.claudefordesktop" ] \
+        || return 1
+    [[ "$CLAUDE_CODE_HOST_SESSION_ID" =~ ^local_[A-Za-z0-9-]{1,64}$ ]] || return 1
+    desktop_session_id="$CLAUDE_CODE_HOST_SESSION_ID"
+    return 0
 }
 
 # Identify the GUI app hosting the current tmux session by walking the
