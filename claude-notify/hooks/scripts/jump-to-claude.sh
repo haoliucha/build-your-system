@@ -10,9 +10,10 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib/log.sh"
 source "$SCRIPT_DIR/lib/session-info.sh"
+source "$SCRIPT_DIR/lib/desktop.sh"
 
 # Initialize all expected vars so read_session_info populating subset is safe.
-terminal_type="" claude_session_id=""
+terminal_type="" claude_session_id="" desktop_session_id=""
 tmux_session_id="" tmux_session_name=""
 tmux_window_id="" tmux_pane_id=""
 project_name="" claude_cwd=""
@@ -40,6 +41,39 @@ log INFO "jump: terminal_type=$terminal_type project=$project_name"
 terminal-notifier -remove "claude-code" 2>/dev/null
 
 case "$terminal_type" in
+
+    "claude-desktop")
+        if ! desktop_valid_session_id "$desktop_session_id"; then
+            log WARN "jump: no usable desktop session id, falling back to app-level focus"
+            open -b com.anthropic.claudefordesktop 2>/dev/null
+            exit 0
+        fi
+        # claude://code/continue is the app's own deep link (its Spotlight entries
+        # and Dock menu use it), and it needs no AppleScript or accessibility
+        # permission. But it sits behind a server-side feature gate: while the gate
+        # is off the app logs "code entry deep link gated off" and does not
+        # navigate. Fire it regardless — it starts working the moment the gate
+        # rolls out — then confirm against the app's own store, and fall back to
+        # app-level focus when it did not land.
+        if ! open "claude://code/continue?session=$desktop_session_id" 2>/dev/null; then
+            notify_error "Claude 桌面版未响应" "无法打开 claude:// 深链，桌面版可能未安装"
+            exit 1
+        fi
+        landed=false
+        for _ in 1 2 3 4 5 6; do
+            sleep 0.3
+            if [ "$(desktop_focused_session_id)" = "$desktop_session_id" ]; then
+                landed=true
+                break
+            fi
+        done
+        if [ "$landed" = true ]; then
+            log INFO "jump: claude-desktop complete (session=$desktop_session_id)"
+        else
+            open -b com.anthropic.claudefordesktop 2>/dev/null
+            log WARN "jump: deep link did not navigate (feature gate off?), fell back to app-level focus (session=$desktop_session_id)"
+        fi
+        ;;
 
     "iterm+tmux")
         if [ -z "$tmux_session_id" ] || [ -z "$tmux_window_id" ] || [ -z "$tmux_pane_id" ]; then

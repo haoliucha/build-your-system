@@ -35,24 +35,25 @@ allowed-tools: [Bash, Read, Write, Edit, AskUserQuestion]
 - question: "你主要怎么使用 Claude Code？（多选，按你最常用的场景选）"
 - header: "Usage scenario"
 - multiSelect: true
-- options:
+- options（AskUserQuestion 最多 4 个选项，两个 Cursor 场景的 setup 期依赖完全相同，合并为一条）:
+  - **"Claude 桌面版的 Code 标签页"** —— 依赖最少（只要 terminal-notifier + Python 3），不需要 iTerm2 / tmux / 辅助功能权限；插件默认让路给桌面版自己的原生通知
   - **"iTerm2 里跑 `claude` 命令"** —— 这是经典场景，最完整的功能（精确到 tmux pane 级跳转 + 边框闪烁）
-  - **"Cursor 的内置终端里跑 `claude` 命令"** —— 跳转到 Cursor window 级
-  - **"Cursor 的 Claude Code 扩展"** —— 跳转到 Cursor window 级
+  - **"Cursor / VS Code（内置终端或扩展）"** —— 跳转到 IDE window 级
   - **"还不确定 / 都用"** —— setup 会按"都装"的方式做
 
-记下用户的选择到变量 `SCENARIOS=` 里（例如 `"iterm cursor_term"` 或 `"all"`）。
+记下用户的选择到变量 `SCENARIOS=` 里（例如 `"desktop iterm"` 或 `"all"`）。
 
 后续 Phase 引用 `SCENARIOS` 时按下面这张表决定依赖必需性：
 
-| 依赖 | iterm 场景 | cursor_term 场景 | cursor_ext 场景 | all |
-|------|-----------|-----------------|----------------|-----|
+| 依赖 | desktop 场景 | iterm 场景 | cursor/vscode 场景 | all |
+|------|-------------|-----------|-------------------|-----|
 | terminal-notifier | 必需 | 必需 | 必需 | 必需 |
 | Python 3 | 必需 | 必需 | 必需 | 必需 |
-| AppleScript 权限 | 必需 | 必需 | 必需 | 必需 |
 | 通知权限 | 必需 | 必需 | 必需 | 必需 |
-| **iTerm2** | **必需** | 不检查 | 不检查 | 检查并推荐 |
-| **tmux** | 强烈推荐 | 强烈推荐（用户高频用） | 不需要 | 强烈推荐 |
+| AppleScript 权限 | 只需能查前台 app（跳转走 `claude://` 深链，不用自动化授权）| 必需 | 必需 | 必需 |
+| **Claude 桌面版** | **必需** | 不检查 | 不检查 | 检查 |
+| **iTerm2** | 不检查 | **必需** | 不检查 | 检查并推荐 |
+| **tmux** | 不需要 | 强烈推荐 | 强烈推荐（内置终端里高频用）| 强烈推荐 |
 | Karabiner | 加分项 | 加分项 | 加分项 | 加分项 |
 
 ---
@@ -70,8 +71,14 @@ TERMINAL_NOTIFIER=$(command -v terminal-notifier 2>/dev/null || echo "")
 PYTHON3=$( /usr/bin/python3 --version 2>/dev/null | head -1 )
 KARABINER=$( [ -d "/Applications/Karabiner-Elements.app" ] && echo "/Applications/Karabiner-Elements.app" || echo "" )
 
-# tmux：iterm / cursor_term / all 场景需要
+# tmux：iterm / cursor / all 场景需要
 TMUX=$(command -v tmux 2>/dev/null || echo "")
+
+# Claude 桌面版：仅 desktop / all 场景检查
+case "$SCENARIOS" in
+    *desktop*|*all*) CLAUDE_DESKTOP=$( [ -d "/Applications/Claude.app" ] && echo "/Applications/Claude.app" || echo "" );;
+    *) CLAUDE_DESKTOP="N/A" ;;
+esac
 
 # iTerm2：仅 iterm / all 场景检查
 case "$SCENARIOS" in
@@ -135,7 +142,7 @@ fi
 | 依赖 | 文案（场景化）| 默认勾选条件 |
 |------|--------------|--------------|
 | terminal-notifier | "terminal-notifier —— 没它就发不了通知" | 必需 → 默认勾选 |
-| tmux | "tmux —— 在 iTerm 或 Cursor 终端里跑 tmux 时，能精准跳到具体的 tmux pane" | SCENARIOS 含 iterm/cursor_term/all 时默认勾选 |
+| tmux | "tmux —— 在 iTerm 或 Cursor 终端里跑 tmux 时，能精准跳到具体的 tmux pane" | SCENARIOS 含 iterm/cursor/all 时默认勾选 |
 | Karabiner-Elements | "Karabiner-Elements —— **装了它**：以后不管在浏览器、视频、文档，按 Cmd+Shift+J 一键跳回 Claude；**不装**：只能用鼠标点通知" | 加分项，不默认勾选 |
 
 **关键 UX 改进（来自小白测试报告）**：
@@ -169,9 +176,10 @@ open "x-apple.systempreferences:com.apple.preference.notifications"
 
 **指引按 SCENARIOS 剪裁**：
 
+- 选了 desktop：找 terminal-notifier 和 Claude，确保"允许通知"是开的
 - 选了 iterm：找 terminal-notifier 和 iTerm2，确保"允许通知"是开的
-- 选了 cursor_term / cursor_ext：找 terminal-notifier 和 Cursor，确保"允许通知"是开的
-- 都选：terminal-notifier + iTerm2 + Cursor + VS Code 都开
+- 选了 cursor：找 terminal-notifier 和 Cursor / VS Code，确保"允许通知"是开的
+- 都选：terminal-notifier + Claude + iTerm2 + Cursor + VS Code 都开
 
 **关键 UX 提示**：terminal-notifier 第一次发通知前不在列表里。如果用户列表里没找到，告诉他"等 Phase 4 触发一次测试通知后再回来这里"。
 
@@ -183,6 +191,7 @@ open "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation
 
 **指引按 SCENARIOS 剪裁**，并用大白话：
 
+- 只选了 desktop 场景的话这一步可以整段跳过——桌面版跳转走 `claude://` 深链，不需要自动化授权；焦点检测用的那条前台查询也不需要
 - "找到你日常用的终端/IDE 应用（按场景：iTerm2 / Cursor），点开它下面的小箭头"
 - "勾上里面的 'System Events'（让 Claude 能控制你的窗口焦点）"
 - "如果你日常用的应用没出现在这个列表，先在那个 app 里随便跑一下我们的脚本就会触发系统提示加进来"
@@ -209,9 +218,11 @@ AskUserQuestion 先提示切焦点：
 
 继续 → 用 Bash 触发：
 
+**桌面版场景必须带 `CLAUDE_NOTIFY_DESKTOP=on`**：默认的 auto 档在桌面版原生通知开着时会主动静音，不带这个变量测试会静音，用户会误判成"坏了"。
+
 ```bash
 echo '{"cwd":"'"$PWD"'","hook_event_name":"Notification","message":"setup 测试通知"}' \
-    | bash "$CLAUDE_PLUGIN_ROOT/hooks/scripts/notify-smart.sh"
+    | CLAUDE_NOTIFY_DESKTOP=on bash "$CLAUDE_PLUGIN_ROOT/hooks/scripts/notify-smart.sh"
 EXIT=$?
 sleep 1
 
@@ -328,9 +339,10 @@ mkdir -p ~/.claude/plugins
 cat > ~/.claude/plugins/claude-notify.local.md <<'EOF'
 ---
 last_setup_run: <ISO timestamp>
-scenarios: <iterm,cursor_term,cursor_ext,all>
+scenarios: <desktop,iterm,cursor,all>
 homebrew: <installed|missing>
 terminal_notifier: <installed|missing>
+claude_desktop: <installed|missing|not_applicable>
 iterm2: <installed|missing|not_applicable>
 python3: <installed|missing>
 tmux: <installed|missing|skipped>

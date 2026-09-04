@@ -2,7 +2,7 @@
 
 Claude Code 在长任务结束、需要权限或问问题时，给你一条 macOS 通知；点一下，焦点回到那个 Claude 所在的终端、标签、tmux pane。
 
-> 主要支持 iTerm2（含 tmux）、Cursor、Visual Studio Code。
+> 主要支持 Claude 桌面版（Code 标签页）、iTerm2（含 tmux）、Cursor、Visual Studio Code。
 
 ## 它做什么
 
@@ -73,6 +73,7 @@ brew install terminal-notifier
 | iTerm2（无 tmux）         | 比较 iTerm 当前 session 的 unique ID         | 精确到 iTerm session                            |
 | Cursor                    | 当前 frontmost app + 前窗口标题含项目名      | window 级（含项目名的窗口）                      |
 | Visual Studio Code        | 同上                                        | window 级                                       |
+| Claude 桌面版（Code 标签页）| Claude 前台 + App 记录的当前会话就是本会话   | `claude://` 深链精确到 session（gate 未开时退回 app 级）|
 | 其他                      | 不支持                                      | 报错 "终端类型未知"                              |
 
 `iTerm2 + tmux` 是这个插件的主力路径——精确到 pane 级 + 边框闪烁视觉反馈。其他 +tmux 路径只能到 IDE window 级（IDE 不像 iTerm 那样把集成终端的 PTY 树暴露给 AppleScript），但 tmux 层的 select-pane 仍会执行，所以用户打开 IDE 集成终端时看到的就是正确的 pane。
@@ -89,8 +90,31 @@ brew install terminal-notifier
 - **Cursor + tmux / VS Code + tmux**：对应 IDE 在前台 + 当前窗口标题含项目名。退化版——IDE 不暴露集成终端的 PTY，所以无法验证你是不是真盯着那个 Claude 所在的 tab。
 - **iTerm2（无 tmux）**：iTerm 在前台、当前 iTerm session 的 unique ID 等于 Claude 启动时记录的那个。
 - **Cursor / VS Code（无 tmux）**：对应 app 在前台，且前窗口标题里含项目名（`basename $CWD`）。
+- **Claude 桌面版**：Claude 在前台，且 App 自己记录的"当前正在看的会话"就是本会话。桌面版没有 AppleScript 字典、AX 查询在 hook 的 TCC 上下文里也会被拒，所以这一层读的是 App 自己的会话存储——`lastFocusedAt` 最大的那个就是屏幕上那个。
 
 通过焦点检测的"已聚焦"会被静默——不会有打扰，只在日志里留一行 `already focused, suppressing`。
+
+**静默不等于不记录**：坐标文件在焦点检测之前就写好了，所以即使这次没弹通知，Cmd+Shift+J 仍然指向最近一次任务结束的位置。
+
+### Claude 桌面版：让路，而不是抢话
+
+桌面版和其他宿主有一个根本区别：**它自己就会发通知**。轮次结束、需要输入、请求权限，这些横幅都由桌面版 App 发出——和 Chat、Cowork 共用同一套通知服务，只靠内部的 `product` 字段区分是哪种会话——点击后在 App 内部导航到对应会话。Claude Code CLI 本身发不出任何 macOS 横幅：它的通知通道只有 `iterm2` / `iterm2_with_bell` / `terminal_bell` / `kitty` 这类往终端写转义序列或响铃的方式，而桌面版里根本没有终端。
+
+所以插件在桌面版下默认让路，由环境变量 `CLAUDE_NOTIFY_DESKTOP` 控制：
+
+| 值 | 行为 |
+|---|---|
+| `auto`（默认）| 读 App 的 `notificationLevels` 设置：原生横幅开着就静音（不制造第二条），用户把它关成 `off` 或 `badge` 才由插件接管。`Stop` 事件查 `idle` 档，权限请求查 `permission` 档 |
+| `on` | 总是发，和 iTerm/Cursor 一视同仁（`/claude-notify:setup` 的测试通知就用这个，否则 auto 会静音，看起来像坏了）|
+| `off` | 在桌面版下永不发 |
+
+读不到 App 配置时一律当作"原生横幅开着"——宁可静音，也不重复轰炸。
+
+跳转走 `claude://code/continue?session=local_<uuid>`，这是 App 自己的深链（Spotlight 条目和 Dock 菜单用的就是它），**不需要 AppleScript，也不需要辅助功能权限**——是除 iTerm 外唯一能精确到会话级的路径。
+
+> ⚠️ **这条深链目前在服务端 feature gate 后面。** gate 没开时，App 会在 `~/Library/Logs/Claude/main.log` 记一行 `claudeURLHandler: code entry deep link gated off` 并且不导航。插件跳转后会回读 App 的会话存储确认有没有落地，没落地就退回 app 级聚焦，并在自己的日志里记 `deep link did not navigate (feature gate off?)`——不会假报成功。gate 放开后同一份代码自动升级成会话级精确跳转，无需改动。
+>
+> 在此期间，桌面版下真正让你"点一下跳回去"的是 App 的原生横幅（它走内部导航，不受这个 gate 影响）——这也正是默认让路策略的额外好处。
 
 ### tmux 跳转的四个阶段
 
@@ -151,6 +175,7 @@ bash ~/.claude/plugins/marketplaces/build-your-system/claude-notify/tests/run-al
 | 脚本版本过旧     | session-info 文件的 `schema_version` 大于本脚本支持的版本           |
 | 无最近通知       | session-info 文件不存在                                            |
 | 终端类型未知     | notify 时无法识别终端环境                                          |
+| Claude 桌面版未响应 | `open` 打不开 `claude://` 深链（桌面版可能未安装）                 |
 
 每条错误都对应 `jump-to-claude.sh` 里一个具体的检查点，你能通过日志 grep `[ERROR]` 找到根因。
 
@@ -173,6 +198,9 @@ bash ~/.claude/plugins/marketplaces/build-your-system/claude-notify/tests/run-al
 - nested tmux（tmux 里跑 tmux）按内层的 `$TMUX` 识别。这是罕见场景，不专门处理。
 - tmux session 已 detach 时，跳转脚本只报错不自动 reattach——避免脚本副作用，让用户自己决定怎么恢复。
 - Cmd+Shift+J 全局快捷键依赖 Karabiner-Elements（或其他第三方），macOS 系统快捷键设置没法直接绑定到任意脚本路径。
+- 桌面版的精确跳转依赖服务端 feature gate（见上）；gate 未开时只能到 app 级。
+- 桌面版的焦点检测只比较 Code 会话之间的 `lastFocusedAt`。用户切到聊天或 Cowork 标签时无法区分，可能被误判成"正在看这个会话"而静音。
+- 桌面版的焦点检测和 auto 策略读的是 App 私有的存储与配置（`claude-code-sessions/*/*/local_*.json` 和 `config.json`）。App 升级改格式后读不到，会退回保守默认——当作原生通知开着（静音）、当作没聚焦（照发）——不会崩，但功能会退化。
 - tmux host 自动识别依赖 `lsof + ps` 走进程链。极少数情况（自定义 shell、复杂 nested 容器）下可能识别不出 host，会 fallback 到 `iterm+tmux`——这时 Cursor/VS Code 用户会看到"iTerm 未找到"错误，需要手动确认 host 环境。
 
 ## License

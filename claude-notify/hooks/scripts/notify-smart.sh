@@ -1,6 +1,7 @@
 #!/bin/bash
 # Multi-terminal smart notifier for Claude Code hooks.
-# Detects: iterm+tmux, cursor+tmux, vscode+tmux, iterm, cursor, vscode, unknown.
+# Detects: claude-desktop, iterm+tmux, cursor+tmux, vscode+tmux, iterm, cursor,
+# vscode, unknown.
 # Suppresses notification when target window is already focused.
 
 # Ensure Homebrew binaries (tmux, terminal-notifier) are findable when this
@@ -12,6 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib/log.sh"
 source "$SCRIPT_DIR/lib/detect-terminal.sh"
 source "$SCRIPT_DIR/lib/session-info.sh"
+source "$SCRIPT_DIR/lib/desktop.sh"
 
 # ---- 1. Read hook JSON from stdin ----
 input=$(cat)
@@ -46,9 +48,38 @@ case "$terminal_type" in
         ;;
 esac
 
-# ---- 4. Focus detection ----
+# ---- 4. Persist session info ----
+# Written before the focus check on purpose: a suppressed notification still
+# updates the coordinates, so Cmd+Shift+J always targets the session that most
+# recently finished rather than an older one that happened to notify.
+write_session_info \
+    terminal_type="$terminal_type" \
+    claude_session_id="$claude_session_id" \
+    desktop_session_id="$desktop_session_id" \
+    tmux_session_id="$tmux_session_id" \
+    tmux_session_name="$tmux_session_name" \
+    tmux_window_id="$tmux_window_id" \
+    tmux_pane_id="$tmux_pane_id" \
+    tmux_pane_title="$tmux_pane_title" \
+    project_name="$project_name" \
+    claude_cwd="$claude_cwd"
+
+# ---- 5. Focus detection ----
 should_notify=true
 case "$terminal_type" in
+    "claude-desktop")
+        # The app has no AppleScript dictionary and AX queries are refused when
+        # the hook runs under its TCC context, so per-tab focus comes from the
+        # app's own store instead: the session with the newest lastFocusedAt is
+        # the one on screen. Undetermined -> treat as not focused and notify.
+        active_app=$(osascript -e 'tell application "System Events" to get name of first process whose frontmost is true' 2>/dev/null)
+        if [ "$active_app" = "Claude" ]; then
+            focused_session=$(desktop_focused_session_id)
+            if [ -n "$focused_session" ] && [ "$focused_session" = "$desktop_session_id" ]; then
+                should_notify=false
+            fi
+        fi
+        ;;
     "iterm")
         active_app=$(osascript -e 'tell application "System Events" to get name of first process whose frontmost is true' 2>/dev/null)
         if [ "$active_app" = "iTerm2" ] && [ -n "$claude_session_id" ]; then
@@ -89,19 +120,35 @@ if [ "$should_notify" = false ]; then
     exit 0
 fi
 
-# ---- 5. Persist session info ----
-write_session_info \
-    terminal_type="$terminal_type" \
-    claude_session_id="$claude_session_id" \
-    tmux_session_id="$tmux_session_id" \
-    tmux_session_name="$tmux_session_name" \
-    tmux_window_id="$tmux_window_id" \
-    tmux_pane_id="$tmux_pane_id" \
-    tmux_pane_title="$tmux_pane_title" \
-    project_name="$project_name" \
-    claude_cwd="$claude_cwd"
+# ---- 6. Desktop app: defer to its own notification unless told otherwise ----
+# The desktop app posts a native banner for turn-end (idle) and permission
+# prompts from the same service that handles Chat, and clicking it navigates
+# internally. Ours would be a second banner for the same event, so by default
+# we only speak up when the user has turned the app's banner off.
+if [ "$terminal_type" = "claude-desktop" ]; then
+    case "${CLAUDE_NOTIFY_DESKTOP:-auto}" in
+        off)
+            log INFO "notify: desktop mode=off, staying silent"
+            exit 0
+            ;;
+        on)
+            log INFO "notify: desktop mode=on, notifying alongside the native banner"
+            ;;
+        *)
+            case "$hook_event" in
+                "Notification") native_kind="permission" ;;
+                *)              native_kind="idle" ;;
+            esac
+            if desktop_native_banner_on "$native_kind"; then
+                log INFO "notify: desktop native banner on ($native_kind), staying silent"
+                exit 0
+            fi
+            log INFO "notify: desktop native banner off ($native_kind), taking over"
+            ;;
+    esac
+fi
 
-# ---- 6. Emit notification ----
+# ---- 7. Emit notification ----
 case "$hook_event" in
     "Stop")         msg="任务完成"; sound="Glass" ;;
     "Notification") msg="${message:-需要你的确认}"; sound="Ping" ;;
