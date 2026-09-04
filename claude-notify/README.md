@@ -57,11 +57,21 @@ brew install terminal-notifier
       "modifiers": { "mandatory": ["command", "shift"] }
     },
     "to": [{
-      "shell_command": "~/.claude/plugins/marketplaces/build-your-system/claude-notify/hooks/scripts/jump-to-claude.sh"
+      "shell_command": "<插件根目录>/claude-notify/hooks/scripts/jump-to-claude.sh"
     }]
   }]
 }
 ```
+
+`<插件根目录>` 要填你这台机器上**实际被加载的那份**，取决于安装方式：
+
+- 从 GitHub 装的：`claude plugin list --json` 里 `claude-notify@build-your-system` 的 `installPath`
+  （形如 `~/.claude/plugins/cache/build-your-system/claude-notify/<版本>/`）。注意它带版本号，
+  **每次升级后要重指**。
+- 以 `directory` source 开发安装的：就是你的仓库路径，永久稳定。
+
+不要指向 `~/.claude/plugins/marketplaces/...`——那是 marketplace 的抓取副本，运行时从不执行它，
+而且换 source 类型时会被直接删除。
 
 ## 支持的终端
 
@@ -158,7 +168,7 @@ D 阶段，**视觉反馈**：在后台用 `set-window-option pane-active-border
 跑单元测试：
 
 ```bash
-bash ~/.claude/plugins/marketplaces/build-your-system/claude-notify/tests/run-all.sh
+bash <插件根目录>/claude-notify/tests/run-all.sh
 ```
 
 ### 常见错误通知

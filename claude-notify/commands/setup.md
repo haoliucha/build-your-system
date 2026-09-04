@@ -295,7 +295,9 @@ if [ -f "$KARABINER_CONFIG" ]; then
 fi
 ```
 
-**Step 5.2**：规则 JSON 片段：
+**Step 5.2**：规则 JSON 片段。写入前把 `<CLAUDE_PLUGIN_ROOT>` 替换成本命令运行时
+`$CLAUDE_PLUGIN_ROOT` 的实际值——那就是这台机器上真正被加载的那份插件目录。**不要**写
+`~/.claude/plugins/marketplaces/...`：那是抓取副本，运行时从不执行，换 source 类型时还会被删掉。
 
 ```json
 {
@@ -307,7 +309,7 @@ fi
       "modifiers": { "mandatory": ["command", "shift"] }
     },
     "to": [{
-      "shell_command": "~/.claude/plugins/marketplaces/build-your-system/claude-notify/hooks/scripts/jump-to-claude.sh"
+      "shell_command": "<CLAUDE_PLUGIN_ROOT>/hooks/scripts/jump-to-claude.sh"
     }]
   }]
 }
