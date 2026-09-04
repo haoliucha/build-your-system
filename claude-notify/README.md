@@ -120,11 +120,33 @@ brew install terminal-notifier
 
 读不到 App 配置时一律当作"原生横幅开着"——宁可静音，也不重复轰炸。
 
-跳转走 `claude://code/continue?session=local_<uuid>`，这是 App 自己的深链（Spotlight 条目和 Dock 菜单用的就是它），**不需要 AppleScript，也不需要辅助功能权限**——是除 iTerm 外唯一能精确到会话级的路径。
+### 桌面版怎么做到"精确跳回那一个会话"
 
-> ⚠️ **这条深链目前在服务端 feature gate 后面。** gate 没开时，App 会在 `~/Library/Logs/Claude/main.log` 记一行 `claudeURLHandler: code entry deep link gated off` 并且不导航。插件跳转后会回读 App 的会话存储确认有没有落地，没落地就退回 app 级聚焦，并在自己的日志里记 `deep link did not navigate (feature gate off?)`——不会假报成功。gate 放开后同一份代码自动升级成会话级精确跳转，无需改动。
->
-> 在此期间，桌面版下真正让你"点一下跳回去"的是 App 的原生横幅（它走内部导航，不受这个 gate 影响）——这也正是默认让路策略的额外好处。
+**不需要 AppleScript，不需要辅助功能权限，不模拟键鼠**——是除 iTerm 外唯一能精确到会话级的路径。
+
+桌面版有两条能落到具体会话的 URL，插件**每次只发一条**：
+
+| | 路由 | 说明 |
+|---|---|---|
+| 首选 | `claude://code/continue?session=local_<uuid>` | App 自己的深链，Spotlight 条目和 Dock 菜单用的就是它。但它在**服务端 feature gate**（GrowthBook `4217215889`）后面，gate 没开时只在日志里记一行 `code entry deep link gated off`，不导航 |
+| 兜底 | `claude://claude.ai/epitaxy/local_<uuid>` | 上面那条 handler 内部解析出来的**同一个目标**：`getSessionRoute(id)` 就是 `/epitaxy/<id>`，而这个路由**没有 gate**。App 自己的原生通知点击 dispatch 的也是这同一个字符串 |
+
+插件读 App 的 GrowthBook 缓存（`~/Library/Application Support/Claude/fcache`）判断 gate 开没开，**开着就用官方那条，没开就用内部那条**。gate 哪天灰度到你，行为自动切换，不用改代码。缓存读不懂就当没开——退回今天能用的那条。
+
+为什么是"只发一条"而不是"两条都发"：App 的 `open-url` 处理器在窗口还没起来时，把待处理的 URL 存在**一个**变量里，第二条会**覆盖**第一条，而不是给它加一层保险。冷启动时先发能用的、再发被 gate 拦住的，结果是只有被拦住的那条被重放——两条一起发比只发一条更糟。
+
+### 落地确认
+
+跳完之后回读 App 自己的会话存储确认，而不是假设成功。但要诚实：`lastFocusedAt` 是**持久化到磁盘**的，退出 App 也不清，所以不同情况下能证明的东西不一样：
+
+| 情况 | 判据 | 能证明什么 |
+|---|---|---|
+| App 本来开着，且目标不是当前最新 | 等到目标成为最新 | 确实发生了一次切换 |
+| App 本来没开 | 等目标**自己的**时间戳前进 | 冷启动挂载会重新打戳；不接受退出前留下的旧戳 |
+| 目标本来就是最新 | 直接返回 | **什么都证明不了**，日志明说 `landing not independently verifiable` |
+| 目标已归档 | 不轮询直接返回 | 归档会话被判据排除，再等也确认不了，日志明说 |
+
+确认不了就 `open -b` 退到 app 级聚焦，并把 App 自己日志里**这次跳转**产生的那行原因附进 WARN（按字节偏移读，不是 tail 固定行数——App 每分钟写几百行无关日志）。全局热键还加了单飞锁，连按不会叠出好几个进程各自发深链。
 
 ### tmux 跳转的四个阶段
 
@@ -208,7 +230,7 @@ bash <插件根目录>/claude-notify/tests/run-all.sh
 - nested tmux（tmux 里跑 tmux）按内层的 `$TMUX` 识别。这是罕见场景，不专门处理。
 - tmux session 已 detach 时，跳转脚本只报错不自动 reattach——避免脚本副作用，让用户自己决定怎么恢复。
 - Cmd+Shift+J 全局快捷键依赖 Karabiner-Elements（或其他第三方），macOS 系统快捷键设置没法直接绑定到任意脚本路径。
-- 桌面版的精确跳转依赖服务端 feature gate（见上）；gate 未开时只能到 app 级。
+- 桌面版跳转用的 `/epitaxy` 是 App 的内部路由。它没有 gate，且与 App 自己的通知点击走同一条 dispatch，但毕竟不是对外承诺的接口——被改名时跳转会确认失败并退到 app 级（App 历史上已经把它从 `/claude-code-desktop` 改名过一次）。
 - 桌面版的焦点检测只比较 Code 会话之间的 `lastFocusedAt`。用户切到聊天或 Cowork 标签时无法区分，可能被误判成"正在看这个会话"而静音。
 - 桌面版的焦点检测和 auto 策略读的是 App 私有的存储与配置（`claude-code-sessions/*/*/local_*.json` 和 `config.json`）。App 升级改格式后读不到，会退回保守默认——当作原生通知开着（静音）、当作没聚焦（照发）——不会崩，但功能会退化。
 - tmux host 自动识别依赖 `lsof + ps` 走进程链。极少数情况（自定义 shell、复杂 nested 容器）下可能识别不出 host，会 fallback 到 `iterm+tmux`——这时 Cursor/VS Code 用户会看到"iTerm 未找到"错误，需要手动确认 host 环境。

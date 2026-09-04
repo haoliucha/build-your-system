@@ -25,8 +25,8 @@
     {
       "name": "claude-notify",
       "source": "./claude-notify",
-      "description": "智能通知插件 - Claude Code 完成任务或需要权限时发送 macOS 通知，支持点击跳转（Claude 桌面版 Code 标签页、iTerm2 和 Cursor）。桌面版下默认让路给 App 自己的原生通知，只在用户关掉它时接管。",
-      "version": "1.1.0",
+      "description": "智能通知插件 - Claude Code 完成任务或需要权限时发送 macOS 通知，支持点击跳转（Claude 桌面版 Code 标签页、iTerm2 和 Cursor）。桌面版精确跳回具体会话，默认让路给 App 自己的原生通知，只在用户关掉它时接管。",
+      "version": "1.2.0",
       "category": "utilities",
       "homepage": "https://github.com/haoliucha/build-your-system"
     },
