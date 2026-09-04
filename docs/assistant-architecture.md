@@ -118,13 +118,14 @@ claude plugin marketplace add haoliucha/build-your-system
 claude plugin install assistant@build-your-system
 ```
 
-Claude 从运行时 cache 加载插件。仓库更新后，在已安装对应版本的前提下从仓库根目录运行：
+本仓库以 `directory` source 注册为 marketplace，所以 Claude 直接从工作树加载插件——没有 cache 副本，
+存盘即是"已更新"。改内容后在会话里 `/reload-plugins`；shell hook 脚本每次事件重新 exec，立即生效。
 
 ```bash
-bash scripts/sync-to-cache.sh
+claude plugin marketplace add /Users/jliu/Projects/build-your-system   # 一次性注册
 ```
 
-该脚本按 manifest 版本寻找 cache；不存在的版本或带 `.orphaned_at` 标记的 cache 会跳过，不覆盖宿主正在使用的标记。
+加载模型、验证方式和几个反直觉的坑见根目录 `CLAUDE.md` 的「插件加载模型与本地开发」。
 
 ### Codex
 

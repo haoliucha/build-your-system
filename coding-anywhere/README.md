@@ -32,9 +32,13 @@ Codex：`codex plugin add coding-anywhere@local-build-your-system`
 ### 方式 2：手动安装
 
 ```bash
-git clone https://github.com/haoliucha/build-your-system.git ~/.claude/plugins/marketplaces/build-your-system
-# Claude Code 启动时会自动加载
+git clone https://github.com/haoliucha/build-your-system.git ~/src/build-your-system
+claude plugin marketplace add ~/src/build-your-system
+claude plugin install coding-anywhere@build-your-system
 ```
+
+克隆到哪里都行，但**必须 `marketplace add` 注册**：手动把仓库丢进
+`~/.claude/plugins/marketplaces/` 不会被加载——那个目录只是抓取副本，且没有注册记录时运行时根本不看它。
 
 ---
 
