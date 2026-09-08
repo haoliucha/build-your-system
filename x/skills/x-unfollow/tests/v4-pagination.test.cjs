@@ -129,6 +129,49 @@ test('末页保留 Bottom cursor 时只接受接近上一完整基线的稳定�
   assert.strictEqual(Scan.baselineCoverageComplete({ count: 1168, expectedCount: null }), false);
 });
 
+test('当前确认数采用严格的包含端点 ±1%，不向外取整扩大容差', () => {
+  assert.deepStrictEqual(Scan.confirmedCountBounds(1285), { min: 1273, max: 1297 });
+  for (const n of [1273, 1284, 1285, 1286, 1297]) assert.strictEqual(Scan.confirmedCountMatches(n, 1285), true);
+  for (const n of [1272, 1298, 0, NaN]) assert.strictEqual(Scan.confirmedCountMatches(n, 1285), false);
+  assert.deepStrictEqual(Scan.confirmedCountBounds(100), { min: 99, max: 101 });
+  assert.deepStrictEqual(Scan.confirmedCountBounds(1), { min: 1, max: 1 });
+});
+
+test('当前参考数只接受显式 report 参数，不复用历史数或用于取关', () => {
+  assert.strictEqual(Scan.parseExpectedCount(undefined, 'unfollow'), null);
+  assert.strictEqual(Scan.parseExpectedCount('1285', 'report'), 1285);
+  for (const mode of ['unfollow', 'followers-report', 'relationships-report']) {
+    assert.throws(() => Scan.parseExpectedCount('1285', mode), /only supported/);
+  }
+  for (const raw of ['0', '-1', '1285.5', '1e3', ' 1285 ', 'abc', '9007199254740991']) {
+    assert.throws(() => Scan.parseExpectedCount(raw, 'report'), /positive safe integer/);
+  }
+});
+
+test('数量吻合不够：必须网络来源且至少8轮无响应、无进展并稳定到底', () => {
+  const good = { count: 1285, expectedCount: 1285, networkStarted: true, cursorPages: 26,
+    noResponseAttempts: 8, domStableRounds: 8, bottomStableRounds: 8 };
+  assert.strictEqual(Scan.confirmedCountStableBottom(good), true);
+  for (const change of [{ networkStarted: false }, { cursorPages: 0 }, { noResponseAttempts: 7 },
+    { domStableRounds: 7 }, { bottomStableRounds: 0 }, { count: 1272 }, { count: 1298 }, { expectedCount: null }]) {
+    assert.strictEqual(Scan.confirmedCountStableBottom({ ...good, ...change }), false, JSON.stringify(change));
+  }
+  assert.strictEqual(Scan.confirmedCountStableBottom({ ...good, noResponseAttempts: 1, stableLimit: 1 }), false);
+  assert.strictEqual(Scan.baselineCoverageComplete({ count: 1285, expectedCount: 1168 }), false);
+});
+
+test('从半途 cursor 起扫和错误 cursor 的重复末页均不得通过连续链校验', () => {
+  assert.throws(() => Timeline.advanceCursorState(Timeline.initialCursorState(), {
+    requestCursor: 'middle', bottomCursor: 'next', userCount: 50, newUniqueCount: 50,
+  }), /CURSOR_CHAIN_BROKEN/);
+  const started = Timeline.advanceCursorState(Timeline.initialCursorState(), {
+    requestCursor: null, bottomCursor: 'c1', userCount: 50, newUniqueCount: 50,
+  });
+  assert.throws(() => Timeline.advanceCursorState(started, {
+    requestCursor: 'wrong', bottomCursor: 'wrong', userCount: 0, newUniqueCount: 0,
+  }), /CURSOR_CHAIN_BROKEN/);
+});
+
 test('新限速按真实分页响应计数并使用45分钟看门狗', () => {
   assert.strictEqual(Policy.SNAPSHOT_WAIT_MIN_MS, 1000);
   assert.strictEqual(Policy.SNAPSHOT_WAIT_MAX_MS, 3000);

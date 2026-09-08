@@ -82,8 +82,40 @@ function baselineCoverageComplete({ count, expectedCount, minCoveragePct = 95 })
   return coverage !== null && coverage >= minCoveragePct && ceiling !== null && count <= ceiling;
 }
 
+// A current, explicitly supplied reference is independent of the historical baseline.
+// Integer arithmetic keeps the inclusive 1% boundary from rounding outwards.
+function confirmedCountBounds(expectedCount) {
+  if (!Number.isSafeInteger(expectedCount) || expectedCount <= 0
+      || expectedCount > Math.floor(Number.MAX_SAFE_INTEGER / 101)) throw new Error('EXPECTED_COUNT must be a positive safe integer');
+  return { min: Math.ceil(expectedCount * 99 / 100), max: Math.floor(expectedCount * 101 / 100) };
+}
+
+function parseExpectedCount(raw, mode) {
+  if (raw === undefined || raw === '') return null;
+  if (mode !== 'report') throw new Error('EXPECTED_COUNT is only supported in MODE=report (following)');
+  if (!/^[1-9]\d*$/.test(String(raw))) throw new Error('EXPECTED_COUNT must be a positive safe integer');
+  const value = Number(raw);
+  confirmedCountBounds(value);
+  return value;
+}
+
+function confirmedCountMatches(count, expectedCount) {
+  const { min, max } = confirmedCountBounds(expectedCount);
+  return Number.isSafeInteger(count) && count >= min && count <= max;
+}
+
+function confirmedCountStableBottom({ count, expectedCount, networkStarted, cursorPages,
+  noResponseAttempts, domStableRounds, bottomStableRounds, stableLimit = 8 }) {
+  const required = Math.max(8, stableLimit);
+  return expectedCount !== null && expectedCount !== undefined
+    && networkStarted === true && cursorPages > 0
+    && noResponseAttempts >= required && domStableRounds >= required && bottomStableRounds >= required
+    && confirmedCountMatches(count, expectedCount);
+}
+
 module.exports = {
   expectedListPath, isExpectedListUrl, allowedCount, coveragePct,
   initialProgress, advanceProgress, usableForNegativeDiff,
   shouldPauseAfterRound, executedRounds, stalledWithPendingCursor, baselineCoverageComplete,
+  confirmedCountBounds, parseExpectedCount, confirmedCountMatches, confirmedCountStableBottom,
 };

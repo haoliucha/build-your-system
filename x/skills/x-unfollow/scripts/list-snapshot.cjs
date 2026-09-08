@@ -108,6 +108,11 @@ function responseChannel() {
   };
 }
 
+const EXPECTED_COUNT = Scan.parseExpectedCount(process.env.EXPECTED_COUNT, process.env.MODE);
+const DEBUG_HOLD = process.env.XU_DEBUG_HOLD_ON_ERROR === '1'
+  && process.env.XU_HEADLESS === '0' && process.env.MODE === 'report';
+if (EXPECTED_COUNT !== null && LIST_TYPE !== 'following') throw new Error('EXPECTED_COUNT requires following');
+
 function removeStaging() { fs.rmSync(STAGING_DIR, { recursive: true, force: true }); }
 function resetListStaging() {
   fs.rmSync(path.join(STAGING_DIR, `${LIST_TYPE}.jsonl`), { force: true });
@@ -143,7 +148,7 @@ async function scanList({ context, confirmAuthenticated }) {
   let armed = false;
   let driftUrl = null;
 
-  page.on('response', (response) => {
+  const onResponse = (response) => {
     if (Timeline.operationFromUrl(response.url()) !== EXPECTED_OPERATION) return;
     const task = (async () => {
       const status = response.status();
@@ -162,7 +167,8 @@ async function scanList({ context, confirmAuthenticated }) {
     })();
     responseTasks.add(task);
     void task.finally(() => responseTasks.delete(task));
-  });
+  };
+  page.on('response', onResponse);
 
   page.on('framenavigated', (frame) => {
     if (armed && frame === page.mainFrame() && !Scan.isExpectedListUrl(frame.url(), HANDLE, LIST_TYPE)) {
@@ -183,8 +189,16 @@ async function scanList({ context, confirmAuthenticated }) {
 
   const stopWithAlert = async (type, text, details = {}) => {
     const recentLog = JSON.stringify(details, null, 2);
-    writeAlert(ALERT_PATH, { type, text, handle: HANDLE, url: page.url(), profileDir: PROFILE_DIR, dataDir: DATA_DIR, recentLog });
+    writeAlert(ALERT_PATH, { type, text, handle: HANDLE, url: page.url(), profileDir: PROFILE_DIR, dataDir: DATA_DIR, recentLog, debugHold: DEBUG_HOLD });
     removeStaging();
+    say(`${type}: ${text}; details=${recentLog}`);
+    if (DEBUG_HOLD) {
+      armed = false;
+      page.off('response', onResponse);
+      say(`DEBUG_HOLD: ${text}; browser OPEN; scanning STOPPED; pid=${process.pid}; locks retained; manual inspection allowed`);
+      // Keep the owner and profile leases alive until the operator explicitly ends the run.
+      await new Promise(() => { setInterval(() => {}, 60000); });
+    }
     throw new WorkflowExitError(type, text, EXIT_CODES[type] || 17);
   };
 
@@ -218,6 +232,8 @@ async function scanList({ context, confirmAuthenticated }) {
   let terminalReason = null;
   let scrollAttempts = 0;
   let domStableRounds = 0;
+  let bottomStableRounds = 0;
+  let previousDomTail = null;
   let lastDomUniqueCount = 0;
   let noResponseAttempts = 0;
   let lastBreakPage = 0;
@@ -231,7 +247,11 @@ async function scanList({ context, confirmAuthenticated }) {
       if (LIST_TYPE === 'following') mergeObservation(domSeen, parsed);
       else mergeRow(domSeen, parsed);
     }
-    domStableRounds = domSeen.size === lastDomUniqueCount ? domStableRounds + 1 : 0;
+    const domUnchanged = domSeen.size === lastDomUniqueCount;
+    domStableRounds = domUnchanged ? domStableRounds + 1 : 0;
+    bottomStableRounds = batch.atBottom && domUnchanged && batch.tailTestId === previousDomTail
+      ? bottomStableRounds + 1 : 0;
+    previousDomTail = batch.tailTestId;
     if (!networkStarted && domSeen.size > lastDomUniqueCount) lastProgressAt = new Date().toISOString();
     lastDomUniqueCount = domSeen.size;
     return batch;
@@ -270,6 +290,7 @@ async function scanList({ context, confirmAuthenticated }) {
     }
     if (newUniqueCount > 0) lastProgressAt = new Date().toISOString();
     noResponseAttempts = 0;
+    bottomStableRounds = 0;
     say(`response=${cursorState.responsesSeen} page=${cursorState.cursorPages} users=${event.rows.length} new=${newUniqueCount} unique=${networkSeen.size} terminal=${cursorState.cursorChainComplete}`);
     return true;
   };
@@ -307,6 +328,18 @@ async function scanList({ context, confirmAuthenticated }) {
     if (event) await processResponse(event);
     else noResponseAttempts++;
     const dom = await collectDom();
+    await assertTarget(`scroll-${scrollAttempts}-after`);
+    await haltAnomaly(`scroll-${scrollAttempts}-after`);
+
+    if (Scan.confirmedCountStableBottom({
+      count: networkSeen.size, expectedCount: EXPECTED_COUNT, networkStarted,
+      cursorPages: cursorState.cursorPages, noResponseAttempts, domStableRounds, bottomStableRounds,
+      stableLimit: STABLE_LIMIT,
+    })) {
+      completionEvidence = 'confirmed_count_stable_bottom';
+      terminalReason = 'within_current_count_tolerance_at_stable_bottom';
+      break;
+    }
 
     if (Scan.stalledWithPendingCursor({
       networkStarted,
@@ -316,11 +349,13 @@ async function scanList({ context, confirmAuthenticated }) {
       domStableRounds,
       stableLimit: STABLE_LIMIT,
     })) {
-      if (Scan.baselineCoverageComplete({ count: networkSeen.size, expectedCount: previousBaselineCount })) {
+      // A supplied current count must not fall back to an older, looser baseline.
+      if (EXPECTED_COUNT === null && Scan.baselineCoverageComplete({ count: networkSeen.size, expectedCount: previousBaselineCount })) {
         completionEvidence = 'baseline_coverage_stable';
         terminalReason = 'baseline_covered_with_pending_bottom_cursor';
         break;
       }
+      if (EXPECTED_COUNT !== null && dom.atBottom && bottomStableRounds < STABLE_LIMIT) continue;
       await stopWithAlert('COUNT_ANOMALY', 'CURSOR_STALLED_WITH_BOTTOM_CURSOR', {
         responsesSeen: cursorState.responsesSeen,
         cursorPages: cursorState.cursorPages,
@@ -329,6 +364,15 @@ async function scanList({ context, confirmAuthenticated }) {
         domStableRounds,
         expectedRequestCursorPresent: true,
         previousBaselineCount,
+        previousBaselineDate: previousMeta?.observedDate || null,
+        previousBaselineCeiling: Scan.allowedCount(previousBaselineCount),
+        expectedCount: EXPECTED_COUNT,
+        expectedCountSource: EXPECTED_COUNT === null ? null : 'user_confirmed',
+        expectedCountBounds: EXPECTED_COUNT === null ? null : Scan.confirmedCountBounds(EXPECTED_COUNT),
+        atBottom: dom.atBottom,
+        bottomStableRounds,
+        rejectionReason: EXPECTED_COUNT === null ? 'outside_historical_baseline_tolerance'
+          : !Scan.confirmedCountMatches(networkSeen.size, EXPECTED_COUNT) ? 'outside_current_count_tolerance' : 'bottom_not_stable',
         coveragePct: Scan.coveragePct(networkSeen.size, previousBaselineCount),
       });
     }
@@ -340,6 +384,15 @@ async function scanList({ context, confirmAuthenticated }) {
   }
 
   await Promise.allSettled([...responseTasks]);
+  await assertTarget('final');
+  await haltAnomaly('final');
+  await Promise.allSettled([...responseTasks]);
+  // Responses/errors arriving during the last DOM check cannot be silently ignored.
+  let lateEvent = await channel.take(0);
+  if (lateEvent) {
+    while (lateEvent) { await processResponse(lateEvent); lateEvent = await channel.take(0); }
+    await stopWithAlert('COUNT_ANOMALY', 'RESPONSE_AFTER_COMPLETION_CHECK', { uniqueCount: authoritativeSeen().size });
+  }
   if (!completionEvidence) {
     await stopWithAlert('COUNT_ANOMALY', 'WATCHDOG_EXPIRED', {
       elapsedMs: Date.now() - startedAtMs,
@@ -352,11 +405,16 @@ async function scanList({ context, confirmAuthenticated }) {
     });
   }
 
-  await assertTarget('final');
   const finalUrl = page.url();
   const generatedAt = new Date().toISOString();
   const rows = Capture.authoritativeRows({ networkStarted, networkRows: networkSeen, domRows: domSeen })
     .map((row) => ({ ...row, observedAt: generatedAt }));
+  if (EXPECTED_COUNT !== null && (!networkStarted || !Scan.confirmedCountMatches(rows.length, EXPECTED_COUNT))) {
+    await stopWithAlert('COUNT_ANOMALY', 'CURRENT_COUNT_VALIDATION_FAILED', {
+      uniqueCount: rows.length, networkStarted, expectedCount: EXPECTED_COUNT,
+      expectedCountBounds: Scan.confirmedCountBounds(EXPECTED_COUNT),
+    });
+  }
   const meta = {
     schemaVersion: 4,
     runId: RUN_ID,
@@ -369,6 +427,12 @@ async function scanList({ context, confirmAuthenticated }) {
     count: rows.length,
     headerCount: null,
     previousBaselineCount,
+    previousBaselineDate: previousMeta?.observedDate || null,
+    expectedCount: EXPECTED_COUNT,
+    expectedCountSource: EXPECTED_COUNT === null ? null : 'user_confirmed',
+    expectedCountTolerancePct: EXPECTED_COUNT === null ? null : 1,
+    expectedCountBounds: EXPECTED_COUNT === null ? null : Scan.confirmedCountBounds(EXPECTED_COUNT),
+    expectedCountDelta: EXPECTED_COUNT === null ? null : rows.length - EXPECTED_COUNT,
     coveragePct: Scan.coveragePct(rows.length, previousBaselineCount),
     captureMode: networkStarted ? 'network_response' : 'dom_fallback',
     completionEvidence,
@@ -385,6 +449,7 @@ async function scanList({ context, confirmAuthenticated }) {
     lastProgressAt,
     rounds: scrollAttempts,
     stableRounds: domStableRounds,
+    bottomStableRounds,
     recoveries: 0,
     stopReason: terminalReason,
     complete: true,

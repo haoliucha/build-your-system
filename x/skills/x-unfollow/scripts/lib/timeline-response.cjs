@@ -115,6 +115,15 @@ function advanceCursorState(state, page) {
     seenBottomCursors: [...state.seenBottomCursors],
   };
 
+  const pageKey = `${requestCursor || '<initial>'}->${bottomCursor || '<terminal>'}`;
+  if (state.seenPageKeys.includes(pageKey)) {
+    next.duplicateResponses = state.duplicateResponses + 1;
+    return next;
+  }
+  if (requestCursor !== state.expectedRequestCursor) {
+    throw new Error(`CURSOR_CHAIN_BROKEN: expected ${state.expectedRequestCursor || '<initial>'}, got ${requestCursor || '<initial>'}`);
+  }
+
   if (bottomCursor !== null && bottomCursor === requestCursor) {
     if (newUniqueCount > 0) throw new Error(`CURSOR_LOOP: ${bottomCursor}`);
     next.repeatedTerminalAttempts = state.repeatedTerminalAttempts + 1;
@@ -126,14 +135,6 @@ function advanceCursorState(state, page) {
     return next;
   }
 
-  const pageKey = `${requestCursor || '<initial>'}->${bottomCursor || '<terminal>'}`;
-  if (state.seenPageKeys.includes(pageKey)) {
-    next.duplicateResponses = state.duplicateResponses + 1;
-    return next;
-  }
-  if (state.cursorPages > 0 && requestCursor !== state.expectedRequestCursor) {
-    throw new Error(`CURSOR_CHAIN_BROKEN: expected ${state.expectedRequestCursor || '<initial>'}, got ${requestCursor || '<initial>'}`);
-  }
   if (bottomCursor !== null && state.seenBottomCursors.includes(bottomCursor)) throw new Error(`CURSOR_LOOP: ${bottomCursor}`);
 
   next.seenPageKeys.push(pageKey);

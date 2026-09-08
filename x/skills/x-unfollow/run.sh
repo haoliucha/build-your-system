@@ -22,14 +22,21 @@ LIMIT="${LIMIT:-5}"
 EXPLICIT_HANDLES="${EXPLICIT_HANDLES:-}"
 ALLOW_MUTUAL="${ALLOW_MUTUAL:-0}"
 XU_HEADLESS="${XU_HEADLESS-1}"
+XU_DEBUG_HOLD_ON_ERROR="${XU_DEBUG_HOLD_ON_ERROR:-0}"
 ALERT="$XU_DATA_DIR/ALERT.txt"
 export XU_DATA_DIR PROFILE_DIR SNAPSHOT_DATE="$DATE" ALERT_PATH="$ALERT" XU_HEADLESS
+export MODE XU_DEBUG_HOLD_ON_ERROR
 
 say() { echo "[run $(date +%H:%M:%S)] $*"; }
 
 if [ -z "$MY_HANDLE" ]; then say "FATAL: MY_HANDLE required"; exit 2; fi
 case "$MODE" in report|unfollow|followers-report|relationships-report) ;; *) say "FATAL: MODE must be report|unfollow|followers-report|relationships-report"; exit 2 ;; esac
 case "$XU_HEADLESS" in 0|1) ;; *) say "FATAL: XU_HEADLESS must be 0 or 1"; exit 2 ;; esac
+case "$XU_DEBUG_HOLD_ON_ERROR" in 0|1) ;; *) say "FATAL: XU_DEBUG_HOLD_ON_ERROR must be 0 or 1"; exit 2 ;; esac
+if [ "$XU_DEBUG_HOLD_ON_ERROR" = "1" ] && { [ "$XU_HEADLESS" != "0" ] || [ "$MODE" != "report" ]; }; then
+  say "FATAL: XU_DEBUG_HOLD_ON_ERROR=1 requires XU_HEADLESS=0 and MODE=report"; exit 2
+fi
+node -e 'try { const s=require(process.argv[1]); const n=s.parseExpectedCount(process.env.EXPECTED_COUNT, process.env.MODE); if(n!==null) console.log(`[run] current reference=${n}; source=user_confirmed; tolerance=1%; accepted=${JSON.stringify(s.confirmedCountBounds(n))}`); } catch(e) { console.error(e.message); process.exit(2); }' "$SCRIPTS/lib/list-scan-state.cjs" || exit $?
 if [ "$XU_HEADLESS" = "1" ]; then
   say "browser=headless"
 else

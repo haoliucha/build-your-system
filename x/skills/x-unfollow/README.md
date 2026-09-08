@@ -31,6 +31,12 @@ X 列表页 ──页面请求──> Followers / Following 响应
 
 已观察到 Bottom cursor 后，如果连续 8 轮无分页响应且 DOM 无进展，只有网络集合覆盖上一完整基线至少 95%，且未超过“基线 + max(10 条, 2%)”时，扫描才使用 `baseline_coverage_stable` 完成。这不会伪称 cursor 已耗尽；覆盖不足则以 `CURSOR_STALLED_WITH_BOTTOM_CURSOR` 失败，清理 staging 并保留旧 current。
 
+## 当前总数与现场检查
+
+`MODE=report EXPECTED_COUNT=<用户现场确认的当前 following 总数>` 可独立于历史基线校验，容差固定 ±1%。例如 1285 对应 1273–1297，保存实际网络去重数。仍有 Bottom cursor 时，必须同时有从首屏起连续的分页链、容差内的账号数，以及至少 8 轮无分页响应且列表尾部稳定到底，才记录 `confirmed_count_stable_bottom`；不改写 `cursorChainComplete:false`。未传参考数时保留历史基线策略，已传但超出范围时不得退回旧策略。
+
+需要保留失败页面时使用 `MODE=report XU_HEADLESS=0 XU_DEBUG_HOLD_ON_ERROR=1`。扫描器数量/分页异常后进入 `DEBUG_HOLD`：删除失败 staging、停止监听与自动滚动、保留 Chrome/Node/运行锁。现场检查结束后向日志中的 Node PID 发送 SIGTERM，标准清理会关闭精确子进程并释放锁。不能并行启动另一轮；普通模式的退出行为不变。
+
 ## 关键模块
 
 - `scripts/list-snapshot.cjs`：被动响应监听、页面滚动、URL/异常防护、DOM 兜底。
@@ -50,6 +56,7 @@ node tests/run-tests.cjs
 node tests/cdp-browser.test.cjs
 node tests/v3-current-state.test.cjs
 node tests/v4-pagination.test.cjs
+node tests/confirmed-count-scan.test.cjs
 bash -n run.sh
 node --check scripts/list-snapshot.cjs
 node --check scripts/lib/timeline-response.cjs

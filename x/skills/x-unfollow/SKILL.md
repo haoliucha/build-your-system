@@ -36,13 +36,25 @@ node "$SKILL_DIR/scripts/configure-account.cjs" set --email=<chrome-account-emai
 
 受控 Chrome 默认无头运行（未设置或 `XU_HEADLESS=1`）。仅在排查浏览器交互时显式设置 `XU_HEADLESS=0` 进入可见调试；无头失败时不自动回退到可见模式。异常退出后独立 CDP Chrome 已关闭，按 `ALERT.txt` 修复环境后重新运行。
 
+用户要求保留卡点现场时，`MODE=report XU_HEADLESS=0 XU_DEBUG_HOLD_ON_ERROR=1` 可在扫描器报告数量/分页异常时进入 `DEBUG_HOLD`：停止自动扫描、删除失败 staging、保留浏览器、进程和两把锁，允许人工检查。`ALERT.txt` 明确标注窗口仍开着；用户确认现场检查结束前不得结束暂停进程或发起并行运行。该开关不改变默认清理行为，不用于无头模式或取关；登录恢复与页面漂移仍按原规则处理。
+
+## 当前总数参考（report 可选）
+
+用户现场确认当前 following 总数后，可为**本次**运行显式传入 `EXPECTED_COUNT=<当前总数>`。仅支持 `MODE=report`；不读取历史元数据来自动复用这个值，不访问个人主页。
+
+- 容差固定 **±1%**：`abs(实际网络去重数 - 参考总数) / 参考总数 <= 0.01`。例如参考 1285 时允许 **1273–1297**；保存实际采集数，不补齐、不裁剪。
+- 游标仍存在时，必须同时满足：已收到的分页从首屏起连续无异常、网络去重数在容差内、页面到底且列表尾部稳定、连续至少 8 轮无新增/无进展/无新分页响应。只有数量吻合不得通过；HTTP/解析/游标异常仍中止。
+- 通过时记录 `completionEvidence: confirmed_count_stable_bottom`、参考数、`expectedCountSource: user_confirmed`、1% 容差、允许区间及实际差值；保留 `cursorChainComplete:false`，不得说游标耗尽。
+- 显式参考数不符合容差时，即使旧基线或正常末页分支通过，也不得提升 current。未给参考数时沿用原有自动校验。
+- 旧基线仅用于对照；报错需展示旧基线日期/数量/上限与当前参考数/允许区间，不能只说“扫描异常”。
+
 ## 不可放宽的安全约束
 
 - 所有 X-facing 脚本要求 `run.sh` 颁发的活动 token；同一数据目录仅允许一个运行实例。没有 24 小时冷却，前一实例退出并释放锁后可立即重跑。
 - 列表页只被动监听页面自己发出的 `Followers` / `Following` 响应；绝不主动重放私有 GraphQL。每个真实分页响应后等待 1–3 秒，每 25 个响应暂停 10 秒，单表使用 45 分钟看门狗。
 - 页面 URL 必须精确是 `/<handle>/following` 或 `/<handle>/followers`。顶层导航、轮前、轮后和最终均检查；用户点击导致页面漂移时不抢回页面，立即关闭受控上下文、删除 staging、保留 current、写 `ALERT.txt`，退出 15。
 - 主路径只接受连续 Bottom cursor 链；无 Bottom cursor，或同 cursor 连续两次无新增，才视为末页。网络响应一旦出现，账号集合只采用响应数据；DOM 只读取主列表列，并仅在响应完全不可见时连续 8 轮稳定到底兜底。
-- 已看到 Bottom cursor 后若连续 8 轮无分页响应且 DOM 无进展，只有网络集合覆盖上一完整基线至少 95%，且未超过“基线 + max(10 条, 2%)”时，才能以 `baseline_coverage_stable` 完成；否则必须以 `CURSOR_STALLED_WITH_BOTTOM_CURSOR` 失败并保留旧 current。该分支不得伪称 `cursor_exhausted`。
+- 已看到 Bottom cursor 后若连续 8 轮无分页响应且 DOM 无进展：有显式当前参考数时按上节 ±1% 与稳定到底条件校验；未提供时，只有网络集合覆盖上一完整基线至少 95%，且未超过“基线 + max(10 条, 2%)”时，才能以 `baseline_coverage_stable` 完成。未满足则以 `CURSOR_STALLED_WITH_BOTTOM_CURSOR` 失败并保留旧 current；两个兜底分支均不得伪称 `cursor_exhausted`。
 - 一次完整扫描即可输出相对上一份完整基线的粉丝变化报告，不设置二次确认或人工 review 队列。
 - 登录 URL/按钮、认证 Cookie 缺失，或未登录时受保护列表跳到公开主页，统一作为 `LOGIN_REDIRECT`（exit 12）；确认登录后的非预期跳转才是 `PAGE_DRIFT`（exit 15）。
 - 只有导航响应或相关 X API/Timeline 响应的真实 HTTP 429 才是 `RATE_LIMIT`（exit 11）；通用错误页是 `GENERIC_NAV_ERROR`（exit 18），不得根据“出错了”文字声称 429。

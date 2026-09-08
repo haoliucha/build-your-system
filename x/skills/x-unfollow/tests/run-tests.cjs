@@ -24,6 +24,11 @@ test('分页响应 / cursor / 单次粉丝变化报告测试通过', () => {
   assert.strictEqual(result.status, 0, result.stderr || result.stdout);
 });
 
+test('当前总数容差与保留现场扫描集成测试通过（零网络）', () => {
+  const result = spawnSync(process.execPath, [path.join(__dirname, 'confirmed-count-scan.test.cjs')], { encoding: 'utf8' });
+  assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+});
+
 test('CDP 账号配置、profile 刷新与真实 HTTP 分类测试通过', () => {
   const result = spawnSync(process.execPath, [path.join(__dirname, 'cdp-browser.test.cjs')], { encoding: 'utf8' });
   assert.strictEqual(result.status, 0, result.stderr || result.stdout);

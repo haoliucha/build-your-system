@@ -133,7 +133,9 @@ function writeAlert(alertPath, info) {
     `Exit Code: ${EXIT_CODES[info.type] || 99}`,
     ``,
     `=== ACTION REQUIRED ===`,
-    `1. Inspect this alert and the run log; the dedicated CDP Chrome child has been closed`,
+    info.debugHold
+      ? `1. DEBUG HOLD: browser remains OPEN; automatic scanning STOPPED; run/profile locks retained. Manual inspection allowed; end the paused process only when inspection is complete.`
+      : `1. Inspect this alert and the run log; the dedicated CDP Chrome child has been closed`,
     `2. If CAPTCHA: repair the login challenge outside this run, close Chrome, then re-run`,
     `3. If RATE_LIMIT: an HTTP 429 was observed; wait before the next run`,
     `4. If LOGIN_REDIRECT: verify the configured Chrome account; one selective refresh is automatic`,
