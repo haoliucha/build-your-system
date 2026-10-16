@@ -10,6 +10,8 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 from activity.claude_collector import collect
+from activity.codex_collector import collect as collect_codex
+from activity.common import merge_reports
 from activity.common import Event, detect_domain, load_project_map, parse_mit, parse_mit_details
 from activity.goals import attach_goals, estimate_minutes, explicit_goal, is_routine
 
@@ -211,6 +213,41 @@ class GoalAnalysisTests(unittest.TestCase):
             domains = {event.content[:6]: event.domain for event in report.timeline}
             self.assertEqual(domains["* Padd"], "#tasks")
             self.assertEqual(domains["目标：发布新"], "#indie")
+
+    def test_codex_exec_and_subagent_sessions_fold_into_claude_goal(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir) / "claude"
+            codex = Path(tmpdir) / "codex"
+            vault = Path(tmpdir) / "vault"
+            write_vault(vault)
+            build_home(home, vault)
+
+            def rollout(session_id, cwd, utc, text, **meta):
+                write_jsonl(codex / f"sessions/2026/10/16/rollout-2026-10-16T00-00-00-{session_id}.jsonl", [
+                    {"type": "session_meta", "payload": {"id": session_id, "cwd": cwd, **meta}},
+                    {"type": "response_item", "timestamp": utc, "payload": {
+                        "type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}},
+                ])
+
+            rollout("desk-1", str(vault), "2026-10-16T05:20:00Z", "开始申请 Mercury，按办理总览推进",
+                    originator="Codex Desktop", thread_source="user")
+            rollout("exec-1", "/Users/u/Projects/montagist-app/.claude/worktrees/env-two-layer",
+                    "2026-10-16T08:40:00Z", "Review the code changes again", originator="codex_exec")
+            rollout("sub-1", "/Users/u/Projects/montagist-app/.claude/worktrees/env-two-layer",
+                    "2026-10-16T08:41:00Z", "<user_action> review", thread_source="subagent", parent_thread_id="exec-1")
+            write_jsonl(codex / "session_index.jsonl", [{"id": "desk-1", "thread_name": "开始申请 Mercury"}])
+
+            report = merge_reports([collect(TARGET, home=home, vault=vault), collect_codex(TARGET, home=codex, vault=vault)])
+            attach_goals(report, parse_mit_details(vault, TARGET))
+
+            sessions = {session["id"]: session for session in report.sessions}
+            self.assertTrue(sessions["exec-1"]["aux"])
+            self.assertTrue(sessions["sub-1"]["aux"])
+            self.assertEqual(sessions["exec-1"]["merged_into"]["goal"], "Two-layer env config for worktrees (Mon…")
+            self.assertFalse(sessions["desk-1"]["aux"])
+            mercury = next(goal for goal in report.goals if goal["goal"] == "开始申请 Mercury")
+            self.assertEqual(mercury["category"], "unplanned")
+            self.assertNotIn("Review the code changes again", {row["goal"] for row in report.flow})
 
     def test_cli_json_keeps_old_fields_and_adds_goal_fields(self):
         with tempfile.TemporaryDirectory() as tmpdir:

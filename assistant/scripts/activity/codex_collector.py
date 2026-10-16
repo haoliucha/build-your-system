@@ -112,7 +112,13 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
                 if row.get("type") == "session_meta":
                     session = payload.get("id")
                     if session:
-                        metadata.setdefault(str(session), {}).update({"cwd": payload.get("cwd", "")})
+                        metadata.setdefault(str(session), {}).update({
+                            "cwd": payload.get("cwd", ""),
+                            # `codex exec` 与子代理线程由程序发起（如 Claude 侧的 Codex 审查），归并到父目标。
+                            "automated": payload.get("originator") == "codex_exec"
+                            or payload.get("thread_source") == "subagent"
+                            or bool(payload.get("parent_thread_id")),
+                        })
                 elif row.get("type") == "response_item" and payload.get("role") == "user":
                     add(session, row.get("timestamp"), payload.get("content"), "response_item", path, number, payload.get("id", ""))
                 elif row.get("type") == "event_msg" and payload.get("type") == "user_message":
@@ -143,7 +149,7 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
     sessions = [{"id": session, "name": rows[0].session_name, "project": rows[0].project,
                  "cwd": rows[0].cwd, "origin": "codex-local",
                  "time_range": f"{rows[0].time}-{rows[-1].time}", "messages": len(rows), "files": [],
-                 "titled": session in names, "automated": False}
+                 "titled": session in names, "automated": metadata.get(session, {}).get("automated", False)}
                 for session, rows in grouped.items()]
     mit_items = parse_mit(vault, target_date) if vault else []
     health = host_health(sources, len(timeline), target_date)
