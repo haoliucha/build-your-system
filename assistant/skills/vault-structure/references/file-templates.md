@@ -386,8 +386,7 @@ vault-structure/references/memory-model.md。
 
 ### 60-Memory/profile.md（L0）
 
-骨架不超过 40 行；稳定画像按章节更新，不把短期状态塞回画像。最后一行固定保留
-Claude memory 指针。
+骨架不超过 40 行；稳定画像按章节更新，不把短期状态塞回画像。已有的用户自定义宿主记忆指针保留为可选参考，不新建固定的私有路径。
 
 ~~~markdown
 ---
@@ -413,7 +412,6 @@ updated: YYYY-MM-DD
 - 先说明事实边界、证据和待确认项。
 - 保留用户已确认的格式与约束。
 
-Claude memory：~/.claude/projects/-Users-jliu-Projects-vault/memory/MEMORY.md
 ~~~
 
 ### 60-Memory/now.md（L1）
@@ -540,7 +538,7 @@ last_confirmed: YYYY-Www
 
 ## 记忆更新建议
 
-| 层 | 建议（每层最多 3 条） | 应同步到 Claude memory |
+| 层 | 建议（每层最多 3 条） | 宿主工作记忆建议（可选） |
 |---|---|---|
 | profile | 无 / …… | 是/否，理由 |
 | now | 无 / …… | 是/否，理由 |

@@ -7,7 +7,11 @@ description: 从近期 Inbox、记忆日志、精华模式和外部剪藏中挖�
 
 # 选题挖矿
 
+执行前读取当前 Vault 的 `60-Memory/preferences.md`（若存在），遵守其中的「工作流边界」；共享约定见 vault-structure/references/host-adaptation.md。不依赖会话 hook 或宿主私有记忆。
+
 当前目录即 Vault 根目录。默认扫描全部范围；也可指定 `inbox`、`digest`、`patterns` 或 `clippings`。
+
+若当前 Vault 明确停用 media 的选题挖掘，直接说明该流程已停用并结束，不扫描、不产出素材交接。
 
 ## 扫描源
 
@@ -46,4 +50,4 @@ description: 从近期 Inbox、记忆日志、精华模式和外部剪藏中挖�
 
 ## 交接
 
-报告结束后交接到 media 插件的 `m-topic`（`/media:m-topic`）评估选题。若 media 未安装，提示安装后停止，不引用已退役工作流。
+报告结束后交接到 media 插件的 `m-topic`（`/media:m-topic`）评估选题。若 media 未安装或已停用，跳过交接，不建议安装、启用或替代实现。

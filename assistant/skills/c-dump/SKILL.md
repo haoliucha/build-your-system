@@ -7,6 +7,8 @@ description: 以自由对话倾倒脑暴内容，结束时提取任务、想法�
 
 # 脑暴倾倒
 
+执行前读取当前 Vault 的 `60-Memory/preferences.md`（若存在），遵守其中的「工作流边界」；共享约定见 vault-structure/references/host-adaptation.md。不依赖会话 hook 或宿主私有记忆。
+
 让用户连续表达，不在中途打断整理；可选参数为主题。当前目录即 Vault 根目录。
 
 ## 过程

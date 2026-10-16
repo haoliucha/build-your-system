@@ -7,6 +7,8 @@ description: 读取作息配置，判断当前时段，检查内容发布间隔�
 
 # 作息状态
 
+执行前读取当前 Vault 的 `60-Memory/preferences.md`（若存在），遵守其中的「工作流边界」；共享约定见 vault-structure/references/host-adaptation.md。不依赖会话 hook 或宿主私有记忆。
+
 ## 1. 读取配置
 
 读取 `60-Memory/preferences.md` 的 YAML frontmatter 键：`wake`、`deep_work`、`end_work`、`bedtime`、`language`、`penalty_per_day`。
@@ -18,7 +20,9 @@ description: 读取作息配置，判断当前时段，检查内容发布间隔�
 
 使用 GMT+8 当前时间，依据起床、深度工作和收工时间判断早间准备、深度工作、常规工作、休息或非工作时段。输出当前时段和一行建议，不复制到其他 skill。
 
-## 3. 检查发布间隔
+media 被明确停用时，到此只输出当前时段和建议；跳过以下发布、断更及惩罚步骤，不扫描任何内容目录。
+
+## 3. 检查发布间隔（仅 media 未停用时）
 
 扫描 `20-Areas/media/topics/*.md` 的 `published:` 字段，取最新发布日期。发布字段契约来自 media 插件 `m-publish`；只使用有效的 `YYYY-MM-DD`。
 

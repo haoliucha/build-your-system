@@ -7,7 +7,9 @@ from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
-from .common import Event, Report, clean_excerpt, detect_domain, iter_jsonl, local_day_bounds, make_summary, match_mit, parse_mit, to_local
+from .common import Event, Report, clean_excerpt, detect_domain, local_day_bounds, make_summary, match_mit, parse_mit, to_local
+
+from .source_health import JsonlSource, host_health
 
 COMMAND_GOALS = {
     "assistant:a-setup": "初始化配置",
@@ -92,7 +94,8 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
     start, _ = local_day_bounds(target_date)
     cutoff = start - timedelta(days=1)
     projects_root = home / "projects"
-    paths = sorted(path for path in projects_root.glob("*/*.jsonl") if path.is_file()) if projects_root.is_dir() else []
+    source = JsonlSource(projects_root)
+    paths = [p for p in source.discover(projects_root, "*.jsonl") if p.parent.parent == projects_root]
     file_data: list[tuple[Path, list[dict], str, str | None, str | None, str, str]] = []
     session_meta: dict[str, dict[str, str | None]] = {}
 
@@ -100,14 +103,15 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
         try:
             if to_local(path.stat().st_mtime) is None or to_local(path.stat().st_mtime) < cutoff:
                 continue
-        except OSError:
+        except OSError as exc:
+            source.error(path, type(exc).__name__)
             continue
         fallback_id = path.stem
         custom_title = None
         slug = None
         session_id = fallback_id
         cwd = ""
-        rows = list(iter_jsonl(path) or ())
+        rows = list(source.read(path))
         for record in rows:
             if record.get("type") == "custom-title":
                 custom_title = record.get("customTitle") or record.get("title") or custom_title
@@ -232,6 +236,7 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
         date=target_date.isoformat(),
         origin="claude-local",
         hosts=["claude"],
+        source_health={"claude": host_health({"projects": source}, len(events), target_date)},
         summary=make_summary(events),
         sessions=sessions,
         timeline=events,

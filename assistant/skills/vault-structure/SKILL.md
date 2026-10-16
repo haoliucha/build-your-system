@@ -5,6 +5,8 @@ description: This skill should be used when the user asks about Vault paths, fil
 
 # Vault 结构导航（PARA + GTD + 记忆层）
 
+执行前读取当前 Vault 的 `60-Memory/preferences.md`（若存在），遵守其中的「工作流边界」；共享约定见 vault-structure/references/host-adaptation.md。不依赖会话 hook 或宿主私有记忆。
+
 ## Vault 根目录与路径原则
 
 当前宿主提供的 Vault 根目录是所有相对路径的基准。共享 skill 只使用相对路径，不把宿主、机器或会话的绝对路径写入 Vault。宿主入口、活动分析和上下文注入的差异见 references/host-adaptation.md。
@@ -90,3 +92,7 @@ Vault/
 ## 宿主适配
 
 宿主适配见 references/host-adaptation.md；记忆层规范见 references/memory-model.md。
+
+## 双宿主工作区入口
+
+`a-setup` 单独维护 `AGENTS.md` 和相对链接 `CLAUDE.md -> AGENTS.md`。模板位于插件 `templates/AGENTS.md`，仅更新 Assistant 标记区块；它们不计入 11 个标准数据文件，冲突检查与迁移规则见 `a-setup`。其他工作流不依赖入口文件存在。

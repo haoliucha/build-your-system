@@ -94,6 +94,7 @@ class Report:
     sessions: list[dict[str, Any]] = field(default_factory=list)
     timeline: list[Event] = field(default_factory=list)
     mit: dict[str, Any] = field(default_factory=lambda: {"date": None, "items": [], "matched": []})
+    source_health: dict[str, Any] = field(default_factory=dict)
 
 
 def clean_excerpt(text: str, limit: int = 100) -> str:
@@ -178,7 +179,7 @@ def match_mit(events: Iterable[Event], mit_items: list[str]) -> list[str]:
 
 
 def make_summary(timeline: list[Event]) -> dict[str, Any]:
-    ordered = sorted(timeline, key=lambda event: (event.ts if isinstance(event.ts, str) else "", event.time))
+    ordered = sorted(timeline, key=lambda event: ((to_local(event.ts).isoformat() if to_local(event.ts) else ""), event.time))
     domains: dict[str, int] = {}
     commands: dict[str, int] = {}
     for event in ordered:
@@ -187,7 +188,7 @@ def make_summary(timeline: list[Event]) -> dict[str, Any]:
             commands[event.command] = commands.get(event.command, 0) + 1
     return {
         "message_count": len(ordered),
-        "session_count": len({event.session_id for event in ordered}),
+        "session_count": len({(event.origin, event.session_id) for event in ordered}),
         "start_time": ordered[0].time if ordered else None,
         "end_time": ordered[-1].time if ordered else None,
         "domains": dict(sorted(domains.items())),
@@ -199,7 +200,7 @@ def merge_reports(reports: Iterable[Report]) -> Report:
     reports = list(reports)
     if not reports:
         return Report(date="", origin="mixed")
-    timeline = sorted((event for report in reports for event in report.timeline), key=lambda event: (event.ts if isinstance(event.ts, str) else "", event.time))
+    timeline = sorted((event for report in reports for event in report.timeline), key=lambda event: ((to_local(event.ts).isoformat() if to_local(event.ts) else ""), event.time))
     sessions = [session for report in reports for session in report.sessions]
     mit_items: list[str] = []
     mit_matched: list[str] = []
@@ -221,6 +222,7 @@ def merge_reports(reports: Iterable[Report]) -> Report:
         date=reports[0].date,
         origin="mixed",
         hosts=hosts,
+        source_health={host: value for report in reports for host, value in report.source_health.items()},
         summary=make_summary(timeline),
         sessions=sessions,
         timeline=timeline,
@@ -248,8 +250,11 @@ def render_text(report: Report) -> str:
     summary = report.summary
     lines = [f"=== 活动分析 {report.date} ({report.origin}) ==="]
     lines.append(f"宿主：{', '.join(report.hosts) if report.hosts else '无'}")
+    for host, health in report.source_health.items():
+        lines.append(f"数据源 {host}：{health['status']} | 消息 {health['message_count']}")
     if not summary.get("message_count"):
-        lines.append("当天没有检测到活动。")
+        incomplete = any(h["status"] in {"partial", "unavailable", "stale"} for h in report.source_health.values())
+        lines.append("活动数据不完整，不能据此判断当天没有活动。" if incomplete else "当天没有检测到活动。")
         return "\n".join(lines)
     lines.extend([
         f"活动时段：{summary.get('start_time')} - {summary.get('end_time')}",
@@ -261,7 +266,7 @@ def render_text(report: Report) -> str:
     for event in report.timeline:
         sidechain = " [sidechain]" if event.sidechain else ""
         command = f" | {event.command}" if event.command else ""
-        lines.append(f"{event.time} | {event.session_name} | {event.domain}{command}{sidechain} | {event.content}")
+        lines.append(f"{event.time} | [{event.origin}] {event.session_name} | {event.domain}{command}{sidechain} | {event.content}")
     if summary.get("domains"):
         lines.extend(["", "领域分布："])
         lines.extend(f"- {domain}: {count}" for domain, count in summary["domains"].items())

@@ -27,7 +27,7 @@ def _host(explicit: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="分析 Claude Code / Codex 本地活动")
     parser.add_argument("target_date", nargs="?", help="日期 YYYY-MM-DD，默认 GMT+8 今天")
-    parser.add_argument("--host", choices=("auto", "claude", "codex", "all"), default="auto")
+    parser.add_argument("--host", choices=("auto", "claude", "codex", "all"), default="all")
     parser.add_argument("--json-only", action="store_true")
     parser.add_argument("--claude-home", default=str(Path.home() / ".claude"))
     parser.add_argument("--codex-home", default=str(Path.home() / ".codex"))

@@ -39,3 +39,24 @@ Insights 和 X 关注卫生不属于本插件：Codex 的 `$insights` 位于顶�
 ```bash
 ./scripts/install-local-plugin.sh
 ```
+
+## 双宿主脚本调用
+
+活动分析默认采集 Claude Code 与 Codex；`--host auto` 仅保留为显式兼容选项。先从已加载技能定位插件目录，再用 `scripts/run-script.py` 运行分析、健康或上下文脚本，运行器会在同一次调用中校验并设置根目录。无需启用 SessionStart hook。
+
+报告包含分宿主 `source_health`：采集不可用不能当作当天无活动。当前 Vault 的插件停用声明优先；停用 media 时不恢复其动作或创建替代产线。
+
+
+## 双宿主一致性
+
+Claude Code 的 command 和 Codex 的 skill 入口都调用同一套 `skills/` 与 `scripts/`。每个技能主动读取当前 Vault 的 `60-Memory/preferences.md`；「工作流边界」保存该 Vault 的启用/停用等选择，`session-context.py` 也原样展示该章节。无需开启 hook，无需额外的宿主指令文件，也不从任何宿主私有记忆补齐配置。宿主安装缓存的版本与内容仍需分别验证，源码修改不等于已安装版本更新。
+
+
+## 初始化共享入口
+
+安装插件不改目标 Vault。运行 `a-setup` 时，使用 `scripts/setup-entrypoints.py --apply` 从 `templates/AGENTS.md` 创建或更新 Assistant 托管区块，并建立 `CLAUDE.md -> AGENTS.md` 相对软链接。标记外内容逐字保留；独立正文、异常链接或损坏标记先报告冲突。`--check`（默认）只读校验，退出码 0/1/2 分别表示一致/待更新/冲突或错误。模板不包含个人信息、浏览器配置或默认 Git 发布策略。
+
+
+## 运行时文案边界
+
+生成的工作区指令只回答“这里做什么、读什么、遵守什么”。跨宿主兼容、链接关系、安装路径及区块更新机制由初始化实现和维护文档处理，不写进运行时指令正文，也不以独立的“插件说明”章节增加使用负担。机器维护标记仍用于限定更新范围，正文无需解释这些标记。

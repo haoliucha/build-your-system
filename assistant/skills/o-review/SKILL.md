@@ -7,6 +7,8 @@ description: 每日回顾：分发 Inbox、归档完成任务、复用合并时�
 
 # 每日回顾
 
+执行前读取当前 Vault 的 `60-Memory/preferences.md`（若存在），遵守其中的「工作流边界」；共享约定见 vault-structure/references/host-adaptation.md。不依赖会话 hook 或宿主私有记忆。
+
 参数：`[日期]`，默认今天；传入 `--auto` 进入无人值守模式。当前目录就是 Vault 根目录。
 
 ## 前置数据
@@ -14,11 +16,11 @@ description: 每日回顾：分发 Inbox、归档完成任务、复用合并时�
 按顺序运行两条命令：
 
 ```bash
-python3 "$ASSISTANT_PLUGIN_ROOT/scripts/analyze-activity.py" [日期] --host all --json-only
-python3 "$ASSISTANT_PLUGIN_ROOT/scripts/vault-health.py"
+python3 "<已加载插件根目录>/scripts/run-script.py" analyze-activity.py [日期] --host all --json-only
+python3 "<已加载插件根目录>/scripts/run-script.py" vault-health.py
 ```
 
-`ASSISTANT_PLUGIN_ROOT` 由宿主提供，见 vault-structure/references/host-adaptation.md。保存两份结果供后续阶段使用；没有活动数据或健康数据时继续执行并明确标注。
+先按 vault-structure/references/host-adaptation.md 定位实际插件根目录，运行器在同一次调用中设置环境。保存两份结果供后续阶段使用；检查 `source_health`，区分无活动与采集不可用；没有活动数据或健康数据时继续执行并明确标注。
 
 ## Phase 0：承接自动草稿
 
@@ -52,7 +54,7 @@ python3 "$ASSISTANT_PLUGIN_ROOT/scripts/vault-health.py"
 - `#someday` 写入 `50-GTD/someday.md`；
 - `#task` 写入 `50-GTD/active.md`；
 - `#waiting` 写入 `50-GTD/waiting.md`；
-- `#topic` 建立 `20-Areas/media/topics/{选题名}.md`；
+- media 已停用时，`#topic` 保留原始捕获，跳过分发且不重复追加；未停用时建立 `20-Areas/media/topics/{选题名}.md`；
 - `#idea` 建立 `20-Areas/indie/ideas/{产品名}.md`；
 - `#record` 写回对应日记；
 - `#insight` 按 memory-model.md 的 L3 规则写入 `60-Memory/patterns.md`。

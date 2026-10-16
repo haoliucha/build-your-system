@@ -5,7 +5,9 @@ description: 在个人 Vault 中路由捕获、复盘、任务、作息、活动
 
 # Personal Assistant 总入口
 
-优先遵守当前 Vault 的 `AGENTS.md` / `AGENTS.override.md`。当前目录即 Vault 根目录；需要写文件时使用相对路径。
+执行前读取当前 Vault 的 `60-Memory/preferences.md`（若存在），遵守其中的「工作流边界」；共享约定见 vault-structure/references/host-adaptation.md。不依赖会话 hook 或宿主私有记忆。
+
+当前目录即 Vault 根目录；需要写文件时使用相对路径。宿主入口只负责发现共享技能，不保存另一套业务规则。
 
 ## 工作流 skill
 

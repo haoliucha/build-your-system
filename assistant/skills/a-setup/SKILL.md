@@ -1,11 +1,13 @@
 ---
 name: a-setup
-description: 初始化并检查 Vault 目录、标准文件和用户配置；已有文件按章节安全更新。
+description: 初始化知识库目录、配置和工作区指令；保留已有内容并安全更新。
 ---
 
 > 宿主适配契约见 vault-structure/references/host-adaptation.md；当前目录即 Vault 根目录。
 
 # 初始化与配置
+
+执行前读取当前 Vault 的 `60-Memory/preferences.md`（若存在），遵守其中的「工作流边界」；共享约定见 vault-structure/references/host-adaptation.md。不依赖会话 hook 或宿主私有记忆。
 
 帮助用户验证当前 Vault、补齐标准结构、填写画像和作息配置。当前目录就是 Vault 根目录，所有路径使用相对路径。
 
@@ -66,7 +68,7 @@ description: 初始化并检查 Vault 目录、标准文件和用户配置；已
 
 ### 4.1 profile.md
 
-只维护“基本信息”和“助手使用偏好”两节，正文不超过 40 行。骨架如下，末尾指针必须保留：
+只维护“基本信息”和“助手使用偏好”两节，正文不超过 40 行。骨架如下；已有用户自定义的宿主记忆指针原样保留，但不要求新增：
 
 ```markdown
 ---
@@ -85,7 +87,6 @@ updated: YYYY-MM-DD
 - 主要场景：{场景}
 - 语言：{language}
 
-Claude memory：~/.claude/projects/-Users-jliu-Projects-vault/memory/MEMORY.md。
 ```
 
 若已有自定义章节，保留其原位置和内容；只更新上述两个模板拥有的章节以及 frontmatter 的 `created` / `updated`。
@@ -125,6 +126,8 @@ penalty_per_day: 200
 # 偏好配置
 ```
 
+「工作流边界」属于用户自定义章节，已有内容原样保留；只根据用户明确的插件启用/停用等选择更新，不从宿主私有记忆推断。
+
 更新问卷对应键，不把作息再复制成旧的正文键值。`o-schedule` 仍兼容旧正文。
 
 ## 5. 其余最小骨架
@@ -142,9 +145,33 @@ penalty_per_day: 200
 
 需要完整字段时回读 file-templates.md，不在这里复制项目或日记模板。
 
-## 6. 检查与报告
+## 6. 创建或校验工作区指令
 
-再次检查目录和 `STANDARD_FILES`，报告新增、保留和缺失项；报告画像、当前状态和配置是否更新。已有用户内容被保留时明确说明。
+安装插件本身不修改 Vault。仅在用户运行本技能、完成上述目录和数据文件初始化后，执行共享入口维护：
+
+```bash
+python3 "<已加载插件根目录>/scripts/run-script.py" setup-entrypoints.py --apply
+```
+
+先按 host-adaptation.md 定位实际插件根目录；当前目录始终是目标 Vault。脚本只处理 `AGENTS.md` 与 `CLAUDE.md`，不执行 Git 同步、改宿主配置或启用 hook。
+
+- 唯一默认模板是插件内 `templates/AGENTS.md`。生成正文只包含工作区用途、数据读取位置和执行规则；宿主兼容、链接关系、安装路径、配置来源设计和维护机制只留在实现与维护文档，不写进生成正文。首次创建 `AGENTS.md` 并建立 `CLAUDE.md -> AGENTS.md` 相对软链接；不写入当前用户姓名、机器路径、Chrome Profile 或 Git 自动同步策略。
+- `<!-- assistant:begin -->` / `<!-- assistant:end -->` 是插件拥有的区块。已有区块只替换区块内部；没有区块时追加，原内容原样保留。不得把已有自定义章节划入托管区。
+- 只有 `CLAUDE.md` 普通文件时，保留其内容到 `AGENTS.md` 再建立链接；若两份正文相同、Claude 入口为空或仅为 `@AGENTS.md`，可以安全合并为相对链接。
+- 两份正文各有独立内容、既有链接指向其他位置、自引用、标记损坏或非空 `AGENTS.override.md` 都会返回冲突并保留现场。先展示具体差异与合并方案，再按用户授权处理；不得删除内容、用 force 绕过或创建第二份真源。
+- 不支持软链接的文件系统会明确失败；不静默改成复制文件或另一种引用机制。
+
+入口文件不属于前述 11 个 Vault 数据文件；单独验证并报告。退出码：`0` 为成功，`1` 为只读检查发现待更新，`2` 为冲突或错误。
+
+## 7. 检查与报告
+
+再次检查目录和 `STANDARD_FILES`，并运行：
+
+```bash
+python3 "<已加载插件根目录>/scripts/run-script.py" setup-entrypoints.py --check
+```
+
+内部确认入口一致性和链接检查通过；向用户报告工作区是否就绪、数据文件与配置是否更新、已有内容是否保留。默认不展开宿主兼容、链接结构、安装位置等实现细节；用户询问时再解释。有冲突时说明受影响文件和需要处理的内容，不得宣称初始化全部完成。
 
 ## 注意事项
 

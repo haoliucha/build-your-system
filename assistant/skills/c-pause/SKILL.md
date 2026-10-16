@@ -7,6 +7,8 @@ description: 在任务转换点快速记录间隙日志，保存“刚完成、�
 
 # 间隙记录
 
+执行前读取当前 Vault 的 `60-Memory/preferences.md`（若存在），遵守其中的「工作流边界」；共享约定见 vault-structure/references/host-adaptation.md。不依赖会话 hook 或宿主私有记忆。
+
 间隙日志的核心：在 30 秒内记录“刚完成 / 感受 / 下一步”，下一步必须具体可执行。
 
 **用户提供的参数**

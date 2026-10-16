@@ -7,6 +7,8 @@ description: 查看当前任务、MIT、等待事项和到期任务，并用健�
 
 # 任务概览
 
+执行前读取当前 Vault 的 `60-Memory/preferences.md`（若存在），遵守其中的「工作流边界」；共享约定见 vault-structure/references/host-adaptation.md。不依赖会话 hook 或宿主私有记忆。
+
 当前目录即 Vault 根目录，读取 `50-GTD/active.md`、`waiting.md`、`someday.md` 和 `00-Inbox/capture.md`。
 
 ## 时段提示
@@ -28,10 +30,10 @@ description: 查看当前任务、MIT、等待事项和到期任务，并用健�
 运行：
 
 ```bash
-python3 "$ASSISTANT_PLUGIN_ROOT/scripts/vault-health.py"
+python3 "<已加载插件根目录>/scripts/run-script.py" vault-health.py
 ```
 
-`ASSISTANT_PLUGIN_ROOT` 由宿主提供，见 vault-structure/references/host-adaptation.md。读取 JSON 中的 inbox 积压、MIT 年龄、逾期数、复盘间隔和记忆卫生，展示为一行健康概览；健康检查失败时不阻断任务概览。
+先按 vault-structure/references/host-adaptation.md 定位实际插件根目录，运行器在同一次调用中设置环境。读取 JSON 中的 inbox 积压、MIT 年龄、逾期数、复盘间隔和记忆卫生，展示为一行健康概览；健康检查失败时不阻断任务概览。
 
 ```text
 健康概览：Inbox {N} | MIT 年龄 {N} 天 | 逾期 {N} | 距上次复盘 {N} 天 | 记忆 active {N}

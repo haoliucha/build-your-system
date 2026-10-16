@@ -1,4 +1,7 @@
 import importlib.util
+import os
+from datetime import datetime
+from unittest.mock import patch
 import tempfile
 import unittest
 from pathlib import Path
@@ -33,5 +36,42 @@ class SessionContextTests(unittest.TestCase):
             self.assertLessEqual(len(rendered.splitlines()), 90)
 
 
-if __name__ == "__main__":
+    def test_shared_vault_policy_is_identical_without_host_files_or_private_memory(self):
+        module = load_context()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault = Path(tmpdir) / 'vault'
+            (vault / '60-Memory').mkdir(parents=True)
+            text = '# 偏好\n\n## 工作流边界\n\n- media 已停用，不执行选题或发布动作。\n- 手动入口不依赖 hook。\n\n## 自定义保留章节\n- 原样保留。\n'
+            pref = vault / '60-Memory/preferences.md'
+            pref.write_text(text)
+            # Neither AGENTS/CLAUDE files nor either host's private memory exists.
+            outputs = []
+            for host in ['claude', 'codex']:
+                environment = {'HOME': str(Path(tmpdir) / host), 'ASSISTANT_HOST': host}
+                if host == 'claude':
+                    environment['CLAUDECODE'] = '1'
+                with patch.dict(os.environ, environment, clear=True), patch.object(module, '_nudge', return_value=''), patch.object(module, 'datetime') as clock:
+                    clock.now.return_value = datetime(2026, 9, 8, 14, tzinfo=module.GMT8)
+                    outputs.append(module.render(vault))
+            self.assertEqual(outputs[0], outputs[1])
+            self.assertTrue(outputs[0].startswith('## 工作流边界'))
+            self.assertIn('media 已停用', outputs[0])
+            self.assertIn('手动入口不依赖 hook', outputs[0])
+            self.assertNotIn('自定义保留章节', outputs[0])
+            self.assertEqual(pref.read_text(), text)
+            self.assertFalse((vault / 'AGENTS.override.md').exists())
+            self.assertFalse((vault / 'CLAUDE.md').exists())
+
+    def test_missing_shared_policy_does_not_invent_host_configuration(self):
+        module = load_context()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault = Path(tmpdir)
+            with patch.object(module, '_nudge', return_value=''):
+                rendered = module.render(vault)
+            self.assertNotIn('工作流边界', rendered)
+            self.assertNotIn('media', rendered)
+            self.assertEqual(list(vault.iterdir()), [])
+
+
+if __name__ == '__main__':
     unittest.main()

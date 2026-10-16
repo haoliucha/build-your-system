@@ -7,6 +7,8 @@ description: 将用户内容捕获到 Vault Inbox，并按唯一规则真源识�
 
 # 快速捕获
 
+执行前读取当前 Vault 的 `60-Memory/preferences.md`（若存在），遵守其中的「工作流边界」；共享约定见 vault-structure/references/host-adaptation.md。不依赖会话 hook 或宿主私有记忆。
+
 将用户提供的内容直接写入当前 Vault，不在捕获阶段做 GTD 分发。当前目录即 Vault 根目录，所有路径使用相对路径。
 
 ## 执行流程

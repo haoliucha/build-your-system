@@ -7,6 +7,8 @@ description: 扫描本周 Vault 内容生成周报，并按记忆层规范执行
 
 # 每周整合
 
+执行前读取当前 Vault 的 `60-Memory/preferences.md`（若存在），遵守其中的「工作流边界」；共享约定见 vault-structure/references/host-adaptation.md。不依赖会话 hook 或宿主私有记忆。
+
 参数为 `--bootstrap-digest` 或空参数。周范围使用 ISO 周：周一至周日。周报保存到
 `60-Memory/weekly-summary/{年}W{周}.md`，模板见 file-templates.md。
 
@@ -31,10 +33,10 @@ description: 扫描本周 Vault 内容生成周报，并按记忆层规范执行
 逐日运行活动入口并保存摘要：
 
 ```bash
-python3 "$ASSISTANT_PLUGIN_ROOT/scripts/analyze-activity.py" [日期] --host all --json-only
+python3 "<已加载插件根目录>/scripts/run-script.py" analyze-activity.py [日期] --host all --json-only
 ```
 
-`ASSISTANT_PLUGIN_ROOT` 由宿主提供，见 vault-structure/references/host-adaptation.md。将活动摘要与间隙日志、done 条目对照；保留 origin，不把活动消息数当作产出量。
+先按 vault-structure/references/host-adaptation.md 定位实际插件根目录，运行器在同一次调用中设置环境。检查 `source_health`，标注不完整的数据来源；将活动摘要与间隙日志、done 条目对照；保留 origin，不把活动消息数当作产出量。
 
 ## 步骤 5：记忆消融循环
 
@@ -79,7 +81,7 @@ active 超过 30 条时，按 `last_confirmed` 最旧者退休，保留状态变
 在周报写入 `## 记忆更新建议`，每层最多 3 条，只建议不落盘：
 
 ```markdown
-| 层 | 建议 | 应同步到 Claude memory |
+| 层 | 建议 | 宿主工作记忆建议（可选） |
 |---|---|---|
 | profile | {最多 3 条或无} | 是/否，理由 |
 | now | {最多 3 条或无} | 是/否，理由 |
@@ -87,7 +89,7 @@ active 超过 30 条时，按 `last_confirmed` 最旧者退休，保留状态变
 | tag-mapping | {最多 3 条或无} | 是/否，理由 |
 ```
 
-不得因该列自动修改 Claude memory、profile、now、preferences 或 tag-mapping。
+不得因该列自动修改任一宿主私有记忆、profile、now、preferences 或 tag-mapping。
 
 ## `--bootstrap-digest` 模式
 

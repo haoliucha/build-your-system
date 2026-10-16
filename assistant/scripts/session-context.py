@@ -59,6 +59,17 @@ def _preferences(text: str) -> str:
     return " | ".join(f"{key_map[key]}: {values[key]}" for key in key_map if key in values)
 
 
+def _workflow_boundary(text: str) -> str:
+    """The same Vault-owned policy is shown regardless of the invoking host."""
+    match = re.search(r"^##[ \t]+工作流边界[ \t]*$", text, re.MULTILINE)
+    if not match:
+        return ""
+    tail = text[match.end():]
+    boundary = re.search(r"^#{1,2}[ \t]+", tail, re.MULTILINE)
+    body = tail[:boundary.start()] if boundary else tail
+    return "## 工作流边界\n" + body.strip()
+
+
 def _mit_section(text: str) -> list[str]:
     match = re.search(r"^## 今日重点(?: \(MIT\))?.*$", text, re.MULTILINE)
     if not match:
@@ -92,13 +103,17 @@ def _nudge(vault: Path) -> str:
 
 def render(vault: Path) -> str:
     lines: list[str] = []
+    preferences_text = _read(vault / PREFERENCES_FILE)
+    boundary = _workflow_boundary(preferences_text)
+    if boundary:
+        lines.append(boundary)
     profile = _without_frontmatter(_read(vault / PROFILE_FILE)).strip()
     if profile:
         lines.extend(["## 用户画像", profile])
     now = _without_frontmatter(_read(vault / NOW_FILE)).strip()
     if now:
         lines.extend(["## 当前状态", now])
-    preferences = _preferences(_read(vault / PREFERENCES_FILE))
+    preferences = _preferences(preferences_text)
     if preferences:
         lines.extend(["## 偏好", preferences])
     mit = _mit_section(_read(vault / ACTIVE_FILE))

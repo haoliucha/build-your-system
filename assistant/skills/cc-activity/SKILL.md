@@ -7,6 +7,8 @@ description: 分析指定日期的 Claude 与 Codex 活动，合并间隙日志�
 
 # 活动分析
 
+执行前读取当前 Vault 的 `60-Memory/preferences.md`（若存在），遵守其中的「工作流边界」；共享约定见 vault-structure/references/host-adaptation.md。不依赖会话 hook 或宿主私有记忆。
+
 这是唯一的 Observe 入口。参数为日期，默认今天；日期使用 `YYYY-MM-DD`。
 
 ## 执行
@@ -14,10 +16,10 @@ description: 分析指定日期的 Claude 与 Codex 活动，合并间隙日志�
 1. 运行唯一活动脚本：
 
    ```bash
-   python3 "$ASSISTANT_PLUGIN_ROOT/scripts/analyze-activity.py" [日期] --host all --json-only
+   python3 "<已加载插件根目录>/scripts/run-script.py" analyze-activity.py [日期] --host all --json-only
    ```
 
-   `ASSISTANT_PLUGIN_ROOT` 由宿主提供，见 vault-structure/references/host-adaptation.md。
+   先按 vault-structure/references/host-adaptation.md 定位实际插件根目录，运行器在同一次调用中设置环境。
 2. 读取当日日记：优先 `00-Inbox/{日期}.md`，缺失时查
    `00-Inbox/{Y}/{Y-M}/{日期}.md`。
 3. 读取日记中的 `## 间隙日志` 区块；记录字段和情绪映射见 capture-rules §6。
@@ -25,6 +27,8 @@ description: 分析指定日期的 Claude 与 Codex 活动，合并间隙日志�
    `codex`；若脚本报告为本地来源，可显示为 `claude-local` / `codex-local`。
 
 ## 输出
+
+先检查 `source_health`，明确报告采集不完整或不可用的一侧；不能把采集不可用写成没有活动。
 
 按以下顺序渲染，避免只给原始 JSON：
 

@@ -5,6 +5,8 @@ description: This skill should be used when the user asks to capture, dispatch, 
 
 # 捕获规则
 
+执行前读取当前 Vault 的 `60-Memory/preferences.md`（若存在），遵守其中的「工作流边界」；共享约定见 vault-structure/references/host-adaptation.md。不依赖会话 hook 或宿主私有记忆。
+
 这是 c-capture 与 o-review 共用的唯一规则真源。所有路径均相对于 Vault 根目录。
 
 ## 1. 类型标签（必选 1 个）
@@ -141,7 +143,7 @@ o-review 按类型标签执行分发；普通目标中的新条目采用倒序�
 | #task + 延后 | 50-GTD/someday.md |
 | #waiting | 50-GTD/waiting.md |
 | #someday | 50-GTD/someday.md |
-| #topic | 20-Areas/media/topics/{选题名}.md |
+| #topic | media 已停用：保留原始捕获，不分发；未停用：20-Areas/media/topics/{选题名}.md |
 | #idea | 20-Areas/indie/ideas/{产品名}.md |
 | #record | 00-Inbox/{日期}.md |
 | #insight | 60-Memory/patterns.md，按 vault-structure/references/memory-model.md 的 L3 条目格式 prepend |

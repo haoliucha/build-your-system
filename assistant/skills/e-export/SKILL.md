@@ -7,6 +7,8 @@ description: 将当前对话整理成 Vault 中的知识笔记和完整对话记
 
 # 导出对话
 
+执行前读取当前 Vault 的 `60-Memory/preferences.md`（若存在），遵守其中的「工作流边界」；共享约定见 vault-structure/references/host-adaptation.md。不依赖会话 hook 或宿主私有记忆。
+
 将当前对话保存为一份知识笔记和一份完整记录，路径均相对于 Vault 根目录。
 
 ## 宿主标识

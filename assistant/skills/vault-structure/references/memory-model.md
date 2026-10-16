@@ -75,7 +75,7 @@ active 超过 30 条时，按 last_confirmed 最旧者退休；退休原因写�
 
 ## 记忆更新建议
 
-| 层 | 建议 | 应同步到 Claude memory |
+| 层 | 建议 | 宿主工作记忆建议（可选） |
 |---|---|---|
 | profile | {最多 3 条} | 是/否，理由 |
 | now | {最多 3 条} | 是/否，理由 |
@@ -83,7 +83,7 @@ active 超过 30 条时，按 last_confirmed 最旧者退休；退休原因写�
 | tag-mapping | {最多 3 条} | 是/否，理由 |
 ~~~
 
-profile、now、preferences、tag-mapping 每层建议最多 3 条；没有建议时写“无”。“应同步到 Claude memory”只是审阅列，不是自动同步指令。
+profile、now、preferences、tag-mapping 每层建议最多 3 条；没有建议时写“无”。“宿主工作记忆建议（可选）”只是审阅列，不是自动同步指令。
 
 ## --bootstrap-digest 首次迁移
 
@@ -100,7 +100,7 @@ profile、now、preferences、tag-mapping 每层建议最多 3 条；没有建�
 ## 边界与不自动同步
 
 - Vault 记忆层记录“关于用户的事实”。
-- Claude auto-memory 记录“Claude 怎么干活”。两者用途不同，不自动同步。
-- 60-Memory/profile.md 末尾保留这一行指针：Claude memory：~/.claude/projects/-Users-jliu-Projects-vault/memory/MEMORY.md。
-- 不因周报的“应同步到 Claude memory”列自动改写 Claude memory；需要同步时由用户或对应宿主明确执行。
+- 宿主私有记忆可记录各自的工作经验，与 Vault 数据分离，不自动同步；插件运行不依赖任何宿主私有记忆。
+- 已有画像中的用户自定义宿主记忆指针作为可选参考保留；模板不强制生成或读取任何宿主私有路径。
+- 不因周报的“宿主工作记忆建议（可选）”列自动改写任何宿主私有记忆；需要同步时由用户或对应宿主明确执行。
 - Lodestar 不接入本记忆层。
