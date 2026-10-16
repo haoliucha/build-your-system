@@ -12,7 +12,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from activity.claude_collector import collect as collect_claude
 from activity.codex_collector import collect as collect_codex
-from activity.common import GMT8, merge_reports, parse_date_arg, render_json, render_text
+from activity.common import GMT8, merge_reports, parse_date_arg, parse_mit_details, render_json, render_text
+from activity.goals import attach_goals
 
 
 def _host(explicit: str) -> str:
@@ -45,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     if selected in {"codex", "all"}:
         reports.append(collect_codex(target, home=Path(args.codex_home), vault=vault))
     report = merge_reports(reports) if len(reports) > 1 else reports[0]
+    attach_goals(report, parse_mit_details(vault, target))
     if args.json_only:
         print(render_json(report))
     else:

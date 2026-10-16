@@ -64,6 +64,18 @@ DOMAIN_PATTERNS = [
     ("outsourcing", "#outsourcing"),
 ]
 
+# Vault 外的工作目录按仓库归类：(路径片段, 领域, 项目显示名)。片段按整段路径匹配，
+# worktree（/.claude/worktrees/<名>）归到所属仓库。用户可在 tag-mapping.md 的领域块里用
+# 「项目路径：片段=显示名、…」追加或覆盖。
+PROJECT_DOMAINS = [
+    ("montagist-app", "#indie", "奇镜"),
+    ("montagist", "#indie", "奇镜"),
+    ("biz/x", "#indie", "xStudio"),
+    ("biz/haoliucha", "#media", "haoliucha"),
+]
+PROJECT_PATHS_RE = re.compile(r"^项目路径[:：]\s*(?P<items>.+)$", re.MULTILINE)
+WORKTREE_RE = re.compile(r"/\.claude/worktrees/(?P<name>[^/]+)")
+
 MIT_HEADER_RE = re.compile(
     r"^## 今日重点 \(MIT\) - (?P<date>\d{4}-\d{2}-\d{2}|\d{2}-\d{2})\s*$",
     re.MULTILINE,

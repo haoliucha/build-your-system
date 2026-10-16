@@ -7,7 +7,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
-from .common import Event, Report, clean_excerpt, detect_domain, local_day_bounds, make_summary, match_mit, parse_mit, to_local
+from .common import Event, Report, clean_excerpt, detect_domain, load_project_map, local_day_bounds, make_summary, match_mit, parse_mit, to_local
 
 from .source_health import JsonlSource, host_health
 
@@ -46,17 +46,21 @@ def _content(record: dict) -> str:
     return ""
 
 
-def _file_paths(value) -> set[str]:
+EDIT_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+
+
+def _edited_paths(record: dict) -> set[str]:
+    """File paths an assistant record writes through edit tools (reads are ignored)."""
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
     paths: set[str] = set()
-    if isinstance(value, dict):
-        path = value.get("filePath")
+    for item in content if isinstance(content, list) else ():
+        if not isinstance(item, dict) or item.get("type") != "tool_use" or item.get("name") not in EDIT_TOOLS:
+            continue
+        tool_input = item.get("input") or {}
+        path = tool_input.get("file_path") or tool_input.get("notebook_path")
         if isinstance(path, str) and path:
             paths.add(path)
-        for item in value.values():
-            paths.update(_file_paths(item))
-    elif isinstance(value, list):
-        for item in value:
-            paths.update(_file_paths(item))
     return paths
 
 
@@ -127,8 +131,14 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
 
     candidates: list[dict] = []
     for path, rows, fallback_id, custom_title, slug, file_session_id, file_cwd in file_data:
-        touched: set[str] = set()
+        last_candidate: dict | None = None
         for record in rows:
+            if record.get("type") == "assistant" and last_candidate is not None:
+                # 编辑工具写入的文件归到触发它的那条用户消息上。
+                edited_at = to_local(record.get("timestamp"))
+                if edited_at and edited_at.date() == target_date:
+                    last_candidate["files"].update(_edited_paths(record))
+                continue
             if record.get("type") != "user" or record.get("isMeta"):
                 continue
             local = to_local(record.get("timestamp"))
@@ -143,7 +153,6 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
                 continue
             if command and (command in IGNORED_COMMANDS or command.rsplit(":", 1)[-1] in IGNORED_COMMANDS):
                 continue
-            touched.update(_file_paths(record.get("toolUseResult")))
             session_id = str(record.get("sessionId") or file_session_id or fallback_id)
             metadata = session_meta.setdefault(session_id, {"custom_title": None, "slug": None, "cwd": ""})
             cwd = str(record.get("cwd") or metadata["cwd"] or file_cwd or "")
@@ -164,10 +173,13 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
                 "text": command_content if command else text,
                 "kind": "command" if command else "prompt",
                 "command": command,
-                "domain": detect_domain(text, [cwd, *touched]),
                 "sidechain": bool(record.get("isSidechain")),
-                "files": touched,
+                "files": set(),
+                "titled": bool(metadata["custom_title"] or custom_title),
+                "automated": str(record.get("entrypoint") or "").startswith("sdk-"),
+                "turn_origin": record.get("turnOrigin"),
             })
+            last_candidate = candidates[-1]
 
     # 第一层：同 uuid 必是同一条记录（fork 会话会整份复制 transcript 并改写 sessionId）。
     by_uuid: dict[str, dict] = {}
@@ -189,6 +201,7 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
         if existing is None or (existing["sidechain"] and not candidate["sidechain"]):
             deduplicated[candidate["dedup_key"]] = candidate
 
+    project_map = load_project_map(vault)
     events: list[Event] = []
     session_data: dict[str, dict] = {}
     for candidate in deduplicated.values():
@@ -203,7 +216,7 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
             content=clean_excerpt(candidate["text"]),
             kind=candidate["kind"],
             command=candidate["command"],
-            domain=candidate["domain"],
+            domain=detect_domain(candidate["text"], [candidate["cwd"], *sorted(candidate["files"])], project_map),
             sidechain=candidate["sidechain"],
         )
         events.append(event)
@@ -213,9 +226,15 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
             "name": candidate["session_name"],
             "project": candidate["project"],
             "cwd": candidate["cwd"],
+            "titled": False,
+            "automated": False,
+            "turn_origins": set(),
         })
         data["events"].append(event)
         data["files"].update(candidate["files"])
+        data["titled"] = data["titled"] or candidate["titled"]
+        data["automated"] = data["automated"] or candidate["automated"]
+        data["turn_origins"].add(candidate["turn_origin"])
 
     events.sort(key=lambda event: (event.ts or "", event.time))
     sessions = []
@@ -230,6 +249,11 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
             "time_range": f"{rows[0].time}-{rows[-1].time}",
             "messages": len(rows),
             "files": sorted(data["files"])[:10],
+            "titled": data["titled"],
+            # SDK 入口（如自动安全审查）或无标题、单条、由程序发起的会话，归并到父会话的目标里。
+            "automated": data["automated"] or (
+                not data["titled"] and len(rows) == 1 and data["turn_origins"] == {"sdk"}
+            ),
         })
     mit_items = parse_mit(vault, target_date) if vault else []
     return Report(

@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from datetime import date
 from pathlib import Path
 
-from .common import Event, Report, clean_excerpt, detect_domain, iter_jsonl, make_summary, match_mit, parse_mit, to_local
+from .common import Event, Report, clean_excerpt, detect_domain, iter_jsonl, load_project_map, make_summary, match_mit, parse_mit, to_local
 from .source_health import JsonlSource, host_health
 
 # These are host-injected documents, not user requests. Strip complete wrappers so
@@ -121,6 +121,7 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
     for number, row in enumerate(sources["history.jsonl"].read(history), 1):
         add(row.get("session_id"), row.get("ts"), row.get("text"), "history", history, number)
 
+    project_map = load_project_map(vault)
     timeline = []
     for candidate in _deduplicate(candidates):
         session = candidate["session"]
@@ -132,7 +133,7 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
                               origin="codex-local", session_id=session,
                               session_name=names.get(session, session[:12]),
                               project=Path(cwd).name if cwd else "", cwd=cwd,
-                              content=clean_excerpt(text), domain=detect_domain(text, cwd),
+                              content=clean_excerpt(text), domain=detect_domain(text, cwd, project_map),
                               kind="command" if command else "prompt",
                               command=command.group("name") if command else None))
 
@@ -141,7 +142,8 @@ def collect(target_date: date, *, home: Path, vault: Path | None = None) -> Repo
         grouped[event.session_id].append(event)
     sessions = [{"id": session, "name": rows[0].session_name, "project": rows[0].project,
                  "cwd": rows[0].cwd, "origin": "codex-local",
-                 "time_range": f"{rows[0].time}-{rows[-1].time}", "messages": len(rows), "files": []}
+                 "time_range": f"{rows[0].time}-{rows[-1].time}", "messages": len(rows), "files": [],
+                 "titled": session in names, "automated": False}
                 for session, rows in grouped.items()]
     mit_items = parse_mit(vault, target_date) if vault else []
     health = host_health(sources, len(timeline), target_date)

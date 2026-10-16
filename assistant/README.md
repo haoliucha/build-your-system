@@ -26,7 +26,7 @@
 
 | 入口 | 作用与主要参数 |
 |---|---|
-| `scripts/analyze-activity.py` | 活动分析；`[日期] --host auto\|claude\|codex\|all --json-only --claude-home PATH --codex-home PATH --vault PATH` |
+| `scripts/analyze-activity.py` | 活动分析；`[日期] --host auto\|claude\|codex\|all --json-only --claude-home PATH --codex-home PATH --vault PATH`；输出时间线外加 `goals` / `flow` / `unplanned` / `mit.progress`（目标分组、MIT 关联、估算时长） |
 | `scripts/vault-health.py` | Vault 健康 JSON；`--vault PATH --nudge` |
 | `scripts/session-context.py` | 会话启动上下文；`--vault PATH` |
 
