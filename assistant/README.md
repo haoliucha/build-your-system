@@ -1,6 +1,6 @@
 # Assistant
 
-`assistant/` 是 Claude Code 与 Codex 共用的个人助手插件真源，插件 ID 统一为 `assistant`，版本 `3.0.0`。
+`assistant/` 是 Claude Code 与 Codex 共用的个人助手插件真源，插件 ID 统一为 `assistant`，版本 `3.1.0`。
 
 共享 `skills/` 保存 14 个 skills，其中 11 个工作流由 Claude 命令和 Codex 自然语言路由共同使用。Claude 的 `/assistant:x` 命令只是薄入口；Codex 用自然语言触发同名 skill。SessionStart hook 注入会话上下文，活动与健康数据由本插件脚本生成。
 

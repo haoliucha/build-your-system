@@ -71,6 +71,25 @@ source，不一致就强行改回去。只改 registry 会被静默还原。用�
   换 source 类型时会被直接删掉。开发安装指向仓库路径；从 GitHub 安装的使用者指向
   `claude plugin list --json` 里的 `installPath`，每次版本更新后要重指。
 
+### Codex 侧：不升版本就不生效
+
+Codex 在 `~/.codex/config.toml` 里按 **git** 注册本仓库（`https://github.com/haoliucha/build-your-system.git`），
+运行时加载 `~/.codex/plugins/cache/build-your-system/<插件>/<版本>/`。它只认**已 push 的提交**，并且
+**按版本号判断是否更新**：版本不变，即使 push 了新代码，升级后仍沿用旧缓存。2026-10-17 就因此
+出现 Claude 侧已用新复盘、Codex 侧仍停在 09-08 的 3.0.0 快照。
+
+所以只要改了双宿主插件（`assistant`、`x` 等）的 `skills/`、`scripts/`、`commands/`、`hooks/`，就必须走发布：
+
+1. 按 semver 升版本，三处同步：`<插件>/.claude-plugin/plugin.json`、`<插件>/.codex-plugin/plugin.json`、
+   根 `.claude-plugin/marketplace.json`（插件 README 写了版本号的一并改）
+2. 跑「本地验证」里的测试，再跑 `claude plugin tag <插件目录> --dry-run` 把关版本一致
+3. 提交并 push 到 `origin/main`
+4. `codex plugin marketplace upgrade build-your-system` → `codex plugin add <插件>@build-your-system`
+5. 核对 `~/.codex/plugins/cache/build-your-system/<插件>/` 出现新版本目录，且内容与仓库一致
+   （例如 `diff -rq <插件> <缓存目录>` 只剩 `__pycache__` / `.pytest_cache` 之类）
+
+Claude 侧（directory source）不需要第 4 步，也**不要**跑 `claude plugin update`。
+
 ---
 
 ## 本地验证
