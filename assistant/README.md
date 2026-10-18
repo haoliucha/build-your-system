@@ -44,7 +44,7 @@ Claude Code（在 Vault 目录里执行，写入该项目的 `.claude/settings.j
 claude plugin install assistant@build-your-system --scope project
 ```
 
-Codex：全局 `~/.codex/config.toml` 里保持 `[plugins."assistant@build-your-system"] enabled = false`，在每个 Vault 的 `.codex/config.toml` 写 `enabled = true`（项目需在 Codex 中为 trusted）。在 Vault 内外分别跑 `codex plugin list`，应分别显示 enabled / disabled。
+Codex：全局 `~/.codex/config.toml` 里保持 `[plugins."assistant@build-your-system"] enabled = false`，在每个 Vault 的 `.codex/config.toml` 写 `enabled = true`（项目需在 Codex 中为 trusted）。在 Vault 内外分别跑 `codex plugin list`，应分别显示 enabled / disabled。注意 `codex plugin add`（含升级重装）会把全局改回 `enabled = true`，每次 add 后要改回 `false`。
 
 安装 Codex 版本：
 
