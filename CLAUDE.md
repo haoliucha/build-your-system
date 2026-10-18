@@ -85,10 +85,13 @@ Codex 在 `~/.codex/config.toml` 里按 **git** 注册本仓库（`https://githu
 2. 跑「本地验证」里的测试，再跑 `claude plugin tag <插件目录> --dry-run` 把关版本一致
 3. 提交并 push 到 `origin/main`，再 `claude plugin tag <插件目录>` 打 `<插件>--v<版本>` tag 并 push 该 tag
 4. `codex plugin marketplace upgrade build-your-system` → `codex plugin add <插件>@build-your-system`
-   - `assistant` 只按 Vault 启用：全局 `~/.codex/config.toml` **不写** `[plugins."assistant@build-your-system"]`
-     条目（不写即视为未安装），只在各 Vault 的 `.codex/config.toml` 写 `enabled = true`。
-     `codex plugin add` 会往全局写入 `enabled = true`，add 后删掉这个全局条目，
-     再在 Vault 内外各跑一次 `codex plugin list`：应分别为 `installed, enabled` / `not installed`
+   - **只按 Vault 启用的插件（`assistant`）不要手跑这两条**，改用
+     `python3 scripts/codex-install-vault-plugin.py assistant /Users/jliu/Projects/vault [更多 Vault]`。
+     原因：`codex plugin add` 没有范围选项，在任何目录执行都会往全局 `~/.codex/config.toml` 写
+     `[plugins."assistant@build-your-system"] enabled = true`（2026-10-18 实测；Codex 也不会按项目配置
+     自动安装，add 省不掉）。脚本在 add 后删掉该全局条目（不写即视为未安装）、确保各 Vault 的
+     `.codex/config.toml` 为 `enabled = true`，再在 Vault 内外核对，不符则非零退出。
+     marketplace upgrade 的 git clone 有 30 秒上限，网络慢时会超时；本地快照已含目标版本时加 `--skip-upgrade`
 5. 核对 `~/.codex/plugins/cache/build-your-system/<插件>/` 出现新版本目录，且内容与仓库一致
    （例如 `diff -rq <插件> <缓存目录>` 只剩 `__pycache__` / `.pytest_cache` 之类）
 

@@ -44,7 +44,7 @@ Claude Code（在 Vault 目录里执行，写入该项目的 `.claude/settings.j
 claude plugin install assistant@build-your-system --scope project
 ```
 
-Codex：全局 `~/.codex/config.toml` 不写 assistant 条目（不写即视为未安装），只在每个 Vault 的 `.codex/config.toml` 写 `[plugins."assistant@build-your-system"] enabled = true`（项目需在 Codex 中为 trusted）。在 Vault 内外分别跑 `codex plugin list`，应分别显示 `installed, enabled` / `not installed`。注意 `codex plugin add`（含升级重装）会往全局写入 `enabled = true`，add 后要删掉这个全局条目。
+Codex：全局 `~/.codex/config.toml` 不写 assistant 条目（不写即视为未安装），只在每个 Vault 的 `.codex/config.toml` 写 `[plugins."assistant@build-your-system"] enabled = true`（项目需在 Codex 中为 trusted）。在 Vault 内外分别跑 `codex plugin list`，应分别显示 `installed, enabled` / `not installed`。安装和升级都用仓库根目录的 `scripts/codex-install-vault-plugin.py`，不要直接跑 `codex plugin add`：后者会往全局写入启用条目。
 
 安装 Codex 版本：
 
