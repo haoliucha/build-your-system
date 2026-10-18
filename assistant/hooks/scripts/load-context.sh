@@ -3,6 +3,24 @@
 # 检测当前目录是否是有效 Vault；未初始化时只显示引导，已初始化时优先使用
 # session-context.py，失败则回退到下面的 Bash 拼接。Hook 无论如何都不阻断宿主。
 
+# Vault 的定义：在项目级（project / local scope）安装了 assistant 的目录，可以有多个。
+# assistant 不应全局安装；万一装到 user scope，其他项目的会话在这里静默退出，
+# 不打印初始化提示。目录结构不作判断依据——有 PARA 目录但没装 assistant 的不算 Vault。
+# 先按脚本位置算插件根目录，再切到项目目录（$0 可能是相对路径）。
+PLUGIN_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
+cd "$PROJECT_DIR" 2>/dev/null || exit 0
+
+is_assistant_project() {
+    grep -qs '"assistant@[^"]*"[[:space:]]*:[[:space:]]*true' \
+        .claude/settings.json .claude/settings.local.json && return 0
+    # Codex 的项目级配置：[plugins."assistant@…"] 下一行 enabled = true
+    grep -qs -A1 '^\[plugins\."assistant@' .codex/config.toml \
+        && grep -A1 '^\[plugins\."assistant@' .codex/config.toml | grep -q 'enabled[[:space:]]*=[[:space:]]*true'
+}
+
+is_assistant_project || exit 0
+
 # 检查必需目录（PARA + GTD + Memory）。
 REQUIRED_DIRS=("00-Inbox" "10-Projects" "20-Areas" "30-Resources" "40-Archives" "50-GTD" "60-Memory")
 MISSING_DIRS=()
@@ -47,7 +65,6 @@ if [ ${#MISSING_DIRS[@]} -gt 0 ] || [ "$SETUP_COMPLETE" = false ]; then
     exit 0
 fi
 
-PLUGIN_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 echo "插件根目录: $PLUGIN_ROOT"
 
 # 统一脚本输出为空或失败时的兼容回退，保留旧 hook 的关键上下文。

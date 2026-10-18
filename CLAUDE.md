@@ -83,7 +83,7 @@ Codex 在 `~/.codex/config.toml` 里按 **git** 注册本仓库（`https://githu
 1. 按 semver 升版本，三处同步：`<插件>/.claude-plugin/plugin.json`、`<插件>/.codex-plugin/plugin.json`、
    根 `.claude-plugin/marketplace.json`（插件 README 写了版本号的一并改）
 2. 跑「本地验证」里的测试，再跑 `claude plugin tag <插件目录> --dry-run` 把关版本一致
-3. 提交并 push 到 `origin/main`
+3. 提交并 push 到 `origin/main`，再 `claude plugin tag <插件目录>` 打 `<插件>--v<版本>` tag 并 push 该 tag
 4. `codex plugin marketplace upgrade build-your-system` → `codex plugin add <插件>@build-your-system`
 5. 核对 `~/.codex/plugins/cache/build-your-system/<插件>/` 出现新版本目录，且内容与仓库一致
    （例如 `diff -rq <插件> <缓存目录>` 只剩 `__pycache__` / `.pytest_cache` 之类）

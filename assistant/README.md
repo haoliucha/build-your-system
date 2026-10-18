@@ -1,6 +1,6 @@
 # Assistant
 
-`assistant/` 是 Claude Code 与 Codex 共用的个人助手插件真源，插件 ID 统一为 `assistant`，版本 `3.1.0`。
+`assistant/` 是 Claude Code 与 Codex 共用的个人助手插件真源，插件 ID 统一为 `assistant`，版本 `3.1.1`。
 
 共享 `skills/` 保存 14 个 skills，其中 11 个工作流由 Claude 命令和 Codex 自然语言路由共同使用。Claude 的 `/assistant:x` 命令只是薄入口；Codex 用自然语言触发同名 skill。SessionStart hook 注入会话上下文，活动与健康数据由本插件脚本生成。
 
@@ -33,6 +33,18 @@
 完整架构、目录约定、记忆层和安装流程见 [`docs/assistant-architecture.md`](../docs/assistant-architecture.md)。
 
 Insights 和 X 关注卫生不属于本插件：Codex 的 `$insights` 位于顶层 `insights/`，`x-unfollow` 位于顶层 `x/`；Claude 继续使用原生 `/insights`。
+
+## 安装范围：只装在 Vault 里
+
+**Vault = 在项目级安装了 assistant 的目录**，可以有一个或多个。assistant 不全局安装：全局安装会让每个项目的会话都跑 SessionStart hook。hook 也只认安装记录（`.claude/settings*.json` 或 `.codex/config.toml` 启用了 assistant），不看目录结构；其他目录静默退出。
+
+Claude Code（在 Vault 目录里执行，写入该项目的 `.claude/settings.json`）：
+
+```bash
+claude plugin install assistant@build-your-system --scope project
+```
+
+Codex：全局 `~/.codex/config.toml` 里保持 `[plugins."assistant@build-your-system"] enabled = false`，在每个 Vault 的 `.codex/config.toml` 写 `enabled = true`（项目需在 Codex 中为 trusted）。在 Vault 内外分别跑 `codex plugin list`，应分别显示 enabled / disabled。
 
 安装 Codex 版本：
 
