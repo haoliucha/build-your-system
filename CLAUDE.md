@@ -84,14 +84,17 @@ Codex 在 `~/.codex/config.toml` 里按 **git** 注册本仓库（`https://githu
    根 `.claude-plugin/marketplace.json`（插件 README 写了版本号的一并改）
 2. 跑「本地验证」里的测试，再跑 `claude plugin tag <插件目录> --dry-run` 把关版本一致
 3. 提交并 push 到 `origin/main`，再 `claude plugin tag <插件目录>` 打 `<插件>--v<版本>` tag 并 push 该 tag
-4. `codex plugin marketplace upgrade build-your-system` → `codex plugin add <插件>@build-your-system`
-   - **只按 Vault 启用的插件（`assistant`）不要手跑这两条**，改用
-     `python3 scripts/codex-install-vault-plugin.py assistant /Users/jliu/Projects/vault [更多 Vault]`。
-     原因：`codex plugin add` 没有范围选项，在任何目录执行都会往全局 `~/.codex/config.toml` 写
-     `[plugins."assistant@build-your-system"] enabled = true`（2026-10-18 实测；Codex 也不会按项目配置
-     自动安装，add 省不掉）。脚本在 add 后删掉该全局条目（不写即视为未安装）、确保各 Vault 的
-     `.codex/config.toml` 为 `enabled = true`，再在 Vault 内外核对，不符则非零退出。
-     marketplace upgrade 的 git clone 有 30 秒上限，网络慢时会超时；本地快照已含目标版本时加 `--skip-upgrade`
+4. `codex plugin marketplace upgrade build-your-system`，然后**重启 Codex 桌面应用**（ChatGPT.app），由 Codex
+   刷新**已安装**插件的缓存（官方 [Build plugins](https://developers.openai.com/plugins/build/plugins)：
+   "Codex can still install or refresh files for configured plugins"；2026-10-18 实测重启后 `x`、`insights`
+   缓存被重写。`assistant` 的版本升级刷新待下次发布实测）。启用范围按官方的两层 `config.toml`：
+   - 全局 `~/.codex/config.toml` 是 user scope；**只按 Vault 启用的插件（`assistant`）不在这里写条目**
+   - 项目 `$VAULT/.codex/config.toml` 写 `[plugins."assistant@build-your-system"] enabled = true`
+     （项目须为 trusted；项目设置覆盖 user 设置）
+   - **首次安装**（缓存里没有该插件）项目配置不会触发安装：2026-10-18 实测 `codex exec`、重启桌面应用都不装。
+     只能跑一次 `codex plugin add assistant@build-your-system`，它会往全局写 `enabled = true`，随后删掉这条全局条目
+   - 升级不要再跑 `codex plugin add`，也不要在 `/plugins` 里切换开关：都是 user scope 操作，会往全局写启用条目
+   - marketplace upgrade 的 git clone 有 30 秒上限，网络慢时会超时，重试即可
 5. 核对 `~/.codex/plugins/cache/build-your-system/<插件>/` 出现新版本目录，且内容与仓库一致
    （例如 `diff -rq <插件> <缓存目录>` 只剩 `__pycache__` / `.pytest_cache` 之类）
 
